@@ -74,8 +74,13 @@ exists because "it renders correctly" was unverifiable for a whole phase.
 ### In the browser
 
 ```sh
-scripts/web.sh release      # build the wasm bundle and serve it on :8787
+scripts/web.sh release      # build the wasm bundle and serve it
 ```
+
+It prints a LAN address, so a phone on the same network can open it. The server
+gzips (`scripts/serve.py`), because uncompressed the module is 27 MB and
+compressed it is 10.5 -- and a phone notices the difference. Verified working on
+iOS Safari: touch, pinch and drag all reach the same editor the desktop uses.
 
 Opens a gallery of lilaq's own documentation examples -- the stacked area chart
 among them -- each editable by pointer *and* by text, with typst compiling in

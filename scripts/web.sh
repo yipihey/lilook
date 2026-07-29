@@ -85,6 +85,7 @@ printf 'application/wasm wasm\n' > site/.mime.types
 echo "wasm: $(du -h site/pkg/*.wasm | cut -f1)  (about $(gzip -9 -c site/pkg/*.wasm | wc -c | awk '{printf "%.0f", $1/1048576}') MB over the wire)"
 
 if [ "$SERVE" = "1" ]; then
-  echo "serving http://0.0.0.0:8787/  — reachable from another device on this network"
-  cd site && python3 -m http.server 8787 --bind 0.0.0.0
+  IP=$(ipconfig getifaddr en0 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}')
+  echo "serving http://${IP:-0.0.0.0}:8787/  — open that on a phone on this network"
+  exec python3 scripts/serve.py 8787
 fi
