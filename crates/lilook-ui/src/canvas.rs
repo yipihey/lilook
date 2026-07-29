@@ -51,6 +51,23 @@ pub enum CanvasEvent {
         index: usize,
         to: (f64, f64),
     },
+    /// The diagram was resized by its frame. Sizes are in typographic points --
+    /// `width` and `height` on `lq.diagram` *are* the data area's dimensions,
+    /// which is what makes dragging the axis frame mean what it looks like it
+    /// means. `None` is an axis the gesture did not touch.
+    SetSize {
+        figure: usize,
+        width_pt: Option<f64>,
+        height_pt: Option<f64>,
+    },
+}
+
+/// Which edge of the frame is being dragged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Grip {
+    Right,
+    Bottom,
+    Corner,
 }
 
 const ZOOM_LIMITS: (f32, f32) = (0.05, 16.0);
@@ -62,6 +79,10 @@ const PICK_RADIUS_PX: f32 = 9.0;
 /// wheel produces a burst of events with no press or release to bracket it, and
 /// one undo step per tick would make undo useless after a zoom.
 const ZOOM_IDLE_FRAMES: u32 = 12;
+/// How close to the axis frame counts as grabbing it, in screen pixels.
+const GRIP_RADIUS_PX: f32 = 7.0;
+/// A diagram smaller than this is not a figure, it is an accident.
+const MIN_SIZE_PT: f64 = 24.0;
 
 #[derive(Debug, Clone, PartialEq)]
 enum Gesture {
@@ -80,6 +101,12 @@ enum Gesture {
         index: usize,
         start: (f64, f64),
         scale: (f64, f64),
+    },
+    Resize {
+        figure: usize,
+        /// Data-area size in points at the press.
+        start: (f64, f64),
+        grip: Grip,
     },
 }
 
@@ -188,41 +215,69 @@ impl Canvas {
             pan: self.pan,
         };
         let tolerance_pt = (PICK_RADIUS_PX / viewport.zoom) as f64;
+        let grip_tol = (GRIP_RADIUS_PX / viewport.zoom) as f64;
+        let mut hovered_grip = None;
 
         // ---------------------------------------------------------- gestures
         if response.drag_started() {
             self.drag = Vec2::ZERO;
-            self.gesture = response
-                .interact_pointer_pos()
-                .and_then(|p| locate(&viewport, &boxes, p))
-                .and_then(|(page, pt)| {
-                    let scene = scenes
-                        .iter()
-                        .find(|s| s.page == page && s.contains_page_point(pt))?;
-                    let scale = (scene.transform.x.scale, scene.transform.y.scale);
-                    // A point of the selected series, if the pointer is on one
-                    // and its data is editable.
-                    let grabbed = scene
-                        .hit(pt, tolerance_pt)
-                        .filter(|h| Some(h.node) == selected && editable.contains(&h.node));
-                    Some(match grabbed {
-                        Some(h) => Gesture::MovePoint {
-                            node: h.node,
-                            index: h.index,
-                            start: h.data,
-                            scale,
-                        },
-                        None => Gesture::DataPan {
+            // Precedence, and each step is a different kind of target:
+            //   1. a point of the selected series, if its data is editable
+            //   2. the axis frame -- a thin target the user had to aim at, and
+            //      one a press can land a hair *outside* of, so it is checked
+            //      against a tolerance rather than against the data area
+            //   3. inside the data area: pan the data
+            //   4. anywhere else: pan the view
+            // Where the press *began*, not where the pointer is now: a drag is
+            // only recognised once it has moved past a threshold, and by then
+            // the pointer has left a target as thin as the axis frame. This
+            // matters for the other gestures too -- at low zoom those few pixels
+            // are enough to grab a different data point than the one clicked.
+            let origin = ui
+                .input(|i| i.pointer.press_origin())
+                .or_else(|| response.interact_pointer_pos());
+            self.gesture = Some(
+                origin
+                    .and_then(|p| locate(&viewport, &boxes, p))
+                    .and_then(|(page, pt)| {
+                        let inside = scenes
+                            .iter()
+                            .find(|s| s.page == page && s.contains_page_point(pt));
+
+                        let grabbed = inside.and_then(|scene| {
+                            scene
+                                .hit(pt, tolerance_pt)
+                                .filter(|h| Some(h.node) == selected && editable.contains(&h.node))
+                        });
+                        if let (Some(scene), Some(h)) = (inside, grabbed) {
+                            return Some(Gesture::MovePoint {
+                                node: h.node,
+                                index: h.index,
+                                start: h.data,
+                                scale: (scene.transform.x.scale, scene.transform.y.scale),
+                            });
+                        }
+
+                        if let Some((figure, grip)) = grip_at(scenes, page, pt, grip_tol) {
+                            let scene = scenes.iter().find(|s| s.figure == figure)?;
+                            return Some(Gesture::Resize {
+                                figure,
+                                start: (scene.area.2 - scene.area.0, scene.area.3 - scene.area.1),
+                                grip,
+                            });
+                        }
+
+                        inside.map(|scene| Gesture::DataPan {
                             figure: scene.figure,
                             start: (
                                 (scene.transform.x.min, scene.transform.x.max),
                                 (scene.transform.y.min, scene.transform.y.max),
                             ),
-                            scale,
-                        },
+                            scale: (scene.transform.x.scale, scene.transform.y.scale),
+                        })
                     })
-                })
-                .or(Some(Gesture::ViewPan));
+                    .unwrap_or(Gesture::ViewPan),
+            );
             if !matches!(self.gesture, Some(Gesture::ViewPan)) {
                 events.push(CanvasEvent::Begin);
             }
@@ -246,6 +301,24 @@ impl Canvas {
                         figure: *figure,
                         x: (start.0 .0 - dx, start.0 .1 - dx),
                         y: (start.1 .0 - dy, start.1 .1 - dy),
+                    });
+                }
+                Some(Gesture::Resize {
+                    figure,
+                    start,
+                    grip,
+                }) => {
+                    // Screen pixels straight to points: the frame follows the
+                    // pointer, which is the whole point of dragging it.
+                    let d = self.drag / viewport.zoom;
+                    let (w, h) = (
+                        (start.0 + d.x as f64).max(MIN_SIZE_PT),
+                        (start.1 + d.y as f64).max(MIN_SIZE_PT),
+                    );
+                    events.push(CanvasEvent::SetSize {
+                        figure: *figure,
+                        width_pt: matches!(grip, Grip::Right | Grip::Corner).then_some(w),
+                        height_pt: matches!(grip, Grip::Bottom | Grip::Corner).then_some(h),
                     });
                 }
                 Some(Gesture::MovePoint {
@@ -359,6 +432,18 @@ impl Canvas {
             .hover_pos()
             .and_then(|p| locate(&viewport, &boxes, p));
         let hovered = hover.and_then(|(page, pt)| pick(scenes, page, pt, tolerance_pt));
+        if self.gesture.is_none() {
+            hovered_grip = hover.and_then(|(page, pt)| grip_at(scenes, page, pt, grip_tol));
+        }
+        // The cursor is the only affordance a thin target gets before it is
+        // grabbed, so it has to be right.
+        if let Some((_, grip)) = hovered_grip {
+            ui.ctx().set_cursor_icon(match grip {
+                Grip::Right => egui::CursorIcon::ResizeHorizontal,
+                Grip::Bottom => egui::CursorIcon::ResizeVertical,
+                Grip::Corner => egui::CursorIcon::ResizeNwSe,
+            });
+        }
 
         if response.clicked() {
             if let Some((page, pt)) = hover {
@@ -449,6 +534,27 @@ fn locate(viewport: &Viewport, boxes: &[PageBox], p: Pos2) -> Option<(usize, (f6
         .iter()
         .find(|b| b.contains(doc))
         .map(|b| (b.index, b.to_page(doc)))
+}
+
+/// Is the pointer on the right edge, bottom edge or corner of a data area?
+///
+/// The right and bottom edges only: dragging the left or top edge would move
+/// the figure on the page as well as resize it, and where a diagram sits is the
+/// surrounding document's business, not the figure's.
+fn grip_at(scenes: &[Scene], page: usize, pt: (f64, f64), tol: f64) -> Option<(usize, Grip)> {
+    for s in scenes.iter().filter(|s| s.page == page) {
+        let (x0, y0, x1, y1) = s.area;
+        let on_right = (pt.0 - x1).abs() <= tol && pt.1 >= y0 - tol && pt.1 <= y1 + tol;
+        let on_bottom = (pt.1 - y1).abs() <= tol && pt.0 >= x0 - tol && pt.0 <= x1 + tol;
+        let grip = match (on_right, on_bottom) {
+            (true, true) => Grip::Corner,
+            (true, false) => Grip::Right,
+            (false, true) => Grip::Bottom,
+            (false, false) => continue,
+        };
+        return Some((s.figure, grip));
+    }
+    None
 }
 
 /// Nearest series point across every scene on this page.

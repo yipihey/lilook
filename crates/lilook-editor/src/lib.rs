@@ -562,6 +562,16 @@ impl Editor {
                         self.set_or_insert(figure, param, value);
                     }
                 }
+                CanvasEvent::SetSize {
+                    figure,
+                    width_pt,
+                    height_pt,
+                } => {
+                    for (param, value) in [("width", width_pt), ("height", height_pt)] {
+                        let Some(pt) = value else { continue };
+                        self.set_length(figure, param, pt);
+                    }
+                }
                 CanvasEvent::MovePoint { node, index, to } => {
                     // x and y are separate array elements, so a point drag is
                     // two intents with two coalesce keys -- and one undo step.
@@ -577,6 +587,47 @@ impl Editor {
                 }
             }
         }
+    }
+
+    /// Write a length back in the unit the user was already using.
+    ///
+    /// A figure written in centimetres should stay in centimetres: rewriting
+    /// `width: 8cm` as `width: 226.77pt` is technically the same figure and a
+    /// visible loss to whoever has to read the source afterwards.
+    fn set_length(&mut self, node: usize, param: &str, points: f64) {
+        let unit = self
+            .doc
+            .call(node)
+            .and_then(|c| {
+                let named = |name: &str| {
+                    c.named
+                        .iter()
+                        .find(|a| a.name == name)
+                        .and_then(|a| lilook_ui::split_numeric(&a.text))
+                        .map(|(_, u)| u)
+                };
+                // This argument's unit, or the other dimension's -- a figure
+                // with `height: 5cm` and no width should gain `width: 8cm`.
+                named(param).or_else(|| named(if param == "width" { "height" } else { "width" }))
+            })
+            .filter(|u| !u.is_empty())
+            .unwrap_or_else(|| "cm".to_string());
+
+        // 1pt is 1/72in, and typst's `pt` is the same.
+        let value = match unit.as_str() {
+            "cm" => points / 28.346_456_7,
+            "mm" => points / 2.834_645_67,
+            "in" => points / 72.0,
+            "pt" => points,
+            // `em` depends on the font size, and `%` on a container lilook
+            // cannot see. Both would be a guess, so write points instead.
+            _ => points,
+        };
+        let unit = match unit.as_str() {
+            "cm" | "mm" | "in" | "pt" => unit,
+            _ => "pt".to_string(),
+        };
+        self.set_or_insert(node, param, format!("{}{unit}", num(value)));
     }
 
     /// Rewrite a named argument, adding it when the user never wrote one. The

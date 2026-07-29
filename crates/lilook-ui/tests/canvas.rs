@@ -453,3 +453,104 @@ fn dragging_outside_a_figure_pans_the_view_only() {
         "the view should have moved instead"
     );
 }
+
+/// Dragging the right edge of the axis frame changes `width` and nothing else.
+/// `width` on `lq.diagram` *is* the data area's width, so the frame follows the
+/// pointer one-to-one.
+#[test]
+fn dragging_the_frame_resizes_the_diagram() {
+    let (pages, scenes) = fixture();
+    let mut canvas = Canvas::new();
+    let (_, viewport) = click_at(&mut canvas, &pages, &scenes, None);
+    let boxes = lilook_ui::stack_pages(&[(200.0, 100.0)], 12.0);
+    let area = scenes[0].area; // (20, 20, 180, 80) in page points
+
+    // Middle of the right edge.
+    let from = viewport.to_screen(boxes[0].to_doc((area.2, (area.1 + area.3) / 2.0)));
+    let (events, _) = drag(
+        &mut canvas,
+        &pages,
+        &scenes,
+        None,
+        &[],
+        from,
+        egui::vec2(20.0, 0.0),
+    );
+
+    let sizes: Vec<(Option<f64>, Option<f64>)> = events
+        .iter()
+        .filter_map(|e| match e {
+            CanvasEvent::SetSize {
+                width_pt,
+                height_pt,
+                ..
+            } => Some((*width_pt, *height_pt)),
+            _ => None,
+        })
+        .collect();
+    assert!(!sizes.is_empty(), "{events:?}");
+    let (w, h) = *sizes.last().unwrap();
+    assert_eq!(h, None, "a right-edge drag must not touch the height");
+    let expected = (area.2 - area.0) + 20.0 / canvas.zoom() as f64;
+    assert!((w.unwrap() - expected).abs() < 1e-3, "{w:?} vs {expected}");
+    assert_eq!(events.first(), Some(&CanvasEvent::Begin));
+    assert_eq!(events.last(), Some(&CanvasEvent::Commit));
+}
+
+/// The corner drives both, and neither can be dragged to nothing.
+#[test]
+fn the_corner_resizes_both_axes_and_stops_at_a_minimum() {
+    let (pages, scenes) = fixture();
+    let mut canvas = Canvas::new();
+    let (_, viewport) = click_at(&mut canvas, &pages, &scenes, None);
+    let boxes = lilook_ui::stack_pages(&[(200.0, 100.0)], 12.0);
+    let area = scenes[0].area;
+    let from = viewport.to_screen(boxes[0].to_doc((area.2, area.3)));
+
+    let (events, _) = drag(
+        &mut canvas,
+        &pages,
+        &scenes,
+        None,
+        &[],
+        from,
+        egui::vec2(15.0, 9.0),
+    );
+    let (w, h) = events
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            CanvasEvent::SetSize {
+                width_pt,
+                height_pt,
+                ..
+            } => Some((*width_pt, *height_pt)),
+            _ => None,
+        })
+        .expect("a corner drag sets both");
+    assert!(w.is_some() && h.is_some());
+
+    // Dragging far inwards clamps rather than inverting the figure.
+    let (events, _) = drag(
+        &mut canvas,
+        &pages,
+        &scenes,
+        None,
+        &[],
+        from,
+        egui::vec2(-4000.0, -4000.0),
+    );
+    let (w, h) = events
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            CanvasEvent::SetSize {
+                width_pt,
+                height_pt,
+                ..
+            } => Some((*width_pt, *height_pt)),
+            _ => None,
+        })
+        .unwrap();
+    assert!(w.unwrap() >= 24.0 && h.unwrap() >= 24.0, "{w:?} {h:?}");
+}

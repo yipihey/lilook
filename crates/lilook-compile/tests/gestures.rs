@@ -402,3 +402,62 @@ fn pasting_an_unresolved_fragment_reports_rather_than_hides() {
     doc.undo();
     assert_eq!(doc.text(), into);
 }
+
+/// Resizing by the frame, end to end: the recovered data area follows the
+/// gesture, the unit the user wrote survives, and it is one undo step.
+#[test]
+fn dragging_the_frame_resizes_the_figure_in_the_users_own_unit() {
+    let src = r#"#import "@preview/lilaq:0.6.0" as lq
+#set page(width: 20cm, height: 14cm, margin: 10pt)
+#lq.diagram(width: 6cm, height: 4cm, lq.plot((0, 1, 2), (0, 1, 4)))
+"#;
+    let mut b = Backend::new(std::env::temp_dir(), "");
+    let mut doc = Document::new(src);
+    let mut hints = Hints::new();
+
+    let (render, scenes) = b.render_scenes(&doc, 1.0, &mut hints);
+    if skip(&render) {
+        return;
+    }
+    let figure = scenes[0].figure;
+    let area = scenes[0].area;
+    let (w0, h0) = (area.2 - area.0, area.3 - area.1);
+    // 6cm x 4cm.
+    assert!(
+        (w0 - 170.08).abs() < 1.0 && (h0 - 113.39).abs() < 1.0,
+        "{w0} {h0}"
+    );
+
+    // What the canvas emits for a corner drag of +28.35 pt (1cm) each way, and
+    // what the editor writes for it: centimetres, because that is what was there.
+    doc.begin("resize");
+    for (param, pt) in [("width", w0 + 28.3464567), ("height", h0 + 28.3464567)] {
+        let cm = pt / 28.3464567;
+        doc.apply(Intent::SetNamedArg {
+            node: figure,
+            param: param.into(),
+            value: format!("{}cm", num(cm)),
+        })
+        .unwrap();
+    }
+    doc.commit();
+    assert!(doc.text().contains("width: 7cm"), "{}", doc.text());
+    assert!(doc.text().contains("height: 5cm"), "{}", doc.text());
+
+    let (render, scenes) = b.render_scenes(&doc, 1.0, &mut hints);
+    assert!(
+        !render.failed(),
+        "{:?}",
+        render.errors().collect::<Vec<_>>()
+    );
+    let area = scenes[0].area;
+    let (w1, h1) = (area.2 - area.0, area.3 - area.1);
+    assert!(
+        (w1 - (w0 + 28.35)).abs() < 1.0 && (h1 - (h0 + 28.35)).abs() < 1.0,
+        "the frame did not follow the gesture: {w1} {h1}"
+    );
+
+    assert_eq!(doc.history_depth().0, 1);
+    doc.undo();
+    assert_eq!(doc.text(), src);
+}

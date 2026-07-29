@@ -865,17 +865,42 @@ every label comes out blank, because a missing family is a warning typst prints
 and then carries on from. `the_four_fetched_fonts_are_enough_to_draw_a_labelled_figure`
 compiles with exactly those four and asserts nothing complains.
 
-## The remaining 11 MB, and why it stays for now
+## The remaining weight, measured properly
 
-The wasm is 15 MB of code and 12 MB of data, and the data is almost entirely
-`icu_segmenter_data`: line-breaking dictionaries and LSTM models for Thai,
-Khmer, Burmese and CJK. A lilaq figure never breaks a line in those scripts.
+**A correction.** The section that used to be here said the remaining 11 MB was
+`icu_segmenter_data` and blamed `typst-layout`'s default features. That was
+inferred from the size of the crate directory, and it was wrong. A two-line
+probe -- one crate depending on `icu_segmenter`, built for wasm32 with and
+without the dictionary features -- comes out at **0.39 MB either way**: the
+linker already drops the 10.3 MB of dictionary data, because `typst-layout`
+calls `LineSegmenter::new_lstm` and nothing reaches the dictionary path. Only
+the 0.8 MB LSTM model is linked. Inferring binary contents from crate sizes is
+not measurement.
 
-It cannot be turned off from here. `typst-layout` depends on `icu_segmenter`
-without `default-features = false`, so the `auto` and `compiled_data` features
-arrive with the defaults, and Cargo has no mechanism for disabling another
-crate's default features -- features are additive by design. The routes are
-upstream (a feature flag in `typst-layout`) or vendoring a stub
-`icu_segmenter_data` through `[patch.crates-io]`, which trades 11 MB against
-correct line breaking in scripts lilook does not claim to support. Worth doing
-if the demo goes on a documentation page; not worth doing blind.
+What is actually there, from `twiggy` on an unstripped build (20 MB of code,
+12 MB of data) together with `cargo tree`:
+
+- **`wasmi`, a WebAssembly interpreter**, because typst supports `plugin()`. We
+  ship a wasm interpreter inside a wasm binary for a feature no figure uses.
+- **`hayro`, `hayro-interpret`, `hayro-postscript`, `hayro-ccitt`,
+  `hayro-syntax`** -- a PDF *and* PostScript interpreter, plus fax decoding, for
+  rendering PDFs embedded in a document. Pulled unconditionally by
+  `typst-render`.
+- **`vello_cpu` and `vello_common`, linked twice**: 0.0.8 for hayro and 0.0.9
+  for egui. The top of the `twiggy` list is two hash-variants of the same blend
+  functions. Both are pinned at `0.0.x`, where every release is
+  semver-breaking, so cargo cannot unify them and neither can we.
+- **`resvg`/`usvg`**, for SVGs embedded in a document.
+- ICU LSTM data and `hypher`'s hyphenation dictionaries, which typst does use.
+
+Three more levers were checked and rejected. Dropping eframe's `default_fonts`
+changed the binary by 0.07 MB -- egui 0.35 no longer carries the emoji fonts it
+used to. The ICU dictionary was already gone, as above. And `opt-level = "z"`
+saves 1.5 MB raw over `"s"` (33.07 -> 31.56), which is perhaps 0.4 MB gzipped,
+for the 20-30% runtime penalty `"z"` usually carries -- a bad trade for a demo
+whose whole claim is that editing feels immediate.
+
+So the remaining cuts are not available from this side of the dependency wall.
+They need feature flags in `typst-render` (PDF and SVG image support) or
+`typst-library` (plugins), or a fork of them. That is a well-formed upstream
+request rather than a local task, and these numbers are what it should carry.

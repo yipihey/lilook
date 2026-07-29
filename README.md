@@ -89,15 +89,18 @@ the page. Measured there: 3-16 ms per recompile on these figures.
 The first load is about 12 MB gzipped, because the page carries a whole
 typesetter: 10.5 MB of wasm and 1.6 MB of fonts, cached separately. After that
 nothing goes over the network, and nothing is uploaded -- a figure edited in the
-browser never leaves it. `docs/findings.md` records where the weight is and what
-the next lever would be.
+browser never leaves it. `docs/findings.md` records where the weight is: a
+PDF interpreter, a WebAssembly interpreter and two copies of a rasteriser, all
+arriving unconditionally with typst, none of which a figure uses.
 
 ### Keys
 
 `⌘Z` / `⇧⌘Z` undo and redo · `⌘S` save · `⌘0` fit · `⌘C` copy the selection
 with the bindings it needs · `⌘V` paste into the selected figure · `⌘D`
 duplicate · `⌫` delete. Drag inside a diagram to pan the data, scroll to zoom
-it, drag a point of a selected literal series to move it.
+it, drag a point of a selected literal series to move it, and drag the right or
+bottom edge of the axis frame to resize the figure -- `width` and `height` *are*
+the data area's dimensions, so the frame follows the pointer exactly.
 
 ### CLI
 
