@@ -49,7 +49,9 @@ impl<L: FileLoader + Send + Sync> LilookWorld<L> {
     /// Compile `text` with everything else coming from `loader`.
     pub fn with_loader(loader: L, text: impl Into<String>) -> Self {
         let main = main_id();
+        #[allow(unused_mut)]
         let mut fonts = FontStore::new();
+        #[cfg(feature = "embedded-fonts")]
         fonts.extend(typst_kit::fonts::embedded());
         LilookWorld {
             library: LazyHash::new(Library::default()),

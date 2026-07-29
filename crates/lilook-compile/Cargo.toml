@@ -8,7 +8,8 @@ license = "MIT"
 [features]
 # The desktop backend: read the project directory, download packages, use the
 # system's fonts. Off for a build with no file system -- see `src/files.rs`.
-default = ["system"]
+default = ["system", "embedded-fonts"]
+embedded-fonts = ["typst-kit/embedded-fonts"]
 system = [
     "typst-kit/system-files",
     "typst-kit/system-packages",

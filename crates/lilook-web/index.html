@@ -2,24 +2,90 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>lilook</title>
   <style>
     html, body { margin: 0; height: 100%; overflow: hidden; background: #f6f6f6; }
     canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
-    #boot { position: absolute; inset: 0; display: grid; place-items: center;
-            font: 14px/1.5 system-ui, sans-serif; color: #666; text-align: center; }
+    #boot { position: absolute; inset: 0; display: grid; place-items: center; padding: 2rem;
+            font: 15px/1.6 -apple-system, system-ui, sans-serif; color: #555; text-align: center; }
+    #boot b { display: block; font-weight: 600; margin-bottom: .4rem; color: #222; }
+    #bar { width: min(280px, 70vw); height: 4px; margin: .9rem auto 0; border-radius: 2px;
+           background: #ddd; overflow: hidden; }
+    #fill { height: 100%; width: 0; background: #4c72b0; transition: width .15s linear; }
+    #detail { font-size: 13px; color: #888; margin-top: .5rem; }
   </style>
 </head>
 <body>
-  <!-- The wasm carries typst, its fonts and the lilaq packages, so the first
-       load is large and every edit after it is local. -->
-  <div id="boot">loading lilook — the whole typesetter, once</div>
+  <div id="boot">
+    <div>
+      <b>loading lilook</b>
+      the whole typesetter, once
+      <div id="bar"><div id="fill"></div></div>
+      <div id="detail">fetching…</div>
+    </div>
+  </div>
   <canvas id="lilook"></canvas>
   <script type="module">
-    import init from "./pkg/lilook_web.js";
-    init().then(() => document.getElementById("boot")?.remove())
-          .catch(e => { document.getElementById("boot").textContent = "failed: " + e; });
+    const boot = document.getElementById("boot");
+    const fill = document.getElementById("fill");
+    const detail = document.getElementById("detail");
+    const mb = n => (n / 1048576).toFixed(1) + " MB";
+
+    // Fetched by hand rather than through `instantiateStreaming`, for two
+    // reasons: a phone deserves to see that something is happening during a
+    // download this size, and a failure here reports what actually went wrong
+    // instead of Safari's bare "Load failed".
+    // Baked in by scripts/web.sh. `content-length` is no use on its own: a
+    // server that compresses reports the *compressed* size, while the stream
+    // below yields decompressed bytes, and the bar would fill to 250%.
+    const EXPECTED = Number("__WASM_BYTES__") || 0;
+
+    async function load(url) {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText} for ${url}`);
+      const encoded = res.headers.get("content-encoding");
+      const total =
+        EXPECTED || (encoded ? 0 : Number(res.headers.get("content-length")) || 0);
+      const reader = res.body?.getReader();
+      if (!reader) return await res.arrayBuffer();
+
+      const chunks = [];
+      let got = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        got += value.length;
+        if (total) {
+          fill.style.width = Math.min(100, (100 * got) / total).toFixed(1) + "%";
+        }
+        detail.textContent = total ? `${mb(got)} of ${mb(total)}` : mb(got);
+      }
+      const bytes = new Uint8Array(got);
+      let at = 0;
+      for (const c of chunks) { bytes.set(c, at); at += c.length; }
+      return bytes;
+    }
+
+    try {
+      const bytes = await load("./pkg/lilook_web_bg.wasm");
+      detail.textContent = "starting typst…";
+      fill.style.width = "100%";
+      const { default: init } = await import("./pkg/lilook_web.js");
+      try {
+        await init({ module_or_path: bytes });
+      } catch {
+        await init(bytes);
+      }
+      boot.remove();
+    } catch (e) {
+      const why = e && (e.stack || e.message) ? (e.name + ": " + e.message) : String(e);
+      boot.innerHTML = `<div><b>could not start</b><code style="font-size:13px">${why}</code>
+        <div id="detail">If this says the module is too large, the build is too big for
+        this device — see the wasm-release profile in Cargo.toml.</div></div>`;
+      console.error(e);
+    }
   </script>
 </body>
 </html>
