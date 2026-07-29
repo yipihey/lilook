@@ -1,0 +1,5 @@
+module CLilook {
+    header "include/lilook.h"
+    link "lilook_ffi"
+    export *
+}

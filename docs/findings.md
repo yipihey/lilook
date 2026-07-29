@@ -1,0 +1,838 @@
+# lilook.rs — Phase 0 findings
+
+Target: **lilaq 0.6.0** (MIT, 68 `.typ` files, ~15k lines, declared compiler `0.13.0`).
+Environment: rustc 1.89.0, typst CLI 0.13.1, lilaq's own docs-site tooling.
+
+---
+
+## Gate 1 — Is the API machine-extractable? **PASS, better than assumed**
+
+| metric | value |
+| --- | --- |
+| public exports in `lilaq.typ` | 42 (35 resolve to a parsed definition) |
+| documented parameters | 378 |
+| with machine-readable type union | **376 (99.5%)** |
+| with prose description | **377 (99.7%)** |
+| named (carry a default literal) | 325 (86%) |
+| positional (data slots) | 53 |
+
+The earlier worry about patchy doc-comment coverage does not materialise. Coverage is
+effectively total.
+
+**lilaq ships its own extractor.** The docs-site repo
+(`lilaq-project.github.io/scripts/tidy.py`, 165 lines) is a standalone Python
+implementation of the tidy doc-comment parser. It already emits, per parameter:
+`name`, `default` (as source text), `description`, and `types` as a *list*. This is
+the reference implementation for lilook's schema step — port it, don't rewrite it.
+
+**There are two API surfaces, and both are structured:**
+
+1. **Plot constructors** (`plot`, `scatter`, `bar`, `quiver`, …) — plain `#let`
+   functions with tidy doc-comments. Types come from `/// -> a | b | c`.
+2. **Model elements** (15 of them: `diagram`, `axis`, `tick`, `label`, `legend`,
+   `grid`, `spine`, `title`, `errorbar`, …) — declared via elembic
+   `e.element.declare` with **99 settable fields total**. Here the types are
+   *expressions*, not doc strings:
+
+   ```typst
+   e.field("width", e.types.union(length, relative, auto), default: 6cm),
+   e.field("bounds", e.types.union("strict", "relaxed", "data-area"), default: "strict"),
+   ```
+
+   That is strictly better input than prose. Note `bounds` — a string-literal union is
+   a dropdown with no inference required.
+
+Reconciling the documented signature against the real settable fields: only 6 of 15
+elements differ at all, and every difference is structural (`children`, `pad`) or an
+internal element (`lbox`, `violin-extremum`). No meaningful drift.
+
+**Union widths** (the widget-mapping problem, quantified):
+
+| alternatives | params |
+| --- | --- |
+| 1 | 132 |
+| 2 | 119 |
+| 3 | 61 |
+| 4 | 31 |
+| 5–8 | 33 |
+
+~35% are single-type and map to a widget mechanically. The pathological tail (5+
+alternatives) is 33 parameters — small enough to hand-curate, which is the two-tier
+design already planned.
+
+Most common atoms: `auto` (90), `float` (78), `none` (76), `int` (72), `array` (71),
+`stroke` (46), `color` (42), `bool` (40), `length` (39). `auto`/`none` appearing in
+~44% of typed params means the inspector needs a first-class "unset / inherit"
+control, not a nullable widget bolted on.
+
+---
+
+## Gate 3 — Lossless CST round-trip and surgical edit? **PASS**
+
+Using `typst-syntax` 0.13 on a sample containing comments, irregular whitespace, a
+`#let` binding used as an argument, and a spread/loop-generated series:
+
+- `parse(src).into_text() == src` → **true**
+- Surgical replacement of one named argument's value:
+  prefix byte-identical **true**, suffix byte-identical **true**, reparses clean
+  **true**, comments preserved **true**, irregular spacing preserved **true**
+
+Argument values classify cleanly into `literal` / `binding-ref` / `computed` /
+`callable` / `structured` / `content`, which is the recognized-profile boundary.
+
+**Gotcha worth designing around.** `stroke: red` and `stroke: accent` both parse as
+`SyntaxKind::Ident`. A builtin constant and a user `#let` binding are syntactically
+indistinguishable. lilook needs a table of builtin identifiers to decide between
+"show a colour swatch and edit in place" and "read-only, jump to definition".
+
+Loop-generated calls (`..range(3).map(i => lq.plot(...))`) *are* found by the CST
+walk — they are visible and selectable, just not literal-editable. Confirms the
+opaque-node design rather than contradicting it.
+
+---
+
+## Gate 2 — Does hit-testing reach the user's call site? **Partial — negative where it counts**
+
+Could not complete: `typst` 0.15 requires rustc ≥ 1.92 and 1.89 was the newest
+toolchain installable here, so the in-process `Frame` test is still open.
+
+Two things were established anyway:
+
+1. **SVG export carries no span information at all** — no `data-*` attributes, just
+   `<g>`/`<path>`/`<use>`. Inverse search cannot be recovered from exported SVG. It
+   must be done Rust-side against laid-out frames.
+2. **Spans will not point at the user's call site.** lilaq builds its drawing
+   primitives inside its own functions — `place(curve(..segments))` at
+   `src/plot/plot.typ:81`. The span on a rendered curve resolves into lilaq's source,
+   not into `lq.plot(...)` in the user's document.
+
+**Marker emission is therefore load-bearing, not insurance.** Design the emitter
+around stable per-series markers from the first commit.
+
+---
+
+## Bonus — performance envelope (not a planned gate)
+
+Real lilaq 0.6.0 figures, typst CLI 0.13.1:
+
+| case | 1k pts | 5k | 20k | 50k |
+| --- | --- | --- | --- | --- |
+| line plot (`mark: none`) | 630 ms | 1.0 s | 2.6 s | 8.1 s (1.2 MB SVG) |
+| scatter (marks) | 690 ms | 1.3 s | 3.8 s (9.6 MB SVG) | — |
+
+Cold compile including package download: 3.3 s. Warm CLI floor: ~570 ms, dominated by
+process startup.
+
+**Implications.** The interactive ceiling is roughly 5k points for lines and 1–2k for
+marks. Decimation belongs in the data path *before* Typst sees anything, with a hard
+threshold. And the ~570 ms CLI floor rules out shelling out per edit — the in-process
+compile service with comemo memoisation is required, not merely preferable.
+
+---
+
+## Prior art spotted
+
+`typst-edit` on crates.io: *"In-place editing for Typst source: parse-plane span
+queries and an atomic, non-…"*. Not evaluated. Worth 30 minutes before writing the
+edit layer.
+
+---
+
+## Changes to the plan
+
+1. Port lilaq's `tidy.py` rather than writing a doc-comment parser.
+2. Build **two** extractors. The elembic one is the easier of the two and yields
+   better types; do it first.
+3. Add a builtin-identifier table to the core — required for correct editability
+   classification.
+4. Treat marker emission as a Phase 1 requirement, not a fallback.
+5. Put a decimation threshold (~5k) in the data path before the emitter.
+6. Gate 2 stays open. Needs rustc ≥ 1.92 plus a `World` impl with package
+   resolution and font loading — a half-day, not a spike.
+
+---
+
+# Addendum — Gate 2 resolved, by a different route
+
+The span question turns out to be the wrong question. **Series identity does not need
+spans at all.**
+
+## The probe technique
+
+Inject a marker at a *known data coordinate* using lilaq's own `lq.place`, and have it
+record where it landed:
+
+```typst
+#let probe(fig, x, y) = lq.place(x, y,
+  context [#metadata((fig: fig, data: (x, y), pos: here().position()))<lilook-probe>])
+```
+
+`typst query doc.typ "<lilook-probe>" --field value` then returns each probe's data
+coordinate paired with its page position. Two probes per axis give the exact
+data↔page transform, after which hit-testing is arithmetic in data space — against
+data lilook already owns.
+
+## Measured
+
+**Linear axes** — three probes on a 6cm×4cm diagram:
+
+| data x | page x | data y | page y |
+| --- | --- | --- | --- |
+| 0 | 42.23pt | −1 | 112.32pt |
+| 5 | 118.16pt | 0 | 61.65pt |
+| 10 | 194.08pt | 1 | 10.98pt |
+
+Slope 15.185 pt/unit; the interpolated midpoint predicts 118.155pt against 118.16pt
+measured. Exact to output precision.
+
+**Log axes** — `yscale: "log"`, decades 1→1000: 112.31, 78.57, 44.82, 11.07pt.
+Spacing 33.74 / 33.75 / 33.75. Affine in log space, as expected. lilook already owns
+`yscale`, so it knows which space to invert in.
+
+**Multiple figures in one manuscript** — a tag field in the metadata disambiguates
+cleanly; probes from two diagrams in the same document come back correctly separated,
+including when the two use different scales and sizes.
+
+**Overhead** — 794 ms vs 777 ms on a 200-point two-figure manuscript. ~2%, i.e. free.
+
+**One constraint.** Probes must sit *inside* the current axis limits. Placed far
+outside, the scale stays exactly right (15.19 vs 15.18 pt/unit, within output
+rounding) but the layout origin is displaced by thousands of points. Derive probe
+coordinates from the limits or the data — both of which lilook holds.
+
+## What this changes
+
+1. **The marker-emission requirement softens.** For *series*, geometry beats identity:
+   nearest-point-in-data-space is what a plotting GUI wants anyway, and it gives
+   correct tolerance behaviour at any zoom for free. Markers are still needed for
+   non-data furniture — which tick, which spine, which legend entry — so the emitter
+   design does not go away, it just stops being the critical path.
+2. **Phase 1 de-risks considerably.** This works through the CLI today. It needs no
+   `Frame` access, no `World` impl, and no `typst` crate — so it works unchanged in
+   the WASM build.
+3. **Hit-testing moves into data space**, which is strictly better: snapping,
+   tolerance in data units, and nearest-series selection all become trivial.
+
+## Still open
+
+- In-process equivalent (introspection through the compiler rather than a `typst
+  query` subprocess) is untested.
+- Only lilaq 0.6.0, linear and log. `symlog` and datetime scales untested.
+- Non-data element identity still needs the marker or span route.
+
+---
+
+# Phase 1 — core crate, first cut
+
+`lilook-core` builds and its test suite is green. No dependency on impress,
+implore, egui or Swift; three dependencies total (`typst-syntax`, `serde`,
+`serde_json`).
+
+```
+lilook/
+  tools/extract_schema.py          schema generator (build step)
+  assets/lilaq-0.6.0.schema.json   generated, pinned
+  crates/lilook-core/
+    src/doc.rs        Document: source, CST, call-site index, intent resolution
+    src/edit.rs       AppliedEdit, Transaction, History, Anchor
+    src/intent.rs     the intent vocabulary
+    src/schema.rs     schema types, shared by inspector / CLI / MCP
+    src/bin/lilook.rs CLI: inspect, set, add, schema
+    tests/core.rs     10 tests
+```
+
+## What is implemented
+
+- **Document model.** Typst source is the only state. Every change is a
+  byte-range replacement; nothing is regenerated from a model.
+- **Fine-grained intents** (`SetNamedArg`, `InsertNamedArg`, `RemoveNode`,
+  `ReplaceRange`) with a **transaction layer** above them. Fifty slider events
+  coalesce into one undo entry when they share a `CoalesceKey`. The CLI opens
+  and commits per command, so a coarse consumer gets atomicity without the core
+  exposing a coarse API — which was the ordering trap identified earlier.
+- **History as inverse text edits**, so undo composes with edits made anywhere
+  else in the buffer.
+- **Anchors** that transform through edits with left/right bias, so GUI
+  selection survives undo. Spans do not survive; anchors do.
+- **Editability classification** with the builtin-identifier table Phase 0
+  showed was necessary — `red` resolves to `Builtin`, `accent` to `Binding`.
+- **Generated-call detection**: calls under a closure, spread or for-loop are
+  indexed and selectable but flagged `generated`, i.e. visible-not-editable.
+
+## Schema generator
+
+Both extraction paths implemented, plus a curation layer. Curation lives in the
+generator, separate from the emitted JSON, so regeneration never clobbers it.
+
+| stage | `variant` (needs generic editor) |
+| --- | --- |
+| mechanical type→widget mapping | 171 / 378 (45%) |
+| + type-family coalescing | 112 (30%) |
+| + 15 curated union signatures | **32 / 409 (7.8%)** |
+
+Current surface: 48 functions, 17 elements, 409 parameters, 99.5% typed.
+
+## What the tests caught
+
+Three real defects, all found by end-to-end checks rather than unit tests:
+
+1. **Glob imports were missing from the public surface.** `lq.linspace` reaches
+   users via `#import "math.typ": *`, which the extractor skipped — 13 functions
+   and 31 parameters absent from the schema. Caught by a test asserting that
+   every indexed call site resolves against the schema.
+2. **Argument insertion produced invalid syntax.** Inserting before the closing
+   paren gives `,\n, param: v)` when the call already has a trailing comma. Now
+   inserts after the last existing argument.
+3. **The CLI panicked on a closed pipe**, so `lilook schema lq.plot | head`
+   crashed. An agent-facing CLI cannot panic when its reader goes away.
+
+## Verified end to end
+
+`lilook set` / `lilook add` against a real lilaq figure, output recompiled with
+typst 0.13.1: clean.
+
+## Known gaps
+
+- Insertion is not indentation-aware; new arguments land on the last argument's
+  line. Valid, ugly.
+- `RemoveNode` leaves the separating comma behind.
+- Full reparse per edit. Correct, and fast at figure scale; the incremental
+  reparser is an optimisation for later.
+- No compile service yet — the probe/transform work from Phase 0 is not wired
+  into the core.
+- Elembic element fields are extracted into the schema but the document model
+  does not yet handle `lq.set-*` show rules, which is how those are actually
+  configured.
+
+## Next
+
+1. Compile service: in-process or CLI-shelled, plus the probe injection that
+   yields the data↔page transform.
+2. Hit-testing API in data space on top of it.
+3. Copy/paste with Typst source as the clipboard payload, including free-variable
+   capture analysis on paste.
+4. Set-rule editing for the 17 elembic elements.
+
+---
+
+# Phases 2–4
+
+Workspace: four Rust crates, a Swift package, a Python binding, 2,823 lines.
+16 tests green (10 core, 1 compile-service against the real typst CLI, 5 UI).
+
+```
+lilook/
+  crates/lilook-core   document, intents, history, compile service   no UI deps
+  crates/lilook-ffi    C ABI (cdylib + staticlib) + hand-kept header
+  crates/lilook-ui     egui-only inspector, headless-testable
+  crates/lilook-app    eframe shell -- window, shortcuts, wiring
+  bindings/python      ctypes over the C ABI
+  swift/               SwiftUI package over the same C ABI
+```
+
+## Phase 1 completion — compile service
+
+The probe technique from the Gate 2 addendum is implemented and tested against
+the real typst CLI. Two passes: unit-separated probes for an approximate range,
+then probes at 10%/90% of it for a well-conditioned solve.
+
+Measured against a figure with declared `xlim: (-3, 7)`, `ylim: (100, 400)`:
+
+| | x error | y error |
+| --- | --- | --- |
+| one pass | 0.0006 | 2.16 |
+| two passes | 0.0003 | 0.007 |
+
+Single-pass error scales with how small the probe separation is relative to the
+data range — the y axis spans 300 units, so unit probes sat 0.38 pt apart and
+the 0.01 pt output precision dominated. The refinement pass removes it.
+
+`hit_test` then works in data space with tolerance in page points, so selection
+behaves identically at any zoom.
+
+## Phase 2 — CLI, MCP, bindings
+
+- **CLI**: `inspect`, `set`, `add`, `schema`.
+- **MCP server**: newline-delimited JSON-RPC over stdio. `initialize`,
+  `tools/list`, `tools/call`. Tool descriptions are generated from the schema,
+  so the agent and the inspector share one vocabulary. Verified end to end:
+  inspect, set, a deliberate bad parameter returning a structured error, and the
+  result recompiled clean by typst.
+- **C ABI + Python**: intents cross as JSON, so the ABI does not change when the
+  vocabulary grows. Verified that a three-step drag through Python coalesces
+  into **one** undo step and that undoing restores the source byte-for-byte —
+  the transaction contract survives the FFI boundary.
+
+Both wrappers open and commit one transaction per call, which is the coarse
+consumer the fine-grained core was designed to accommodate.
+
+## Phase 3 — egui
+
+Split deliberately:
+
+- `lilook-ui` depends on **`egui` only, never `eframe`**, so the whole inspector
+  runs headlessly under `egui::__run_test_ui` with no display and no extra
+  dependencies. This is the concrete form of "easy for the agent to inspect and
+  test."
+- `lilook-app` is the eframe shell: window, undo/redo/save shortcuts, and the
+  single place `UiEvent`s become transactions.
+
+The inspector is schema-driven: controls come from the generated widget field,
+sentinels (`auto`/`none`) are first-class buttons rather than a nullable hack,
+bound identifiers are read-only with a jump-to-definition affordance, and
+generated call sites render read-only and are asserted to emit no edit events.
+
+`lilook-app` builds and runs under Xvfb. I could not capture a screenshot —
+the capture kept hanging the shell — so "it renders correctly" is **not**
+verified, only that it builds, starts and stays up.
+
+## Phase 4 — Swift
+
+Written, **not compiled**: there is no Swift toolchain in this container, so
+everything below is unverified beyond review.
+
+- `LilookDocument` wraps the C ABI with correct ownership — every returned
+  string is copied out and released, the handle is freed in `deinit`.
+- Call sites decode straight from the FFI's JSON into `Decodable` structs.
+- `FigureView` is viewer-first: a call-site list, a narrow editing surface over
+  arguments that carry a real widget, everything else read-only. This follows
+  the earlier conclusion that exposing lilaq's full parameter surface on a phone
+  is a poor experience regardless of toolkit.
+- `LilookTests` mirrors the Rust and Python suites, including the
+  drag-is-one-undo-step assertion.
+
+For iOS the cdylib becomes an XCFramework built for `aarch64-apple-ios` and the
+simulator triple; that build is not set up.
+
+## Honest status
+
+**Verified here:** schema extraction, CST round-trip and surgical edits, the
+undo invariant under random intent sequences, transaction coalescing (in Rust,
+through the CLI, through MCP, through Python FFI), transform recovery and
+hit-testing against the real compiler, headless inspector rendering, and that
+edited output recompiles.
+
+**Not verified:** anything Swift, the visual correctness of the egui app, the
+in-process compile backend (still shelling out at ~570 ms per invocation),
+elembic `lq.set-*` show-rule editing, copy/paste, and WASM.
+
+## Next, in order
+
+1. In-process compile backend with comemo — required before drag-rate preview.
+2. `lq.set-*` show-rule editing for the 17 elembic elements. The schema already
+   carries their 99 fields; the document model does not yet touch set rules.
+3. Copy/paste with Typst source as the clipboard payload, including
+   free-variable capture analysis on paste.
+4. Indentation-aware insertion, and comma cleanup on `RemoveNode`.
+5. WASM target for `lilook-ui` — no blockers known, untested.
+6. Swift: build the XCFramework and actually run `LilookTests`.
+
+---
+
+# Phase 5 measurements — the in-process backend, resolved
+
+Environment: Apple Silicon, rustc **1.97.1**, typst CLI **0.15.1**, lilaq
+**0.6.0** (still the latest published version — 0.6.1 and 0.7.0 do not exist).
+The rustc ≥ 1.92 blocker that stopped Gate 2 is gone. These numbers come from a
+throwaway spike, not from committed code; the plan they support is
+`docs/plan-1.0.md`.
+
+## Gate 5 — Does an in-process `World` reach drag rate? **PASS**
+
+A `World` over `typst-kit` 0.15 (`FileStore` + a `FileLoader` that serves the
+main buffer from memory and delegates packages to `SystemFiles`, embedded fonts
+via `typst_kit::fonts::embedded`), calling `typst::compile::<PagedDocument>` and
+`FileStore::reset()` between edits, on `lq.plot` of a sine over *n* points:
+
+| points | cold | warm (style edit) | warm (data edit) | `typst_render::render` @2× |
+| --- | --- | --- | --- | --- |
+| 1k | 108 ms | 20 ms | 30 ms | 0.8 ms |
+| 5k | 207 ms | 85 ms | 132 ms | 0.9 ms |
+| 20k | 670 ms | 363 ms | 526 ms | 1.8 ms |
+| 50k | 1.58 s | 866 ms | 1.20 s | 2.9 ms |
+
+Against the ~570 ms subprocess floor this is a 28× improvement on the edit path
+at 1k points, and it moves the interactive ceiling from "roughly 5k" to "5k
+comfortably". Raster export is not on the critical path at all.
+
+The same figures through the 0.15 CLI, for comparison: 180 ms / 310 ms /
+770 ms / 1.68 s — i.e. this machine is roughly 4× the one Phase 0 was measured
+on, so the *ratios* in the Phase 0 table are what transfers, not the absolutes.
+
+**Decimation threshold should be ~2k, not ~5k.** 2k is where a data-changing
+recompile stays under 60 ms, which is the budget that makes a drag feel
+attached to the cursor rather than trailing it.
+
+## The two-pass refinement is a CLI artifact
+
+`typst query` prints positions as rounded strings — `57.41pt`. The in-process
+introspector returns `57.41296287964004pt`. Since the whole reason for the
+second refinement pass was that 0.01 pt output precision dominated a 300-unit
+axis (2.16 units of error single-pass), the refinement is unnecessary
+in-process. Keep it for `CliCompiler`, and keep the comment saying why —
+deleting it while the CLI path still exists would reintroduce the bug the
+comment is guarding.
+
+## Evaluated series data is recoverable, and nearly free
+
+The open question this settles: hit-testing "against data lilook already owns"
+is only true for literal arrays, and real figures are written
+`lq.plot(x, x.map(t => calc.sin(t)))`. Injecting
+`#metadata((id: .., x: x, y: y))<lilook-series>` into an already-compiled
+figure and reading it back through the introspector:
+
+| points | probe compile + query | marshal to `Vec<f64>` |
+| --- | --- | --- |
+| 1k | 3.3 ms | 0.002 ms |
+| 5k | 6.3 ms | 0.007 ms |
+
+comemo makes the second evaluation of `lq.linspace(...)` and `.map(...)` all
+but free, and `Value::Array` → `f64` is microseconds. So lilook can hold the
+evaluated points of *every* series, however the user computed them. This is
+what makes selection and direct manipulation work on real documents; it also
+means the probe carries the call-site id, so pixel → byte range is exact rather
+than inferred.
+
+## Dependency bumps, measured on a scratch copy
+
+- **`typst-syntax` 0.13 → 0.15**: `SyntaxNode::into_text` is gone; slicing the
+  source by `node.range()` replaces it at the two call sites in `doc.rs`. All
+  16 tests pass. Worth doing regardless, so the workspace does not link two
+  parsers once `typst` 0.15 is a dependency.
+- **`egui` 0.29 → 0.35**: `lilook-ui` compiles **unchanged** and all 5 headless
+  tests pass, `__run_test_ui` included. Only `lilook-app` breaks: `eframe::App`
+  is now `fn ui(&mut self, ui: &mut Ui, frame)` instead of `update(ctx, frame)`,
+  and `SidePanel`/`TopBottomPanel` are unified into
+  `egui::containers::Panel::left(id)` / `::bottom(id)`. About 30 lines.
+
+A UI crate crossing six egui releases untouched while the shell absorbs the
+whole break is ADR-0011 doing exactly what it was chosen for; that belongs in
+the ADR as evidence rather than as an assertion.
+
+`egui_kittest` 0.35 exists (AccessKit-driven, with snapshot support) and is the
+natural extension of the headless-testing property to the whole app surface.
+
+---
+
+# Implementation — M0 to M5
+
+What the plan in `docs/plan-1.0.md` proposed, and what happened when it was
+built. 62 tests green; `scripts/check.sh` is the gate (fmt, clippy, tests, and
+recompiling edited output).
+
+## The two-pass probe design collapsed to one compile
+
+The plan hedged: inject probes, then check whether they change the rendering,
+and fall back to a separate clean pass if they do. They do not. Rendering the
+same figure with and without the injected markers produces **byte-identical
+pixmaps** (`probes_do_not_perturb_the_render`), so the scene and the picture
+come from a single compile. `metadata` has no size, and the corner and series
+probes use relative coordinates, which cannot widen the data range.
+
+The second hedge did pay off. Probes at fixed data coordinates *can* land
+outside the axis limits when the limits are automatic and far from the origin —
+the case the earlier findings recorded as displacing the layout origin by
+thousands of points. The backend detects it (`probes_were_in_range`), re-places
+the probes from the limits the first pass recovered, and compiles again. After
+that the recovered limits are cached per figure, so the steady state is one
+compile: `auto_limits_far_from_the_origin_still_resolve` asserts both passes
+agree.
+
+## Coalescing had to become per target, not per transaction
+
+Predicted from the design and confirmed by writing the pan: `History` coalesced
+only against `tx.edits.last()`, so `xlim` and `ylim` interleaving one per frame
+collapsed nothing. Forty frames of a two-parameter drag recorded 80 edits.
+
+The fix is a slot per target inside the open transaction, materialised into a
+valid edit chain on commit. Three things made it subtle enough to be worth
+recording:
+
+1. Coalescing rewrites an edit that is already recorded, so every later edit in
+   the chain has to shift by the length delta.
+2. A new slot's position has to be expressed in the coordinate space *before*
+   any slot in the group changed length, or the chain replays wrong.
+3. An intent with no key (an insertion, say) is a hard boundary: the slots
+   before it must be materialised first, or the chain comes out unordered. The
+   first frame of a pan on a figure with automatic limits *inserts* `xlim` and
+   `ylim`, so this is the common path, not an edge case.
+
+`a_two_parameter_drag_stays_two_edits` asserts the edit count rather than the
+undo depth, because the bug was invisible to every test that only checked that
+undo worked.
+
+## Dependency bumps cost what was measured
+
+`typst-syntax` 0.13 → 0.15: two call sites. `egui` 0.29 → 0.35: `lilook-ui`
+unchanged, `lilook-app` rewritten for `App::ui` and `Panel::left`. That a UI
+crate crossed six releases untouched while the shell absorbed the whole break is
+ADR-0011 earning its keep, and it is now stated in the ADR as evidence.
+
+## Visual correctness is verified, and cheaply
+
+`--screenshot PATH` draws until the first compile lands, writes a PNG of the
+window and exits. The previous phase left "it renders correctly" unverified
+because capture kept hanging the shell; through eframe's own
+`ViewportCommand::Screenshot` it is about forty lines and needs no display
+server tricks. `--select N` sets the selection, so a scripted screenshot can
+show a state that otherwise needs a pointer.
+
+## What M5 did not do
+
+Dragging the data-area edge to resize a diagram is not implemented. `width` and
+`height` are already drag-editable in the inspector, and the data area's edge is
+not the diagram's edge — the axis labels live outside it — so the gesture needs
+a target that does not exist yet. Everything else in M5 is in: data pan, data
+zoom, point drag on literal arrays, delete, plus the intents underneath
+(`SetArrayElement`, `SetPositionalArg`, `RemoveNamedArg`), comma cleanup on
+removal, and indentation-aware insertion.
+
+---
+
+# Implementation — M6 and M7
+
+## Validation belongs in the core, not in each frontend
+
+Every consumer builds argument values as text: a widget formats a number, an
+agent pastes a string through MCP, a colour picker emits `rgb("#4c72b0")`. One
+unbalanced paren leaves the user's manuscript broken in a way that is hard to
+attribute to lilook. `Document::resolve` now refuses any value-carrying intent
+whose value would not reparse, so the check happens once for the GUI, the CLI,
+the MCP server and the FFI together.
+
+The check parses the value *in an argument list* — `__lilook_check(<value>)` —
+rather than as free-standing code. Two things fell out of that:
+
+- `1 2` is two expressions as code and an error in an argument list, which is
+  the reading lilook wants: a value that silently became a second argument
+  would be a corruption the round-trip test could not see.
+- `let x = 1` **is** a valid argument value in Typst — it evaluates to `none`.
+  Verified against the compiler rather than assumed. The check is syntactic on
+  purpose; lilaq's type rules stay lilaq's, and typst's diagnostic for
+  `stroke: 3` already points at the right argument.
+
+## The editability classification was too strict in two places
+
+Both found by looking at a real figure in the running app rather than by
+reasoning about the model.
+
+**`rgb("#4c72b0")` was read-only.** It is a `FuncCall`, so it classified as
+opaque — but a call to a *builtin constructor* is a value literal in everything
+but syntax. `classify` now consults the same `BUILTIN_IDENTS` table that
+distinguishes `red` from `accent`, so `rgb(..)` and `luma(..)` are editable
+while `calc.sin(x)` and `lq.linspace(..)` stay opaque.
+
+**`stroke: 1.5pt + red` was read-only**, and that is the commonest stroke in
+every lilaq document. It parses as a binary operation, which the core is right
+to call opaque — a general expression editor would have to rewrite a program.
+The fix is in the frontend and is narrow: a control may reopen an opaque value
+only when a parser that writes *the same shape back* recognises it. The stroke
+editor round-trips `paint + thickness`, so it takes that value; nothing
+recognises `my-style` or `red.darken(20%)`, so they keep the source editor and
+the jump-to-definition. That rule is what keeps "editable" from drifting into
+"lossy".
+
+## Widget coverage
+
+`widget_control` maps all 23 widget kinds the schema emits, and
+`every_widget_kind_in_the_schema_has_a_control` fails if a regenerated schema
+grows a new one. Eight kinds get a specialised control (colour picker, stroke
+editor, mark and scale pickers, alignment pair, content, toggle, numeric drag
+with its unit); six deliberately get the validating source editor, because
+`array`, `data`, `dictionary`, `structured`, `variant` and `opaque` have no
+small form. The source editor is the honest floor, not a gap: the value is
+editable, and one that would not reparse is refused with the reason shown.
+
+A second refinement pass adapts the control to the value: 32 `variant`
+parameters admit several shapes, and `xlabel: [Time]` is content whatever the
+type union says.
+
+## Typing needed a transaction the user never opens
+
+A drag brackets itself with a press and a release. Typing in a text box and
+dragging inside a colour picker do not, so every keystroke was its own undo
+step. The shell now opens a transaction on the first such edit and commits it
+0.4 s after the last one, with a `request_repaint_after` so the commit does not
+wait for the next input event. Combined with per-target coalescing, typing a
+word is one undo step and one edit.
+
+## Set rules: option 3, and a smaller change than expected
+
+The decision was to keep set rules out of the figure inspector and give them a
+document-level panel. Implementing it turned out to need almost no new
+machinery, because **a set rule is an ordinary call site**: `#show:
+lq.set-tick(..)` is already in the call index, so it is edited by the same
+intents, coalesces the same way and undoes the same way. What was actually
+needed:
+
+- `Document::set_rules()`, which pairs each rule with the region it governs —
+  to the end of the enclosing block, or to the end of the file. That scope is
+  the part of Typst's semantics users get wrong, so the panel prints it.
+- `Schema::element_as_function`, which presents an elembic element's fields as
+  a parameter list. The inspector then renders a set rule with no special case
+  at all. Element fields carry no `kind`, so `ParamSchema::kind` defaults to
+  `named`.
+
+Adding a rule inserts it after the lilaq import, where the alias is in scope,
+and only at document level. The scoped variant stays something the user writes
+in their own source: wrapping a figure in `#{ .. }` changes how their
+manuscript reads, and doing that as a side effect of touching an inspector is
+exactly what option 3 exists to avoid.
+
+## Still not done
+
+- **Decimation.** The plan carried a ~2k threshold forward from Phase 0. It is
+  not implemented, and it is no longer obviously desirable: the derived-buffer
+  machinery *could* substitute decimated arrays for the preview, but then the
+  picture on screen would not be the picture that compiles, which is a strange
+  property for a WYSIWYG editor. At the measured envelope (5k points, 85 ms per
+  style edit) nothing forces the question yet. Decide it with a real figure
+  that hurts, not in advance.
+- **The resize gesture**, for the reason recorded in the M0–M5 section.
+- **Copy/paste (M8), WASM (M9)**, and the Swift package, which has still never
+  been compiled.
+
+---
+
+# Implementation — M8, M9, M10
+
+## Copy/paste is a capture-analysis problem, as the plan said
+
+The clipboard payload is the Typst source of the copied call, so a copy is
+useful in any editor. The work is on paste. A copied series routinely reads
+`#let xs = lq.linspace(..)` defined elsewhere, and pasting it where that binding
+does not exist produces a document that will not compile.
+
+`Document::free_identifiers(range)` answers "what does this fragment need from
+outside itself", excluding what is bound *inside* it (closure parameters, a
+local `#let`), field names (`plot` in `lq.plot`), argument names (`stroke:`) and
+builtins. `binding_of(name)` finds the `#let` that defines it. On paste lilook
+**carries the definitions** rather than inlining values: inlining would turn a
+two-line figure into a wall of numbers and would drop the relationship the user
+wrote. What it cannot resolve it names in the status line, so the failure is
+legible before the compiler restates it.
+
+**One ordering fact worth knowing before writing any structural edit:** call-site
+ids are indices into a document-order walk, so inserting a binding above a
+figure renumbers the figure. The paste inserts the call *first*, then the
+bindings. This cost a failing test to discover and is now stated in AGENTS.md.
+
+## The random-intent test earned its keep again
+
+Adding `InsertPositionalArg` to the generator turned seed 6 red. The cause was
+not the new intent: coalescing slots assume targets are **disjoint**, and
+`SetPositionalArg { index: 0 }` and `SetArrayElement { arg: 0, element: 1 }` are
+different targets over nested bytes. Rewriting the outer one moved text the
+inner slot believed it owned, and undo replayed the chain into the wrong
+positions. Overlapping arrivals now materialise the group and start a fresh one.
+
+A property test that only asserted "undo works" would have found this too, but
+only as a mangled buffer. What made it debuggable was the trace of intents per
+seed; the fix has its own named regression test, because a seed is a poor
+explanation of a bug.
+
+## WASM: the compiler ports, the loader was the whole question
+
+Measured, not assumed:
+
+| target | result |
+| --- | --- |
+| `typst`, `typst-layout`, `typst-render`, `typst-syntax` on `wasm32-unknown-unknown` | compile clean |
+| `lilook-core`, `lilook-ui` on wasm32 | compile clean, unchanged |
+| `lilook-compile` on wasm32 without its new `system` feature | compiles clean |
+
+So the browser build needs a bundle and a shell, not a different architecture.
+What is feature-gated as `system` is exactly what a browser cannot have: reading
+a project directory, downloading packages, scanning system fonts, and asking the
+clock what day it is. The compile actor is native too -- it owns a thread.
+
+`LilookWorld<L>` and `Backend<L>` are now generic over a `FileLoader`, with
+`MemoryFiles` as the portable implementation. Three tests compile a real lilaq
+figure and recover its scenes through a bundle built from the package cache,
+with **no filesystem access during the compile** and only embedded fonts. lilaq
+0.6.0 and its three dependencies come to ~180 files.
+
+This is also the implore seam `docs/plan.md` §5 promises: the abstraction WASM
+forces is the one a host application needs, built once rather than twice.
+
+What remains for M9 is a web shell (eframe supports it), a committed or
+generated package bundle, and actually running it in a browser -- none of it
+blocked, none of it verified here.
+
+## Polish that turned out to be structural
+
+**The source pane is editable.** Typing produces a whole new buffer, but
+replacing the whole document per keystroke would discard every anchor and make
+each character a document-sized undo entry. `minimal_replacement(old, new)`
+trims the common prefix and suffix (backing off to character boundaries) and
+recovers the edit the user actually made -- almost always a few bytes. With the
+idle transaction, typing a word is one undo step and the anchors survive.
+
+**External edits.** lilook is not the only thing that touches a manuscript. The
+file's mtime is checked once a second: unchanged buffer, reload silently;
+unsaved changes, ask. A reload starts a fresh `Document`, because an undo
+history recorded against text that no longer exists would write bytes from a
+dead file back into the live one.
+
+---
+
+# The browser build
+
+The goal, stated by the user: reproduce lilaq's documentation examples so each
+one is editable in the page, by pointer or by text.
+
+## Measure first: typst in wasm
+
+Before building anything, a throwaway spike compiled the stacked area chart in a
+browser and reported timings. **Warm recompiles: 3-16 ms.** That is not "usable
+with care" -- it is faster than the desktop build's 20 ms on the same figure,
+because these figures are small and comemo does the rest. It decided the design:
+compile synchronously in the frame, no web worker, no scheduling.
+
+Two things did have to be fixed to get there:
+
+- **`std::time::Instant::now()` panics on `wasm32-unknown-unknown`** -- "time not
+  implemented on this platform". The backend times every compile, so the first
+  render died. `web-time` is a drop-in replacement and is already in the tree
+  via eframe.
+- **The wasm is 50 MB raw, 18 MB gzipped**, almost all of it typst's embedded
+  fonts. Fine for a demo, worth trimming before it goes on a docs page.
+
+## What the shells actually share
+
+Building the second frontend is what showed how much of the first one was
+shell-shaped. `lilook-app` was 1150 lines; the parts that were genuinely about
+*windows* -- a file path, a compile thread, a screenshot flag, watching the disk
+-- came to about 200. The rest moved into `lilook-editor`, which depends on
+`egui` and `lilook-core` alone, never on a typesetter: the shell hands it a
+compiled frame and asks it for the next source to compile.
+
+That boundary is what makes the browser build small. `lilook-web` is a gallery,
+a synchronous compile, and a bundle decoder.
+
+The render data types (`Image`, `Page`, `Render`, `Diagnostic`) moved from
+`lilook-compile` into `lilook-core` for the same reason: the editor has to name
+what it draws without linking a compiler.
+
+## Testing a browser app without a browser
+
+`lilook-web`'s tests run natively. They drive `WebApp::frame` through a real
+`egui::Context`, compile every gallery example against the bundled packages, and
+assert on figures rather than pixels: every example compiles and yields a scene;
+the stacked area chart is one diagram whose areas are generated (they come out
+of a fold and a map, so lilook shows them and refuses to pretend they are
+editable); an edit rescales the axis and undoes exactly.
+
+What that leaves for a browser to prove is only that the page paints, which the
+spike already showed.
+
+## What the stacked area chart teaches
+
+It is the honest hard case. The three areas are produced by
+`.windows(2).map(..)` inside a helper function, so lilook flags them
+`generated`: visible, selectable, not structurally editable. The *diagram* is
+the user's own call, so its size, labels, limits and styling are all editable by
+pointer -- and the areas are editable as text, in the same window, against the
+same live figure. That is exactly why the answer to "GUI or text" is "both": the
+GUI is honest about what it can safely rewrite, and the text pane covers the
+rest without a mode switch.

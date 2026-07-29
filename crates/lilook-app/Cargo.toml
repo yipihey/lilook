@@ -1,0 +1,20 @@
+[package]
+name = "lilook-app"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+lilook-core = { path = "../lilook-core" }
+lilook-compile = { path = "../lilook-compile" }
+lilook-editor = { path = "../lilook-editor" }
+egui = { workspace = true }
+# Only for `--screenshot`: the same tiny-skia typst-render already links, so it
+# costs no extra build.
+tiny-skia = "0.12"
+eframe = { version = "0.35", default-features = false, features = [
+    "glow",
+    "default_fonts",
+    "x11",
+    "wayland",
+] }

@@ -1,0 +1,26 @@
+[package]
+name = "lilook-web"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "lilook in the browser: lilaq figures edited by pointer or by text."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+lilook-core = { path = "../lilook-core" }
+lilook-editor = { path = "../lilook-editor" }
+# No `system` feature: there is no file system, no package downloader and no
+# thread to compile on. Packages come from the bundle built in build.rs.
+lilook-compile = { path = "../lilook-compile", default-features = false }
+egui = { workspace = true }
+eframe = { version = "0.35", default-features = false, features = [
+    "glow",
+    "default_fonts",
+] }
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlCanvasElement", "Performance", "console"] }
+log = "0.4"
+console_error_panic_hook = "0.1"
+wasm-bindgen-futures = "0.4"

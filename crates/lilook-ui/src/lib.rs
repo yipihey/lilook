@@ -1,0 +1,21 @@
+//! lilook's egui layer: the schema-driven inspector and the figure canvas.
+//!
+//! Depends on `egui` only -- never `eframe`, never the compiler -- so the whole
+//! surface runs and is testable headlessly. The windowing shell is a separate,
+//! thin binary. This split has already paid for itself once: the crate crossed
+//! six egui releases (0.29 -> 0.35) without a line changing, while the shell
+//! absorbed the whole `eframe::App` break.
+//!
+//! Everything here emits `UiEvent`s rather than mutating a document. Mapping
+//! events onto transactions is the caller's job, which keeps drag-coalescing
+//! policy in one place and lets another frontend consume the same vocabulary.
+
+pub mod canvas;
+pub mod inspector;
+pub mod value;
+pub mod viewport;
+
+pub use canvas::{Canvas, CanvasEvent, CanvasInput, CanvasOutput, PageTexture};
+pub use inspector::{control_for, refine, widget_control, Context, Control, Inspector, UiEvent};
+pub use value::{array_source, num, split_numeric};
+pub use viewport::{stack_pages, stacked_size, PageBox, Viewport};

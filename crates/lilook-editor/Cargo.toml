@@ -1,0 +1,11 @@
+[package]
+name = "lilook-editor"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "The lilook editor: panels, gestures and intents, over egui alone."
+
+[dependencies]
+lilook-core = { path = "../lilook-core" }
+lilook-ui = { path = "../lilook-ui" }
+egui = { workspace = true }

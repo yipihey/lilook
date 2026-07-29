@@ -1,0 +1,32 @@
+[package]
+name = "lilook-compile"
+version = "0.1.0"
+edition = "2021"
+description = "In-process typst backend for lilook: compile, probe, render."
+license = "MIT"
+
+[features]
+# The desktop backend: read the project directory, download packages, use the
+# system's fonts. Off for a build with no file system -- see `src/files.rs`.
+default = ["system"]
+system = [
+    "typst-kit/system-files",
+    "typst-kit/system-packages",
+    "typst-kit/universe-packages",
+    "typst-kit/system-downloader",
+    "typst-kit/scan-fonts",
+    "typst-kit/datetime",
+]
+
+[dependencies]
+lilook-core = { path = "../lilook-core" }
+typst = { workspace = true }
+typst-kit = { workspace = true }
+typst-layout = { workspace = true }
+typst-render = { workspace = true }
+typst-syntax = { workspace = true }
+comemo = { workspace = true }
+# `std::time::Instant::now()` panics on wasm32-unknown-unknown -- "time not
+# implemented on this platform" -- and the backend times every compile. This is
+# the same shim eframe uses, so it is already in the tree.
+web-time = "1"

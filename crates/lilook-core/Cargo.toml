@@ -1,0 +1,13 @@
+[package]
+name = "lilook-core"
+version = "0.1.0"
+edition = "2021"
+description = "Document model, intents and history for editing lilaq figures in Typst source."
+license = "MIT"
+
+[dependencies]
+typst-syntax = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]

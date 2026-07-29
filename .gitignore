@@ -1,0 +1,10 @@
+/target
+/site
+.vendor/
+.packages/
+__pycache__/
+*.pyc
+._lilook_probe_*.typ
+
+# wasm-bindgen output: 50 MB of generated binary, rebuilt by scripts/web.sh
+crates/lilook-web/pkg/

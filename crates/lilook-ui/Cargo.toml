@@ -1,0 +1,12 @@
+[package]
+name = "lilook-ui"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+lilook-core = { path = "../lilook-core" }
+egui = { workspace = true }
+
+[dev-dependencies]
+egui_kittest = "0.35"

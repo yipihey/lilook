@@ -1,0 +1,56 @@
+name: pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; a queued run should not overtake a running one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+
+      - name: fetch typst packages
+        run: scripts/fetch-packages.sh
+
+      # Pinned to the version in Cargo.lock: wasm-bindgen refuses a binary whose
+      # schema does not match the crate it generated against.
+      - name: install wasm-bindgen-cli
+        run: |
+          VERSION=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | grep '^version' | head -1 | cut -d'"' -f2)
+          echo "wasm-bindgen $VERSION"
+          cargo install wasm-bindgen-cli --version "$VERSION" --locked
+
+      - name: build
+        run: scripts/web.sh release --no-serve
+        env:
+          TYPST_PACKAGE_CACHE_PATH: ${{ github.workspace }}/.packages
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

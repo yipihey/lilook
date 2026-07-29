@@ -1,0 +1,1004 @@
+//! The document: Typst source, its CST, and the lilaq call sites within it.
+//!
+//! Phase 0 established that `typst_syntax` round-trips losslessly, so the
+//! source text is the single source of truth and every change is a surgical
+//! byte-range replacement. Nothing is ever regenerated from a model.
+
+use crate::edit::{Anchor, AppliedEdit, History};
+use crate::intent::Intent;
+use std::collections::HashMap;
+use std::ops::Range;
+use typst_syntax::{parse, LinkedNode, SyntaxKind, SyntaxNode};
+
+/// How editable an argument value is from a GUI control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Editability {
+    /// A literal we can bind straight to a widget.
+    Literal,
+    /// A known builtin constant (`red`, `auto`, `center`) -- editable, and the
+    /// widget can show its value.
+    Builtin,
+    /// A user `#let` binding. Read-only here; offer jump-to-definition.
+    Binding,
+    /// Computed, callable or otherwise outside the recognised profile.
+    Opaque,
+}
+
+/// Typst builtins that parse as bare identifiers. Phase 0 found that `red` and
+/// a user's `accent` are both `SyntaxKind::Ident`, so this table is what tells
+/// a colour swatch from a jump-to-definition.
+const BUILTIN_IDENTS: &[&str] = &[
+    "black", "gray", "silver", "white", "navy", "blue", "aqua", "teal", "eastern", "purple",
+    "fuchsia", "maroon", "red", "orange", "yellow", "olive", "green", "lime", "luma", "oklab",
+    "oklch", "rgb", "cmyk", "left", "center", "right", "top", "horizon", "bottom", "start", "end",
+    "ltr", "rtl", "ttb", "btt",
+];
+
+#[derive(Debug, Clone)]
+pub struct NamedArg {
+    pub name: String,
+    /// Byte range of the *value*, which is what an edit replaces.
+    pub value: Range<usize>,
+    pub editability: Editability,
+    pub text: String,
+}
+
+/// A positional argument -- a data slot. Unlike a named argument its identity
+/// is its index, and what the GUI can do with it depends on whether the user
+/// wrote a literal there or an expression.
+#[derive(Debug, Clone)]
+pub struct PositionalArg {
+    pub range: Range<usize>,
+    pub editability: Editability,
+    pub text: String,
+    /// Byte ranges of the elements, when this is a literal array. Empty
+    /// otherwise -- which is exactly the test for "can this point be dragged".
+    pub elements: Vec<Range<usize>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CallSite {
+    pub id: usize,
+    /// e.g. `lq.plot`
+    pub callee: String,
+    pub range: Range<usize>,
+    pub named: Vec<NamedArg>,
+    /// Positional arguments, in order.
+    pub positional: Vec<PositionalArg>,
+    /// True when the call is produced by a loop, closure or spread and so is
+    /// visible but not structurally editable.
+    pub generated: bool,
+    /// The nearest enclosing lilaq call, which is what makes a series belong to
+    /// a diagram. Nesting, not position: `lq.plot` inside `lq.diagram(..)` is a
+    /// child even when the source puts them on different lines.
+    pub parent: Option<usize>,
+}
+
+impl CallSite {
+    /// The name without its module prefix: `lq.plot` -> `plot`.
+    pub fn short_name(&self) -> &str {
+        self.callee.rsplit('.').next().unwrap_or(&self.callee)
+    }
+
+    /// The alias lilaq was imported under at this call site, e.g. `lq`.
+    pub fn module(&self) -> Option<&str> {
+        self.callee.rsplit_once('.').map(|(m, _)| m)
+    }
+
+    /// True when positional arguments 0 and 1 are the x and y data arrays, so
+    /// the compile backend can recover the plotted points from them.
+    pub fn is_xy_series(&self) -> bool {
+        XY_SERIES.contains(&self.short_name())
+    }
+
+    /// True when both data slots are literal arrays of the same length, which
+    /// is what makes an individual point draggable. Computed data is shown and
+    /// hit-tested but not moved: the edit would have to rewrite an expression.
+    pub fn has_literal_points(&self) -> bool {
+        match (self.positional.first(), self.positional.get(1)) {
+            (Some(x), Some(y)) => !x.elements.is_empty() && x.elements.len() == y.elements.len(),
+            _ => false,
+        }
+    }
+}
+
+/// lilaq constructors whose first two positional arguments are x and y. Checked
+/// against the generated schema by a test, so a lilaq release that reorders a
+/// signature fails loudly rather than silently mis-plotting a hit test.
+pub const XY_SERIES: &[&str] = &[
+    "plot",
+    "scatter",
+    "bar",
+    "hbar",
+    "stem",
+    "hstem",
+    "quiver",
+    "colormesh",
+    "contour",
+];
+
+/// A `#show: lq.set-tick(..)` and the region of the document it governs.
+///
+/// This is a show rule, not a property of a figure: it applies from where it
+/// appears to the end of its enclosing scope, so the same rule may restyle
+/// several figures or none. lilook edits set rules from a document-level panel
+/// rather than from a figure's inspector, because a panel that said "this
+/// diagram's ticks" would be claiming something Typst does not mean.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetRule {
+    /// The `lq.set-*` call site, which is an ordinary indexed call and so is
+    /// edited by the ordinary intents.
+    pub node: usize,
+    /// The element it configures: `tick`, `legend`, ...
+    pub element: String,
+    /// Bytes it governs: from the rule to the end of its enclosing block.
+    pub scope: Range<usize>,
+    /// True when the enclosing scope is the file itself.
+    pub document_level: bool,
+}
+
+/// One diagram and the series drawn inside it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Figure {
+    pub node: usize,
+    pub series: Vec<usize>,
+}
+
+pub struct Document {
+    text: String,
+    root: SyntaxNode,
+    calls: Vec<CallSite>,
+    anchors: HashMap<u64, Anchor>,
+    next_anchor: u64,
+    history: History,
+}
+
+impl Document {
+    pub fn new(text: impl Into<String>) -> Self {
+        let text = text.into();
+        let root = parse(&text);
+        let mut doc = Document {
+            text,
+            root,
+            calls: vec![],
+            anchors: HashMap::new(),
+            next_anchor: 0,
+            history: History::default(),
+        };
+        doc.reindex();
+        doc
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn calls(&self) -> &[CallSite] {
+        &self.calls
+    }
+
+    pub fn call(&self, id: usize) -> Option<&CallSite> {
+        self.calls.iter().find(|c| c.id == id)
+    }
+
+    /// Every `lq.diagram` in the document, with the series nested inside it.
+    ///
+    /// A series is a descendant rather than a direct child: `lq.diagram(..(
+    /// if flag { lq.plot(..) }))` still draws that plot, and the user still
+    /// expects to click it.
+    pub fn figures(&self) -> Vec<Figure> {
+        self.calls
+            .iter()
+            .filter(|c| c.short_name() == "diagram")
+            .map(|d| Figure {
+                node: d.id,
+                series: self
+                    .calls
+                    .iter()
+                    .filter(|c| c.is_xy_series() && self.descends_from(c.id, d.id))
+                    .map(|c| c.id)
+                    .collect(),
+            })
+            .collect()
+    }
+
+    /// Identifiers a fragment of the document depends on from outside itself.
+    ///
+    /// This is what makes copy/paste more than string handling: a copied series
+    /// routinely reads `#let x = lq.linspace(..)` defined elsewhere, and pasting
+    /// it somewhere that binding does not exist produces a document that will
+    /// not compile. The caller decides what to do about it -- carry the
+    /// bindings, or paste and report what is unresolved -- but it has to know.
+    ///
+    /// Bindings made *inside* the fragment (closure parameters, a local `#let`)
+    /// are not free, and neither are field names, argument names or builtins.
+    pub fn free_identifiers(&self, range: Range<usize>) -> Vec<String> {
+        let root = LinkedNode::new(&self.root);
+        let Some(node) = find_node(&root, &range) else {
+            return vec![];
+        };
+        let mut out = vec![];
+        let mut bound = vec![];
+        free_idents(&node, &self.text, &mut bound, &mut out);
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// The whole `#let name = ..` (or `#let name(..) = ..`) that binds `name` at
+    /// the top level, if any.
+    pub fn binding_of(&self, name: &str) -> Option<Range<usize>> {
+        let root = LinkedNode::new(&self.root);
+        let mut found = None;
+        find_binding(&root, &self.text, name, &mut found);
+        // The `#` is a markup token outside the `LetBinding` node, and a caller
+        // carrying this binding into another document needs the whole thing.
+        found.map(|r| match self.text[..r.start].ends_with('#') {
+            true => r.start - 1..r.end,
+            false => r,
+        })
+    }
+
+    /// Every `#show: lq.set-*(..)` in the document, with the region it governs.
+    pub fn set_rules(&self) -> Vec<SetRule> {
+        let mut out = vec![];
+        let root = LinkedNode::new(&self.root);
+        collect_set_rules(&root, self.text.len(), &mut out, &self.calls);
+        out.sort_by_key(|r| r.node);
+        out
+    }
+
+    /// The diagram a call site is drawn in, if any.
+    pub fn figure_of(&self, id: usize) -> Option<usize> {
+        let mut at = self.call(id)?.parent;
+        while let Some(p) = at {
+            let call = self.call(p)?;
+            if call.short_name() == "diagram" {
+                return Some(p);
+            }
+            at = call.parent;
+        }
+        None
+    }
+
+    fn descends_from(&self, mut id: usize, ancestor: usize) -> bool {
+        while let Some(p) = self.call(id).and_then(|c| c.parent) {
+            if p == ancestor {
+                return true;
+            }
+            id = p;
+        }
+        false
+    }
+
+    pub fn history_depth(&self) -> (usize, usize) {
+        self.history.depth()
+    }
+
+    /// Re-parse and rebuild the call index. Cheap enough at figure scale; the
+    /// incremental reparser is the optimisation, not a correctness requirement.
+    fn reindex(&mut self) {
+        self.root = parse(&self.text);
+        let mut calls = vec![];
+        let linked = LinkedNode::new(&self.root);
+        let mut id = 0usize;
+        collect(&linked, &self.text, &mut calls, &mut id, false, None);
+        self.calls = calls;
+    }
+
+    // ---------------------------------------------------------- transactions
+
+    /// Open a coalescing transaction (mousedown on a slider). Every intent
+    /// applied until `commit` becomes one undo step, and intents that rewrite
+    /// the same target collapse into a single edit -- which target is decided
+    /// per intent, not per transaction, because one gesture can drive several
+    /// parameters at once.
+    pub fn begin(&mut self, label: &str) {
+        self.history.begin(label);
+    }
+
+    /// Close it (mouseup). Everything in between is one undo step.
+    pub fn commit(&mut self) {
+        self.history.commit();
+    }
+
+    pub fn apply(&mut self, intent: Intent) -> Result<(), String> {
+        let edit = self.resolve(&intent)?;
+        let key = intent.coalesce_key();
+        self.splice(&edit);
+        self.history.record(edit, key);
+        Ok(())
+    }
+
+    fn splice(&mut self, edit: &AppliedEdit) {
+        self.text.replace_range(edit.range.clone(), &edit.after);
+        for a in self.anchors.values_mut() {
+            a.transform(edit);
+        }
+        self.reindex();
+    }
+
+    pub fn undo(&mut self) -> bool {
+        let Some(tx) = self.history.take_undo() else {
+            return false;
+        };
+        for e in tx.edits.iter().rev() {
+            let inv = e.inverse();
+            self.text.replace_range(inv.range.clone(), &inv.after);
+            for a in self.anchors.values_mut() {
+                a.transform(&inv);
+            }
+        }
+        self.reindex();
+        self.history.push_undone(tx);
+        true
+    }
+
+    pub fn redo(&mut self) -> bool {
+        let Some(tx) = self.history.take_redo() else {
+            return false;
+        };
+        for e in tx.edits.iter() {
+            self.text.replace_range(e.range.clone(), &e.after);
+            for a in self.anchors.values_mut() {
+                a.transform(e);
+            }
+        }
+        self.reindex();
+        self.history.push_done(tx);
+        true
+    }
+
+    // ---------------------------------------------------------- anchors
+
+    pub fn anchor(&mut self, offset: usize) -> u64 {
+        let id = self.next_anchor;
+        self.next_anchor += 1;
+        self.anchors.insert(id, Anchor::new(offset));
+        id
+    }
+
+    pub fn anchor_offset(&self, id: u64) -> Option<usize> {
+        self.anchors.get(&id).map(|a| a.offset)
+    }
+
+    // ---------------------------------------------------------- intents
+
+    /// What to put between the previous argument and a newly inserted one.
+    ///
+    /// A call whose argument list already spans lines gets a newline and the
+    /// indentation of the line the insertion lands on; a single-line call stays
+    /// on its line. Insertion used to always use a space, which was valid and
+    /// ugly, and the GUI now adds `xlim`/`ylim` on the first frame of every pan.
+    fn separator(&self, call_start: usize, at: usize) -> String {
+        if !self.text[call_start..at].contains('\n') {
+            return " ".to_string();
+        }
+        let line_start = self.text[..at].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let indent: String = self.text[line_start..at]
+            .chars()
+            .take_while(|c| *c == ' ' || *c == '\t')
+            .collect();
+        format!("\n{indent}")
+    }
+
+    /// Widen a range to swallow the comma that separated it from its
+    /// neighbours, so removing an argument does not leave `a,, c`.
+    fn with_separator(&self, range: Range<usize>) -> Range<usize> {
+        let after: usize = self.text[range.end..]
+            .char_indices()
+            .find(|(_, c)| !c.is_whitespace())
+            .filter(|(_, c)| *c == ',')
+            .map(|(i, c)| i + c.len_utf8())
+            .unwrap_or(0);
+        if after > 0 {
+            return range.start..range.end + after;
+        }
+        // Last argument: take the comma *before* it instead, plus the
+        // whitespace that came with it.
+        let head = &self.text[..range.start];
+        let trimmed = head.trim_end();
+        if trimmed.ends_with(',') {
+            return trimmed.len() - 1..range.end;
+        }
+        range
+    }
+
+    fn resolve(&self, intent: &Intent) -> Result<AppliedEdit, String> {
+        if let Some(value) = intent.value() {
+            check_expr(value)?;
+        }
+        match intent {
+            Intent::SetNamedArg { node, param, value } => {
+                let call = self
+                    .call(*node)
+                    .ok_or_else(|| format!("no call site {node}"))?;
+                let arg = call
+                    .named
+                    .iter()
+                    .find(|a| &a.name == param)
+                    .ok_or_else(|| format!("`{}` has no argument `{param}`", call.callee))?;
+                Ok(AppliedEdit {
+                    range: arg.value.clone(),
+                    before: self.text[arg.value.clone()].to_string(),
+                    after: value.clone(),
+                })
+            }
+            Intent::InsertNamedArg { node, param, value } => {
+                let call = self
+                    .call(*node)
+                    .ok_or_else(|| format!("no call site {node}"))?;
+                if call.named.iter().any(|a| &a.name == param) {
+                    return Err(format!("`{param}` already present"));
+                }
+                // Insert directly after the last existing argument, not before
+                // the closing paren -- a call written with a trailing comma and
+                // the paren on its own line otherwise yields `,\n, param: v)`.
+                let last_end = call
+                    .named
+                    .iter()
+                    .map(|a| a.value.end)
+                    .chain(call.positional.iter().map(|p| p.range.end))
+                    .max();
+                match last_end {
+                    Some(at) => Ok(AppliedEdit {
+                        range: at..at,
+                        before: String::new(),
+                        after: format!(",{}{param}: {value}", self.separator(call.range.start, at)),
+                    }),
+                    None => {
+                        // Empty argument list: insert just inside the parens.
+                        let open = self.text[call.range.clone()]
+                            .find('(')
+                            .map(|i| call.range.start + i + 1)
+                            .ok_or("call has no argument list")?;
+                        Ok(AppliedEdit {
+                            range: open..open,
+                            before: String::new(),
+                            after: format!("{param}: {value}"),
+                        })
+                    }
+                }
+            }
+            Intent::RemoveNamedArg { node, param } => {
+                let call = self
+                    .call(*node)
+                    .ok_or_else(|| format!("no call site {node}"))?;
+                let arg = call
+                    .named
+                    .iter()
+                    .find(|a| &a.name == param)
+                    .ok_or_else(|| format!("`{}` has no argument `{param}`", call.callee))?;
+                // The name starts before the value; take the whole `name: value`
+                // and the separator that goes with it.
+                let start = self.text[call.range.start..arg.value.start]
+                    .rfind(param)
+                    .map(|i| call.range.start + i)
+                    .ok_or("argument name not found")?;
+                let range = self.with_separator(start..arg.value.end);
+                Ok(AppliedEdit {
+                    range: range.clone(),
+                    before: self.text[range].to_string(),
+                    after: String::new(),
+                })
+            }
+            Intent::SetPositionalArg { node, index, value } => {
+                let call = self
+                    .call(*node)
+                    .ok_or_else(|| format!("no call site {node}"))?;
+                let arg = call.positional.get(*index).ok_or_else(|| {
+                    format!("`{}` has no positional argument {index}", call.callee)
+                })?;
+                Ok(AppliedEdit {
+                    range: arg.range.clone(),
+                    before: arg.text.clone(),
+                    after: value.clone(),
+                })
+            }
+            Intent::SetArrayElement {
+                node,
+                arg,
+                element,
+                value,
+            } => {
+                let call = self
+                    .call(*node)
+                    .ok_or_else(|| format!("no call site {node}"))?;
+                let slot = call
+                    .positional
+                    .get(*arg)
+                    .ok_or_else(|| format!("`{}` has no positional argument {arg}", call.callee))?;
+                let at = slot.elements.get(*element).ok_or_else(|| {
+                    if slot.elements.is_empty() {
+                        format!("argument {arg} is not a literal array")
+                    } else {
+                        format!("argument {arg} has no element {element}")
+                    }
+                })?;
+                Ok(AppliedEdit {
+                    range: at.clone(),
+                    before: self.text[at.clone()].to_string(),
+                    after: value.clone(),
+                })
+            }
+            Intent::InsertPositionalArg { node, value } => {
+                let call = self
+                    .call(*node)
+                    .ok_or_else(|| format!("no call site {node}"))?;
+                // Same rule as a named insertion: after the last argument, not
+                // before the closing paren.
+                let last_end = call
+                    .named
+                    .iter()
+                    .map(|a| a.value.end)
+                    .chain(call.positional.iter().map(|p| p.range.end))
+                    .max();
+                match last_end {
+                    Some(at) => Ok(AppliedEdit {
+                        range: at..at,
+                        before: String::new(),
+                        after: format!(",{}{value}", self.separator(call.range.start, at)),
+                    }),
+                    None => {
+                        let open = self.text[call.range.clone()]
+                            .find('(')
+                            .map(|i| call.range.start + i + 1)
+                            .ok_or("call has no argument list")?;
+                        Ok(AppliedEdit {
+                            range: open..open,
+                            before: String::new(),
+                            after: value.clone(),
+                        })
+                    }
+                }
+            }
+            Intent::RemoveNode { node } => {
+                let call = self
+                    .call(*node)
+                    .ok_or_else(|| format!("no call site {node}"))?;
+                // Take the separating comma too: leaving `a,, c` behind was a
+                // known gap, and it does not reparse as the same argument list.
+                let range = self.with_separator(call.range.clone());
+                Ok(AppliedEdit {
+                    range: range.clone(),
+                    before: self.text[range].to_string(),
+                    after: String::new(),
+                })
+            }
+            Intent::ReplaceRange { range, value } => Ok(AppliedEdit {
+                range: range.clone(),
+                before: self.text[range.clone()].to_string(),
+                after: value.clone(),
+            }),
+        }
+    }
+}
+
+/// Refuse a value that would not reparse.
+///
+/// Every consumer builds values as text -- a widget formats a number, an agent
+/// pastes a string through MCP -- and a single unbalanced paren would leave the
+/// user's manuscript broken in a way that is hard to attribute to lilook. This
+/// is the one place to catch it, and it is cheap: parsing an argument value is
+/// microseconds against the reparse the edit triggers anyway.
+///
+/// It checks syntax, not semantics: `stroke: 3` parses and is rejected later by
+/// typst, with a diagnostic that points at the argument. That is the right
+/// division -- lilook does not own lilaq's type rules.
+pub fn check_expr(value: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        return Err("empty value".into());
+    }
+    // Parsed *in an argument list*, which is where the value is going. Checking
+    // it as free-standing code would accept `let x = 1` -- valid code, invalid
+    // as an argument -- and would accept `1 2` as two expressions where the
+    // call site can only take one.
+    let node = typst_syntax::parse_code(&format!("__lilook_check({value})"));
+    let (errors, _) = node.errors_and_warnings();
+    match errors.first() {
+        Some(e) => Err(format!(
+            "`{value}` is not a valid argument value: {}",
+            e.message
+        )),
+        None => Ok(()),
+    }
+}
+
+/// Element ranges of a literal array node, or empty for anything else.
+///
+/// Typst writes a one-element array as `(1,)`, so the trailing comma is part of
+/// the syntax rather than a stray token; filtering by kind rather than by
+/// position is what keeps that case right.
+fn array_elements(node: &LinkedNode) -> Vec<Range<usize>> {
+    if node.kind() != SyntaxKind::Array {
+        return vec![];
+    }
+    node.children()
+        .filter(|c| {
+            !c.kind().is_trivia()
+                && !matches!(
+                    c.kind(),
+                    SyntaxKind::LeftParen | SyntaxKind::RightParen | SyntaxKind::Comma
+                )
+        })
+        .map(|c| c.range())
+        .collect()
+}
+
+/// The smallest node covering exactly this byte range.
+fn find_node<'a>(node: &LinkedNode<'a>, range: &Range<usize>) -> Option<LinkedNode<'a>> {
+    if node.range() == *range {
+        return Some(node.clone());
+    }
+    if !(node.range().start <= range.start && node.range().end >= range.end) {
+        return None;
+    }
+    node.children().find_map(|c| find_node(&c, range))
+}
+
+fn find_binding(node: &LinkedNode, text: &str, name: &str, out: &mut Option<Range<usize>>) {
+    if out.is_some() {
+        return;
+    }
+    if node.kind() == SyntaxKind::LetBinding {
+        let bound = node
+            .children()
+            .find(|c| matches!(c.kind(), SyntaxKind::Ident | SyntaxKind::Closure))
+            .and_then(|c| match c.kind() {
+                SyntaxKind::Ident => Some(c.range()),
+                // `#let f(x) = ..` binds the closure's own name.
+                _ => c
+                    .children()
+                    .find(|g| g.kind() == SyntaxKind::Ident)
+                    .map(|g| g.range()),
+            });
+        if bound.is_some_and(|r| &text[r] == name) {
+            *out = Some(node.range());
+            return;
+        }
+    }
+    for child in node.children() {
+        find_binding(&child, text, name, out);
+    }
+}
+
+/// Names Typst provides, on top of the colour and alignment constants the
+/// editability table already lists. Not exhaustive -- an unknown name is
+/// reported as free, which errs towards carrying a binding that was not needed
+/// rather than pasting something that will not compile.
+const BUILTIN_SCOPE: &[&str] = &[
+    "calc",
+    "sys",
+    "std",
+    "range",
+    "int",
+    "float",
+    "str",
+    "bool",
+    "array",
+    "dictionary",
+    "type",
+    "repr",
+    "panic",
+    "assert",
+    "eval",
+    "measure",
+    "layout",
+    "here",
+    "locate",
+    "query",
+    "counter",
+    "state",
+    "context",
+    "text",
+    "par",
+    "page",
+    "figure",
+    "image",
+    "table",
+    "grid",
+    "stack",
+    "place",
+    "rect",
+    "circle",
+    "line",
+    "path",
+    "polygon",
+    "box",
+    "block",
+    "pad",
+    "align",
+    "move",
+    "scale",
+    "rotate",
+    "hide",
+    "raw",
+    "link",
+    "label",
+    "ref",
+    "cite",
+    "bibliography",
+    "heading",
+    "list",
+    "enum",
+    "terms",
+    "emph",
+    "strong",
+    "sub",
+    "super",
+    "underline",
+    "overline",
+    "strike",
+    "highlight",
+    "smallcaps",
+    "upper",
+    "lower",
+    "datetime",
+    "duration",
+    "symbol",
+    "emoji",
+    "color",
+    "gradient",
+    "pattern",
+    "tiling",
+    "stroke",
+    "length",
+    "angle",
+    "ratio",
+    "relative",
+    "fraction",
+    "alignment",
+    "direction",
+    "selector",
+    "regex",
+    "version",
+    "bytes",
+    "content",
+    "arguments",
+    "function",
+    "module",
+    "metadata",
+    "numbering",
+    "lorem",
+    "read",
+    "csv",
+    "json",
+    "toml",
+    "yaml",
+    "xml",
+    "cbor",
+    "plugin",
+    "curve",
+    "polygon",
+];
+
+fn free_idents(node: &LinkedNode, text: &str, bound: &mut Vec<String>, out: &mut Vec<String>) {
+    match node.kind() {
+        SyntaxKind::Ident => {
+            let name = &text[node.range()];
+            let parent = node.parent();
+            let is_field = parent.is_some_and(|p| {
+                // `lq.plot`: the tail is a field of `lq`, not a name in scope.
+                p.kind() == SyntaxKind::FieldAccess
+                    && p.children().next().map(|c| c.range()) != Some(node.range())
+            });
+            let is_arg_name = parent.is_some_and(|p| {
+                p.kind() == SyntaxKind::Named
+                    && p.children().next().map(|c| c.range()) == Some(node.range())
+            });
+            if !is_field
+                && !is_arg_name
+                && !bound.iter().any(|b| b == name)
+                && !BUILTIN_IDENTS.contains(&name)
+                && !BUILTIN_SCOPE.contains(&name)
+                && !matches!(name, "none" | "auto" | "true" | "false")
+            {
+                out.push(name.to_string());
+            }
+            return;
+        }
+        // A closure binds its parameters for its whole body, and a `#let` binds
+        // its name for everything after it in the same scope. Both are handled
+        // by pushing onto `bound` before descending.
+        SyntaxKind::Closure | SyntaxKind::LetBinding => {
+            let before = bound.len();
+            for child in node.children() {
+                if matches!(child.kind(), SyntaxKind::Params | SyntaxKind::Destructuring) {
+                    collect_bound(&child, text, bound);
+                } else if child.kind() == SyntaxKind::Ident && node.kind() == SyntaxKind::LetBinding
+                {
+                    bound.push(text[child.range()].to_string());
+                    continue;
+                }
+                free_idents(&child, text, bound, out);
+            }
+            // A `#let` stays bound for the rest of the fragment; a closure's
+            // parameters do not outlive it.
+            if node.kind() == SyntaxKind::Closure {
+                bound.truncate(before);
+            }
+            return;
+        }
+        _ => {}
+    }
+    for child in node.children() {
+        free_idents(&child, text, bound, out);
+    }
+}
+
+fn collect_bound(node: &LinkedNode, text: &str, bound: &mut Vec<String>) {
+    if node.kind() == SyntaxKind::Ident {
+        bound.push(text[node.range()].to_string());
+    }
+    for child in node.children() {
+        collect_bound(&child, text, bound);
+    }
+}
+
+fn collect_set_rules(
+    node: &LinkedNode,
+    file_len: usize,
+    out: &mut Vec<SetRule>,
+    calls: &[CallSite],
+) {
+    if node.kind() == SyntaxKind::ShowRule {
+        // `#show: lq.set-tick(..)` -- the transform is the last expression, and
+        // it is already in the call index, so the rule reuses its node id and
+        // every existing intent works on it unchanged.
+        if let Some(call) = node
+            .children()
+            .rfind(|c| c.kind() == SyntaxKind::FuncCall)
+            .and_then(|c| {
+                let r = c.range();
+                calls.iter().find(|k| k.range == r)
+            })
+        {
+            if let Some(element) = call.short_name().strip_prefix("set-") {
+                // The rule governs from here to the end of the block it is in.
+                let mut at = node.parent();
+                let mut scope_end = file_len;
+                let mut document_level = true;
+                while let Some(p) = at {
+                    if matches!(p.kind(), SyntaxKind::CodeBlock | SyntaxKind::ContentBlock) {
+                        scope_end = p.range().end;
+                        document_level = false;
+                        break;
+                    }
+                    at = p.parent();
+                }
+                out.push(SetRule {
+                    node: call.id,
+                    element: element.to_string(),
+                    scope: node.range().start..scope_end.max(node.range().end),
+                    document_level,
+                });
+            }
+        }
+    }
+    for child in node.children() {
+        collect_set_rules(&child, file_len, out, calls);
+    }
+}
+
+fn classify(node: &SyntaxNode, text: &str, range: &Range<usize>) -> Editability {
+    match node.kind() {
+        SyntaxKind::Int
+        | SyntaxKind::Float
+        | SyntaxKind::Numeric
+        | SyntaxKind::Str
+        | SyntaxKind::Bool
+        | SyntaxKind::None
+        | SyntaxKind::Auto => Editability::Literal,
+        SyntaxKind::Ident => {
+            if BUILTIN_IDENTS.contains(&&text[range.clone()]) {
+                Editability::Builtin
+            } else {
+                Editability::Binding
+            }
+        }
+        SyntaxKind::Array | SyntaxKind::Dict | SyntaxKind::ContentBlock => Editability::Literal,
+        // A call to a builtin constructor is a value literal in everything but
+        // syntax: `rgb("#4c72b0")` and `luma(50%)` are colours a swatch can
+        // edit. A call to anything else -- `calc.sin(x)`, `lq.linspace(..)` --
+        // stays opaque, because rewriting it would mean rewriting a program.
+        SyntaxKind::FuncCall => {
+            let callee = node.children().next();
+            match callee.map(|c| (c.kind(), c.leaf_text())) {
+                Some((SyntaxKind::Ident, name)) if BUILTIN_IDENTS.contains(&name.as_str()) => {
+                    Editability::Builtin
+                }
+                _ => Editability::Opaque,
+            }
+        }
+        _ => Editability::Opaque,
+    }
+}
+
+fn collect(
+    node: &LinkedNode,
+    text: &str,
+    out: &mut Vec<CallSite>,
+    id: &mut usize,
+    in_generator: bool,
+    parent: Option<usize>,
+) {
+    // A closure or spread below this point means any call inside is generated.
+    let generator = in_generator
+        || matches!(
+            node.kind(),
+            SyntaxKind::Closure | SyntaxKind::Spread | SyntaxKind::ForLoop
+        );
+    let mut parent = parent;
+
+    if node.kind() == SyntaxKind::FuncCall {
+        // `SyntaxNode::into_text` went away in typst-syntax 0.15; slicing the
+        // buffer by the node's range is equivalent and skips the clone.
+        let callee = node
+            .children()
+            .next()
+            .map(|c| text[c.range()].to_string())
+            .unwrap_or_default();
+        if callee.starts_with("lq.") {
+            let mut named = vec![];
+            let mut positional = vec![];
+            for child in node.children() {
+                if child.kind() != SyntaxKind::Args {
+                    continue;
+                }
+                for arg in child.children() {
+                    match arg.kind() {
+                        SyntaxKind::Named => {
+                            let name = arg
+                                .children()
+                                .next()
+                                .map(|x| text[x.range()].to_string())
+                                .unwrap_or_default();
+                            if let Some(v) = arg
+                                .children()
+                                .rfind(|c| !c.kind().is_trivia() && c.kind() != SyntaxKind::Colon)
+                            {
+                                let r = v.range();
+                                named.push(NamedArg {
+                                    name,
+                                    editability: classify(v.get(), text, &r),
+                                    text: text[r.clone()].to_string(),
+                                    value: r,
+                                });
+                            }
+                        }
+                        k if !k.is_trivia()
+                            && !matches!(
+                                k,
+                                SyntaxKind::LeftParen | SyntaxKind::RightParen | SyntaxKind::Comma
+                            ) =>
+                        {
+                            let r = arg.range();
+                            positional.push(PositionalArg {
+                                editability: classify(arg.get(), text, &r),
+                                text: text[r.clone()].to_string(),
+                                elements: array_elements(&arg),
+                                range: r,
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            out.push(CallSite {
+                id: *id,
+                callee,
+                range: node.range(),
+                named,
+                positional,
+                generated: generator,
+                parent,
+            });
+            // Anything nested below this call belongs to it.
+            parent = Some(*id);
+            *id += 1;
+        }
+    }
+    for child in node.children() {
+        collect(&child, text, out, id, generator, parent);
+    }
+}

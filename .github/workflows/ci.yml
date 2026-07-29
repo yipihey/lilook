@@ -1,0 +1,59 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+
+      # The browser build bakes the lilaq package tree into the binary, and a
+      # runner has no typst cache to bake it from.
+      - name: fetch typst packages
+        run: scripts/fetch-packages.sh
+
+      - name: fmt
+        run: cargo fmt --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+        env:
+          TYPST_PACKAGE_CACHE_PATH: ${{ github.workspace }}/.packages
+
+      # The compile-backed tests need lilaq itself. They skip themselves when it
+      # is unavailable, so point them at the same cache rather than letting the
+      # suite quietly shrink.
+      - name: test
+        run: cargo test --workspace
+        env:
+          TYPST_PACKAGE_CACHE_PATH: ${{ github.workspace }}/.packages
+          XDG_CACHE_HOME: ${{ github.workspace }}/.cache
+
+      - name: wasm targets
+        run: |
+          cargo check --target wasm32-unknown-unknown -p lilook-core -p lilook-ui -p lilook-editor
+          cargo check --target wasm32-unknown-unknown -p lilook-compile --no-default-features
+          cargo check --target wasm32-unknown-unknown -p lilook-web
+        env:
+          TYPST_PACKAGE_CACHE_PATH: ${{ github.workspace }}/.packages
+
+      # The gate that catches what round-trip tests cannot: does edited output
+      # still compile? Every gallery example is a real figure, so they are the
+      # cheapest possible corpus for it.
+      - name: examples compile under typst
+        run: |
+          cargo build --bin lilook
+          for f in crates/lilook-web/examples/*.typ; do
+            ./target/debug/lilook inspect "$f" > /dev/null
+          done
