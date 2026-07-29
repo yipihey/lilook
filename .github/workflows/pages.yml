@@ -28,6 +28,11 @@ jobs:
       - name: fetch typst packages
         run: scripts/fetch-packages.sh
 
+      # Without binaryen `scripts/web.sh` skips its own optimisation step and
+      # ships a module several MB larger, quietly.
+      - name: install binaryen
+        run: sudo apt-get update && sudo apt-get install -y binaryen
+
       # Pinned to the version in Cargo.lock: wasm-bindgen refuses a binary whose
       # schema does not match the crate it generated against.
       - name: install wasm-bindgen-cli
