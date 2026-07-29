@@ -23,14 +23,16 @@ public final class LilookDocument {
     }
 
     public init(source: String) throws {
+        // `LilookDoc` is an opaque struct in the header, so Swift imports every
+        // `LilookDoc *` as an `OpaquePointer` -- there is nothing to convert.
         guard let h = source.withCString({ lilook_doc_new($0) }) else {
             throw Failure.couldNotCreate
         }
-        handle = OpaquePointer(h)
+        handle = h
     }
 
     deinit {
-        lilook_doc_free(UnsafeMutablePointer(handle))
+        lilook_doc_free(handle)
     }
 
     /// Copies an owned C string out and releases it.
@@ -41,7 +43,7 @@ public final class LilookDocument {
     }
 
     public var source: String {
-        Self.take(lilook_doc_text(UnsafePointer(handle))) ?? ""
+        Self.take(lilook_doc_text(handle)) ?? ""
     }
 
     // MARK: - Call sites
@@ -67,7 +69,7 @@ public final class LilookDocument {
     }
 
     public var calls: [CallSite] {
-        guard let json = Self.take(lilook_doc_calls_json(UnsafePointer(handle))),
+        guard let json = Self.take(lilook_doc_calls_json(handle)),
               let data = json.data(using: .utf8),
               let decoded = try? JSONDecoder().decode([CallSite].self, from: data)
         else { return [] }
@@ -80,13 +82,13 @@ public final class LilookDocument {
     /// which is why this is exposed rather than inferred per edit. Which edits
     /// collapse together is decided per intent by the core.
     public func begin(label: String) {
-        label.withCString { l in
-            lilook_doc_begin(UnsafeMutablePointer(handle), l)
+        _ = label.withCString { l in
+            lilook_doc_begin(handle, l)
         }
     }
 
     public func commit() {
-        lilook_doc_commit(UnsafeMutablePointer(handle))
+        lilook_doc_commit(handle)
     }
 
     private func apply(_ intent: [String: Any]) throws {
@@ -94,7 +96,7 @@ public final class LilookDocument {
         let json = String(decoding: data, as: UTF8.self)
         var err: UnsafeMutablePointer<CChar>?
         let rc = json.withCString {
-            lilook_doc_apply_json(UnsafeMutablePointer(handle), $0, &err)
+            lilook_doc_apply_json(handle, $0, &err)
         }
         if rc != 0 {
             throw Failure.apply(Self.take(err) ?? "apply failed (\(rc))")
@@ -111,15 +113,15 @@ public final class LilookDocument {
 
     @discardableResult
     public func undo() -> Bool {
-        lilook_doc_undo(UnsafeMutablePointer(handle)) == 1
+        lilook_doc_undo(handle) == 1
     }
 
     @discardableResult
     public func redo() -> Bool {
-        lilook_doc_redo(UnsafeMutablePointer(handle)) == 1
+        lilook_doc_redo(handle) == 1
     }
 
     public var undoDepth: Int {
-        Int(lilook_doc_undo_depth(UnsafePointer(handle)))
+        Int(lilook_doc_undo_depth(handle))
     }
 }

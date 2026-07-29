@@ -1,0 +1,12 @@
+{
+  "": {
+    "swift-dependencies": "/Users/tabel/Projects/lilook/lilook.rs/swift/.build/arm64-apple-macosx/debug/LilookPackageTests.build/primary.swiftdeps"
+  },
+  "/Users/tabel/Projects/lilook/lilook.rs/swift/.build/arm64-apple-macosx/debug/LilookPackageTests.derived/runner.swift": {
+    "dependencies": "/Users/tabel/Projects/lilook/lilook.rs/swift/.build/arm64-apple-macosx/debug/LilookPackageTests.build/runner.d",
+    "object": "/Users/tabel/Projects/lilook/lilook.rs/swift/.build/arm64-apple-macosx/debug/LilookPackageTests.build/runner.swift.o",
+    "swiftmodule": "/Users/tabel/Projects/lilook/lilook.rs/swift/.build/arm64-apple-macosx/debug/LilookPackageTests.build/runner~partial.swiftmodule",
+    "swift-dependencies": "/Users/tabel/Projects/lilook/lilook.rs/swift/.build/arm64-apple-macosx/debug/LilookPackageTests.build/runner.swiftdeps",
+    "diagnostics": "/Users/tabel/Projects/lilook/lilook.rs/swift/.build/arm64-apple-macosx/debug/LilookPackageTests.build/runner.dia"
+  }
+}

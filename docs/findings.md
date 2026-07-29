@@ -904,3 +904,28 @@ So the remaining cuts are not available from this side of the dependency wall.
 They need feature flags in `typst-render` (PDF and SVG image support) or
 `typst-library` (plugins), or a fork of them. That is a well-formed upstream
 request rather than a local task, and these numbers are what it should carry.
+
+## Swift, compiled at last
+
+The package had never been built: there was no toolchain in the container where
+it was written, so "written, not compiled" stood for months. There is one here
+now, and the verdict is mild -- it was wrong in exactly one way, uniformly.
+
+`LilookDoc` is an opaque struct in the header, so Swift imports every
+`LilookDoc *` as an `OpaquePointer`. The wrapper had been written as though it
+imported as a typed pointer, and wrapped its handle in
+`UnsafeMutablePointer(handle)` or `UnsafePointer(handle)` at every call site.
+Every one of those is a type error; none of them is a design error. Removing the
+conversions was the whole fix, and then all three tests passed first time --
+including `testDragCoalescesIntoOneUndoStep`, which asserts the transaction
+contract from the far side of the C ABI.
+
+`scripts/swift.sh --ios` also builds `Lilook.xcframework` with both slices
+(`ios-arm64`, `ios-arm64-simulator`) from the two Rust iOS targets. That was
+listed as the blocker for iOS; it turned out to be about fifteen lines of
+`xcodebuild`. The FFI static library is 20.6 MB per slice unstripped, which is
+the document model and nothing else -- no typesetter, because `lilook-ffi`
+depends on `lilook-core` alone.
+
+What is still untested is the *SwiftUI* part: `FigureView` compiles, and nobody
+has ever looked at it on a device. Compiling is not seeing.

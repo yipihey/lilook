@@ -36,6 +36,11 @@ echo "edited output recompiles cleanly"
 # compiles in process: `tests/gestures.rs` drives a pan and a point drag through
 # the document and recompiles the result. Nothing here needs a display.
 
+# The Swift package, where there is a toolchain for it. It consumes the same C
+# ABI as the Python binding, and its test suite asserts the same
+# drag-is-one-undo-step contract from the other side of the boundary.
+scripts/swift.sh
+
 # The browser path. `lilook-web`'s own tests run natively -- they drive the
 # browser app through a real egui context and compile every gallery example
 # against the bundled packages -- so the only thing a browser adds is pixels.

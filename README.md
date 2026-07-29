@@ -32,11 +32,11 @@ figures carrying the bindings they need. 90 tests green.
 | `lilook-web` | browser shell: gallery of lilaq examples, wasm | working, 4 tests |
 | `lilook-ffi` | C ABI for Swift / Python / Julia | working |
 | `bindings/python` | ctypes wrapper | working |
-| `swift/` | SwiftUI package | **never compiled — no toolchain was available** |
+| `swift/` | SwiftUI package | working, 3 tests; iOS XCFramework builds |
 
-Done: M0–M10 of `docs/plan-1.0.md`, browser build included. The same editor runs
-in a window and in a page; only the shell differs. Not done: the resize gesture,
-and anything Swift.
+Done: M0–M10 of `docs/plan-1.0.md`, browser build included, and the Swift
+package now compiles and passes its tests. The same editor runs in a window and
+in a page; only the shell differs.
 
 Read `docs/findings.md` for what was actually measured versus assumed. Several
 early assumptions were overturned by measurement; the document records both.
@@ -101,6 +101,18 @@ duplicate · `⌫` delete. Drag inside a diagram to pan the data, scroll to zoom
 it, drag a point of a selected literal series to move it, and drag the right or
 bottom edge of the axis frame to resize the figure -- `width` and `height` *are*
 the data area's dimensions, so the frame follows the pointer exactly.
+
+### Swift and iOS
+
+```sh
+scripts/swift.sh            # build the package and run its tests
+scripts/swift.sh --ios      # also build target/ios/Lilook.xcframework
+```
+
+The package wraps the same C ABI as the Python binding. It had never been
+compiled before -- there was no toolchain where it was written -- and what
+review had missed was uniform: every `LilookDoc *` imports as an
+`OpaquePointer`, so the pointer conversions around the handle were all wrong.
 
 ### CLI
 
