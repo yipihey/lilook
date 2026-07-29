@@ -81,9 +81,11 @@ Opens a gallery of lilaq's own documentation examples -- the stacked area chart
 among them -- each editable by pointer *and* by text, with typst compiling in
 the page. Measured there: 3-16 ms per recompile on these figures.
 
-The first load is large (about 18 MB gzipped) because the page carries the whole
-typesetter, its fonts and the lilaq packages. After that nothing goes over the
-network, and nothing is uploaded: a figure edited in the browser never leaves it.
+The first load is about 12 MB gzipped, because the page carries a whole
+typesetter: 10.5 MB of wasm and 1.6 MB of fonts, cached separately. After that
+nothing goes over the network, and nothing is uploaded -- a figure edited in the
+browser never leaves it. `docs/findings.md` records where the weight is and what
+the next lever would be.
 
 ### Keys
 

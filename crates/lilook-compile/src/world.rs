@@ -61,6 +61,23 @@ impl<L: FileLoader + Send + Sync> LilookWorld<L> {
         }
     }
 
+    /// Register a font from raw bytes, returning how many faces it contained.
+    ///
+    /// This is how a browser build gets its fonts: typst's embedded set is
+    /// 9.6 MB, which is 60% of the download and mostly faces a lilaq figure
+    /// never asks for. Fetching the two or three it does need, separately and
+    /// cached, is both smaller and faster to start.
+    pub fn add_font_data(&mut self, data: impl Into<Vec<u8>>) -> usize {
+        let bytes = typst::foundations::Bytes::new(data.into());
+        let mut n = 0;
+        for font in typst::text::Font::iter(bytes) {
+            let info = font.info().clone();
+            self.fonts.push((font, info));
+            n += 1;
+        }
+        n
+    }
+
     /// Add more fonts, e.g. the system's.
     pub fn with_fonts(
         mut self,

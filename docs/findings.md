@@ -836,3 +836,46 @@ pointer -- and the areas are editable as text, in the same window, against the
 same live figure. That is exactly why the answer to "GUI or text" is "both": the
 GUI is honest about what it can safely rewrite, and the text pane covers the
 rest without a mode switch.
+
+## Where the browser bundle's weight actually is
+
+Measured, because every guess about this was wrong.
+
+| | raw | gzipped |
+| --- | --- | --- |
+| first build (ordinary release, fonts embedded) | 50.9 MB | 19.5 MB |
+| `wasm-release` profile + `wasm-opt -Oz` | 27.0 MB | 10.5 MB |
+| four fonts fetched separately instead of 9.6 MB embedded | +2.3 MB | +1.6 MB |
+| **what a browser downloads now** | | **12.1 MB** |
+
+The `wasm-release` profile is `opt-level = "s"`, thin LTO, `panic = "abort"`,
+stripped. Fat LTO was tried and abandoned: it ran for over twenty minutes
+without finishing and `wasm-opt -Oz` does the same work afterwards. `wasm-opt`
+needs `-all`, because wasm-bindgen emits reference types and bulk memory that
+binaryen rejects by default -- and the failure is a validation error, so a build
+script that does not check it silently ships the unoptimised module.
+
+**Fonts were 60% of the download**, not of the binary: 9.6 MB raw compresses to
+6.3 MB, while code compresses four-fold. A lilaq figure asks for four faces --
+Libertinus Serif regular, italic and bold, and NewCM Math -- which come to
+1.6 MB gzipped, fetched alongside the module and cached separately.
+
+Getting that list wrong fails *silently*: the figure lays out identically and
+every label comes out blank, because a missing family is a warning typst prints
+and then carries on from. `the_four_fetched_fonts_are_enough_to_draw_a_labelled_figure`
+compiles with exactly those four and asserts nothing complains.
+
+## The remaining 11 MB, and why it stays for now
+
+The wasm is 15 MB of code and 12 MB of data, and the data is almost entirely
+`icu_segmenter_data`: line-breaking dictionaries and LSTM models for Thai,
+Khmer, Burmese and CJK. A lilaq figure never breaks a line in those scripts.
+
+It cannot be turned off from here. `typst-layout` depends on `icu_segmenter`
+without `default-features = false`, so the `auto` and `compiled_data` features
+arrive with the defaults, and Cargo has no mechanism for disabling another
+crate's default features -- features are additive by design. The routes are
+upstream (a feature flag in `typst-layout`) or vendoring a stub
+`icu_segmenter_data` through `[patch.crates-io]`, which trades 11 MB against
+correct line breaking in scripts lilook does not claim to support. Worth doing
+if the demo goes on a documentation page; not worth doing blind.

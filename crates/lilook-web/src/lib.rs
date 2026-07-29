@@ -17,6 +17,16 @@ const SCHEMA: &str = include_str!("../../../assets/lilaq-0.6.0.schema.json");
 /// The lilaq packages, baked in by `build.rs`.
 const PACKAGES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/packages.bin"));
 
+/// The font files the page fetches, in the order `index.html` lists them.
+/// Keeping the list here rather than only in the HTML is what lets a test check
+/// it is sufficient -- a missing face is invisible, not an error.
+pub const WEB_FONTS: &[&str] = &[
+    "LibertinusSerif-Regular.otf",
+    "LibertinusSerif-Italic.otf",
+    "LibertinusSerif-Bold.otf",
+    "NewCMMath-Book.otf",
+];
+
 /// The gallery. Each is a real lilaq figure, compiled by CI before it ships.
 pub const EXAMPLES: &[(&str, &str)] = &[
     (
@@ -67,6 +77,17 @@ impl Default for WebApp {
 }
 
 impl WebApp {
+    /// `fonts` are raw font files, fetched by the page. Without at least one
+    /// text face typst can still lay a figure out, but every label comes out
+    /// empty -- so a caller that has none gets a figure it cannot read.
+    pub fn with_fonts(fonts: Vec<Vec<u8>>) -> Self {
+        let mut app = Self::new();
+        for data in fonts {
+            app.backend.add_font_data(data);
+        }
+        app
+    }
+
     pub fn new() -> Self {
         let schema = Schema::from_json(SCHEMA).expect("bundled schema");
         let editor = Editor::new(EXAMPLES[0].1, schema);
@@ -177,15 +198,23 @@ impl WebApp {
     }
 }
 
-/// The browser entry point. Native builds of the workspace compile this crate
-/// too -- it shares the workspace lock -- so the part that only exists in a
-/// browser is gated rather than the whole crate being excluded.
+/// The browser entry point, called by `index.html` once it has fetched the
+/// fonts. Native builds of the workspace compile this crate too -- it shares
+/// the workspace lock -- so the part that only exists in a browser is gated
+/// rather than the whole crate being excluded.
 #[cfg(target_arch = "wasm32")]
-#[wasm_bindgen::prelude::wasm_bindgen(start)]
-pub fn start() -> Result<(), wasm_bindgen::JsValue> {
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn start(fonts: js_sys::Array) -> Result<(), wasm_bindgen::JsValue> {
     use wasm_bindgen::JsCast as _;
     console_error_panic_hook::set_once();
     eframe::WebLogger::init(log::LevelFilter::Debug).ok();
+
+    let fonts: Vec<Vec<u8>> = fonts
+        .iter()
+        .filter_map(|v| v.dyn_into::<js_sys::Uint8Array>().ok())
+        .map(|a| a.to_vec())
+        .collect();
+
     let canvas = web_sys::window()
         .and_then(|w| w.document())
         .and_then(|d| d.get_element_by_id("lilook"))
@@ -197,7 +226,7 @@ pub fn start() -> Result<(), wasm_bindgen::JsValue> {
             .start(
                 canvas,
                 eframe::WebOptions::default(),
-                Box::new(|_cc| Ok(Box::new(WebApp::new()))),
+                Box::new(move |_cc| Ok(Box::new(WebApp::with_fonts(fonts)))),
             )
             .await
             .expect("failed to start eframe");

@@ -41,6 +41,16 @@
     // below yields decompressed bytes, and the bar would fill to 250%.
     const EXPECTED = Number("__WASM_BYTES__") || 0;
 
+    // The faces a lilaq figure asks for: typst's default text font, its italic
+    // and bold, and the maths font. The other 6 MB of typst's font set is not
+    // fetched at all.
+    const FONTS = [
+      "LibertinusSerif-Regular.otf",
+      "LibertinusSerif-Italic.otf",
+      "LibertinusSerif-Bold.otf",
+      "NewCMMath-Book.otf",
+    ];
+
     async function load(url) {
       const res = await fetch(url);
       if (!res.ok) throw new Error(`${res.status} ${res.statusText} for ${url}`);
@@ -69,15 +79,27 @@
     }
 
     try {
+      // Fonts first, and in parallel: they are small, and the module is the
+      // thing worth showing a bar for.
+      const fonts = Promise.all(
+        FONTS.map(f =>
+          fetch(`./pkg/fonts/${f}`)
+            .then(r => (r.ok ? r.arrayBuffer() : null))
+            .then(b => (b ? new Uint8Array(b) : null))
+            .catch(() => null)
+        )
+      );
+
       const bytes = await load("./pkg/lilook_web_bg.wasm");
       detail.textContent = "starting typst…";
       fill.style.width = "100%";
-      const { default: init } = await import("./pkg/lilook_web.js");
+      const { default: init, start } = await import("./pkg/lilook_web.js");
       try {
         await init({ module_or_path: bytes });
       } catch {
         await init(bytes);
       }
+      start((await fonts).filter(Boolean));
       boot.remove();
     } catch (e) {
       const why = e && (e.stack || e.message) ? (e.name + ": " + e.message) : String(e);

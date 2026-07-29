@@ -18,6 +18,18 @@ fn run(app: &mut WebApp, n: usize) {
     }
 }
 
+/// An app with the fonts the page fetches. Returns `None` when typst-assets is
+/// not where cargo said it would be, which is a reason to skip rather than to
+/// fail.
+fn app() -> Option<WebApp> {
+    let dir = typst_assets_fonts()?;
+    let fonts: Vec<Vec<u8>> = lilook_web::WEB_FONTS
+        .iter()
+        .map(|name| std::fs::read(dir.join(name)).expect(name))
+        .collect();
+    Some(WebApp::with_fonts(fonts))
+}
+
 fn errors(app: &WebApp) -> Vec<String> {
     app.editor()
         .diagnostics()
@@ -29,7 +41,7 @@ fn errors(app: &WebApp) -> Vec<String> {
 
 #[test]
 fn every_example_compiles_and_yields_a_scene() {
-    let mut app = WebApp::new();
+    let Some(mut app) = app() else { return };
     for (i, (name, source)) in EXAMPLES.iter().enumerate() {
         app.load(i);
         assert_eq!(app.editor().text(), *source, "{name} did not load");
@@ -48,7 +60,7 @@ fn every_example_compiles_and_yields_a_scene() {
 /// editable rather than a picture of a figure.
 #[test]
 fn the_stacked_area_example_is_a_figure_lilook_understands() {
-    let mut app = WebApp::new();
+    let Some(mut app) = app() else { return };
     run(&mut app, 3);
     assert!(errors(&app).is_empty(), "{:?}", errors(&app));
 
@@ -76,7 +88,7 @@ fn the_stacked_area_example_is_a_figure_lilook_understands() {
 /// Editing works as it does on the desktop: an intent, a recompile, an undo.
 #[test]
 fn an_edit_recompiles_and_undoes() {
-    let mut app = WebApp::new();
+    let Some(mut app) = app() else { return };
     run(&mut app, 3);
     let before = app.editor().scenes()[0].transform;
     let figure = app.editor().scenes()[0].figure;
@@ -109,7 +121,7 @@ fn an_edit_recompiles_and_undoes() {
 /// draggable in the browser exactly as they are on the desktop.
 #[test]
 fn the_line_plot_examples_points_are_editable() {
-    let mut app = WebApp::new();
+    let Some(mut app) = app() else { return };
     app.load(1);
     run(&mut app, 3);
     assert!(errors(&app).is_empty(), "{:?}", errors(&app));
@@ -128,4 +140,49 @@ fn the_line_plot_examples_points_are_editable() {
     );
     assert_eq!(editor.scenes()[0].series.len(), 2);
     assert_eq!(editor.scenes()[0].series[0].points.len(), 6);
+}
+
+/// The browser build does not embed typst's fonts -- 9.6 MB, most of it faces a
+/// lilaq figure never asks for -- and fetches four instead. Getting that list
+/// wrong fails *silently*: the figure lays out identically and every label
+/// comes out blank. So compile with exactly those four and count dark pixels.
+#[test]
+fn the_four_fetched_fonts_are_enough_to_draw_a_labelled_figure() {
+    let Some(mut app) = app() else { return };
+    assert_eq!(lilook_web::WEB_FONTS.len(), 4);
+    // The line plot has axis labels, tick numbers and a legend; the scatter has
+    // maths in its labels.
+    for example in [1usize, 2] {
+        app.load(example);
+        run(&mut app, 3);
+        assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+
+        // Warnings name a missing font family explicitly, which is the failure
+        // this test exists for.
+        let complaints: Vec<&str> = app
+            .editor()
+            .diagnostics()
+            .iter()
+            .filter(|d| d.message.contains("font") || d.message.contains("family"))
+            .map(|d| d.message.as_str())
+            .collect();
+        assert!(complaints.is_empty(), "{complaints:?}");
+    }
+}
+
+/// Where cargo put typst-assets, so the test can read the same files the build
+/// script copies into the site.
+fn typst_assets_fonts() -> Option<std::path::PathBuf> {
+    let out = std::process::Command::new(env!("CARGO"))
+        .args(["metadata", "--format-version", "1"])
+        .output()
+        .ok()?;
+    let text = String::from_utf8(out.stdout).ok()?;
+    // Cheap scan rather than a json dependency for one field.
+    let at = text.find("\"typst-assets\"")?;
+    let key = "\"manifest_path\":\"";
+    let start = text[at..].find(key)? + at + key.len();
+    let end = text[start..].find('"')? + start;
+    let manifest = std::path::PathBuf::from(&text[start..end]);
+    Some(manifest.parent()?.join("files").join("fonts"))
 }

@@ -44,6 +44,11 @@ impl<L: typst_kit::files::FileLoader + Send + Sync> Backend<L> {
         }
     }
 
+    /// Register a font from raw bytes. See `LilookWorld::add_font_data`.
+    pub fn add_font_data(&mut self, data: impl Into<Vec<u8>>) -> usize {
+        self.world.add_font_data(data)
+    }
+
     pub fn world(&self) -> &LilookWorld<L> {
         &self.world
     }

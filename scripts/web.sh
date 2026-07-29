@@ -56,6 +56,22 @@ if command -v wasm-opt >/dev/null; then
   fi
 fi
 
+# The fonts a lilaq figure needs, copied out of typst-assets rather than
+# embedded: see `crates/lilook-web/Cargo.toml`. The path comes from cargo so
+# this works on a CI runner that has only just fetched the crate.
+ASSETS=$(cargo metadata --format-version 1 | python3 -c "
+import json, os, sys
+meta = json.load(sys.stdin)
+path = next(p['manifest_path'] for p in meta['packages'] if p['name'] == 'typst-assets')
+print(os.path.join(os.path.dirname(path), 'files', 'fonts'))
+")
+mkdir -p site/pkg/fonts
+for f in LibertinusSerif-Regular.otf LibertinusSerif-Italic.otf \
+         LibertinusSerif-Bold.otf NewCMMath-Book.otf; do
+  cp "$ASSETS/$f" site/pkg/fonts/
+done
+echo "fonts: $(du -sh site/pkg/fonts | cut -f1)"
+
 # The loader shows a progress bar, and needs the uncompressed size to do it: a
 # compressing server reports the compressed length, but the stream the page
 # reads is decompressed.
