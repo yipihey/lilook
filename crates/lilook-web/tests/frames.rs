@@ -974,3 +974,65 @@ fn annotations_are_all_movable() {
         }
     }
 }
+
+/// A JSON file, linked through the real flow, in the shape lilaq recommends.
+///
+/// lilaq's data-loading tutorial argues for JSON over CSV because the values are
+/// already typed -- and the same page is why this is worth a test of its own
+/// rather than being folded into the CSV one. Two things are specific to it:
+/// discovery reads the object's *keys* rather than a header row, and a JSON file
+/// usually carries scalar metadata beside its arrays. `"title"` is not something
+/// anyone can plot, and offering it would produce a series of nothing.
+#[test]
+fn a_json_object_links_its_arrays_and_not_its_metadata() {
+    let Some(mut app) = app() else { return };
+    app.load(1);
+    run(&mut app, 3);
+    assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+
+    app.insert_file(
+        "subjects.json",
+        br#"{"title": "run 4", "n": 3, "age": [19, 10, 42], "height": [165, 140, 178]}"#.to_vec(),
+    );
+    let series = app
+        .editor()
+        .doc
+        .calls()
+        .iter()
+        .find(|c| c.is_xy_series())
+        .map(|c| c.id)
+        .expect("a series to link onto");
+    app.editor_mut().selected = series;
+
+    app.editor_mut().begin_link("subjects.json");
+    run(&mut app, 2);
+    // The two arrays, and neither of the scalars.
+    assert_eq!(
+        app.editor().link_columns(),
+        Some(["age".to_string(), "height".to_string()].as_slice()),
+        "link error: {:?}",
+        app.editor().link_error()
+    );
+
+    assert!(app.editor_mut().confirm_link(0, 1));
+    app.editor_mut().mark_dirty();
+    run(&mut app, 3);
+    assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+
+    let text = app.editor().text().to_string();
+    assert!(
+        text.contains(r#"#let subjects = json("subjects.json")"#),
+        "{text}"
+    );
+    // A lookup, not a destructure: the slot has to keep naming its key, or the
+    // inspector cannot say where the numbers came from.
+    assert!(text.contains("subjects.age"), "{text}");
+    assert!(text.contains("subjects.height"), "{text}");
+    // And no `float()`: JSON is typed, which is lilaq's whole argument for it.
+    assert!(!text.contains("float("), "{text}");
+
+    let points = &app.editor().scenes()[0].series[0].points;
+    assert_eq!(points.len(), 3);
+    assert_eq!(points[0], (19.0, 165.0));
+    assert_eq!(points[2], (42.0, 178.0));
+}

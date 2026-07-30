@@ -189,8 +189,22 @@ def public_surface(src_dir):
             # schema/index cross-check test caught it.
             mod = os.path.join(src_dir, path)
             if os.path.exists(mod):
-                for m2 in re.finditer(r"^#let\s+([\w\-]+)", open(mod).read(), re.M):
+                text = open(mod).read()
+                for m2 in re.finditer(r"^#let\s+([\w\-]+)", text, re.M):
                     public[m2.group(1)] = path
+                # And what the module itself re-exports by name, which is just as
+                # public through the glob. `lq.load-txt` -- lilaq's own
+                # numpy-style loader, and what its data-loading tutorial points
+                # people at for CSV -- reaches users only this way, through
+                # `math.typ`'s `#import "loading/txt.typ": load-txt`, and was
+                # invisible to lilook entirely.
+                for m2 in re.finditer(
+                    r'^#import\s+"([^"]+)"\s*:\s*([^\n(*][^\n]*)$', text, re.M
+                ):
+                    for n in m2.group(2).split(","):
+                        n = n.strip()
+                        if n:
+                            public[n.split(" as ")[-1].strip()] = m2.group(1)
             continue
         for n in names.split(","):
             n = n.strip()

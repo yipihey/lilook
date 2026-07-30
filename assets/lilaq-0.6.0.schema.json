@@ -770,26 +770,6 @@
       "\"data-area\""
      ],
      "widget": "enum"
-    },
-    {
-     "concrete": [
-      "int",
-      "function"
-     ],
-     "default": "auto",
-     "internal": false,
-     "name": "reveal",
-     "required": false,
-     "sentinels": [
-      "auto"
-     ],
-     "type_expr": "e.types.union(int, function, auto)",
-     "types": [
-      "int",
-      "function",
-      "auto"
-     ],
-     "widget": "variant"
     }
    ],
    "file": "model/diagram.typ"
@@ -1452,13 +1432,11 @@
      "name": "stroke",
      "required": false,
      "sentinels": [
-      "auto",
-      "none"
+      "auto"
      ],
-     "type_expr": "e.types.smart(e.types.option(stroke))",
+     "type_expr": "e.types.smart(stroke)",
      "types": [
       "auto",
-      "none",
       "stroke"
      ],
      "widget": "stroke"
@@ -1861,7 +1839,7 @@
    ]
   },
   "axis": {
-   "doc": "An axis for a diagram. Visually, an axis consists of a _spine_ along the axis\ndirection, a collection of _ticks_ (and subticks) with _tick labels_ and an\n_axis label_.\n```typ render\n#import \"@preview/tiptoe:0.4.0\"\n#let line = lq.line.with(tip: tiptoe.straight, stroke: red + .5pt, clip: false)\n#set text(1.2em)\n\n#lq.diagram(\n  yaxis: none,\n  xaxis: (mirror: none, exponent: 1),\n  xlim: (10, 50),\n  ylim: (-.1, 1),\n  grid: none,\n  height: 1cm,\n  width: 7cm,\n  lq.place(16.5, .7, align: right, text(red)[_ticks_]),\n  line((17, .6), (20,0.1)),\n  line((17, .6), (30,0.1)),\n  lq.place(39, .7, align: right, text(red)[_subticks_]),\n  line((39.5, .6), (42,0)),\n  line((39.5, .6), (44,0)),\n  lq.place(60, .7, text(red)[_exponent_]),\n  line((62, .4), (59,-.1)),\n  lq.place(38, -1.5, align: left, text(red)[_axis label_]),\n  line((37, -1.5), (31,-1.3)),\n  lq.place(23, -1.5, text(red)[_tick label_]),\n  line((23, -1.2), (21,-.8)),\n  lq.place(12, -1.5, text(red)[_spine_]),\n  line((12, -1.2), (15,-.1)),\n  xlabel: $x$\n)\n```\n\n#tip[\n  Most often, you will want to configure the main $x$ and $y$ axes by\n  applying the parameters listed here to @diagram.xaxis and @diagram.yaxis:\n  ```typ\n  // Scoped configuration\n  #show: lq.set-diagram(\n    yaxis: (exponent: 0),\n    xaxis: (position: top)\n  )\n\n  // Per-diagram configuration\n  #lq.diagram(\n    yaxis: (exponent: 0),\n    xaxis: (position: top),\n    ..\n  )\n  ```\n]\n\nHowever, it is also possible to add more axes, please refer to the\n#link(\"tutorials/axis\")[axis tutorial] for more details.\n\n\n\nThe built-in _tick formatters_ use the Typst package\n#link(\"https://typst.app/universe/package/zero\")[Zero] for displaying\nnumbers. This makes it possible to define a consistent number format\nthroughout the entire document, including tables, in-text quantities,\nand figures.",
+   "doc": "An axis for a diagram. Visually, an axis consists of a _spine_ along the axis\ndirection, a collection of _ticks_ (and subticks) with _tick labels_ and an\n_axis label_.\n```typ render\n#import \"@preview/tiptoe:0.4.0\"\n#let line = lq.line.with(tip: tiptoe.straight, stroke: red + .5pt, clip: false)\n#set text(1.2em)\n\n#lq.diagram(\n  yaxis: none,\n  xaxis: (mirror: none, exponent: 1),\n  xlim: (10, 50),\n  ylim: (-.1, 1),\n  grid: none,\n  height: 1cm,\n  width: 7cm,\n  lq.place(16.5, .7, align: right, text(red)[_ticks_]),\n  line((17, .6), (20,0.1)),\n  line((17, .6), (30,0.1)),\n  lq.place(39, .7, align: right, text(red)[_subticks_]),\n  line((39.5, .6), (42,0)),\n  line((39.5, .6), (44,0)),\n  lq.place(60, .7, text(red)[_exponent_]),\n  line((62, .4), (59,-.1)),\n  lq.place(38, -1.5, align: left, text(red)[_axis label_]),\n  line((37, -1.5), (31,-1.3)),\n  lq.place(23, -1.5, text(red)[_tick label_]),\n  line((23, -1.2), (21,-.8)),\n  lq.place(12, -1.5, text(red)[_spine_]),\n  line((12, -1.2), (15,-.1)),\n  xlabel: $x$\n)\n```\n\nMost often, you will want to configure the main $x$ and $y$ axes by\napplying the parameters listed here to @diagram.xaxis and @diagram.yaxis:\n```typ\n// Scoped configuration\n#show: lq.set-diagram(\n  yaxis: (exponent: 0),\n  xaxis: (position: top)\n)\n\n// Per-diagram configuration\n#lq.diagram(\n  yaxis: (exponent: 0),\n  xaxis: (position: top),\n  ..\n)\n```\n\nHowever, it is also possible to add more axes, please refer to the\n#link(\"tutorials/axis\")[axis tutorial] for more details.\n\n\n\nThe built-in _tick formatters_ use the Typst package\n#link(\"https://typst.app/universe/package/zero\")[Zero] for displaying\nnumbers. This makes it possible to define a consistent number format\nthroughout the entire document, including tables, in-text quantities,\nand figures.",
    "file": "model/axis.typ",
    "params": [
     {
@@ -2000,7 +1978,7 @@
      ],
      "curated": true,
      "default": "auto",
-     "doc": "If this is `auto`, @axis.locate-ticks is used for determining ticks on\nthe axis, if it is `none`, no ticks are displayed.\n\nOtherwise, instead of using a tick locator, this parameter can be used to\nspecify tick locations manually (and optionally also the tick labels) by\npassing\n- an `array` with just the tick location or tuples of tick location and label,\n- or a `dictionary` with the keys `ticks` and `labels`, containing arrays\n  of equal length.\n\nCheck out the #link(\"tutorials/ticks\")[tutorial on ticks] for tips on how\nto work with ticks.",
+     "doc": "Instead of using the tick locator, specifies the tick locations explicitly\nand optionally the tick labels. This can be an array with just the tick\nlocation or tuples of tick location and label, or a dictionary with the\nkeys `ticks` and `labels`, containing arrays of equal length. When `ticks`\nis `none`, no ticks are displayed. If it is `auto`, the `tick-locator` is\nused.\n\nCheck out the #link(\"tutorials/ticks\")[tutorial on ticks] for tips on how\nto work with ticks.",
      "kind": "named",
      "name": "ticks",
      "sentinels": [
@@ -2020,7 +1998,7 @@
       "int"
      ],
      "default": "auto",
-     "doc": "If this is `auto`, @axis.locate-subticks is used for determiningsub ticks\non the axis, if it is `none`, no subticks are displayed. When the linear\ntick locator is used, an integer can be passed, specifying the number of\nsubticks to distribute between consecutive ticks.\n\nAlso see the #link(\"tutorials/ticks\")[tutorial on ticks].",
+     "doc": "Instead of using the tick locator, specifies the tick positions explicitly\nand optionally the tick labels.\n\nAlso see the #link(\"tutorials/ticks\")[tutorial on ticks].",
      "kind": "named",
      "name": "subticks",
      "sentinels": [
@@ -2555,20 +2533,6 @@
       "float"
      ],
      "widget": "number"
-    },
-    {
-     "concrete": [
-      "bool"
-     ],
-     "default": "true",
-     "doc": "Whether to use the diagram color cycle for this plot. See @plot.use-cycle.",
-     "kind": "named",
-     "name": "use-cycle",
-     "sentinels": [],
-     "types": [
-      "bool"
-     ],
-     "widget": "toggle"
     }
    ]
   },
@@ -3821,25 +3785,6 @@
     },
     {
      "concrete": [
-      "int",
-      "function"
-     ],
-     "default": "auto",
-     "doc": "Whether to reveal only a subset of the plots. This can be used for\nexample in presentations to introduce plots one by one. This can be\n- `auto` to reveal all plots,\n- an `int` to reveal only the first n plots, or\n- a `function` that receives the plot index and returns a boolean\n  indicating whether to reveal the plot or not.",
-     "kind": "named",
-     "name": "reveal",
-     "sentinels": [
-      "auto"
-     ],
-     "types": [
-      "auto",
-      "int",
-      "function"
-     ],
-     "widget": "variant"
-    },
-    {
-     "concrete": [
       "any"
      ],
      "default": null,
@@ -4364,86 +4309,6 @@
       "float"
      ],
      "widget": "number"
-    },
-    {
-     "concrete": [
-      "bool"
-     ],
-     "default": "true",
-     "doc": "Whether to use the diagram color cycle for this plot. See @plot.use-cycle.",
-     "kind": "named",
-     "name": "use-cycle",
-     "sentinels": [],
-     "types": [
-      "bool"
-     ],
-     "widget": "toggle"
-    }
-   ]
-  },
-  "geomspace": {
-   "doc": "Generates an array of numbers spaced evenly on a log scale (geometric progression) in the interval `[start, end)` or ` [start, end]`.\nUnlike `logspace`, the endpoints are specified directly rather than as exponents.\n```typ\n#lq.geomspace(1, 1000, num: 4)\n```\nThis returns values from 1 to 1000: `(1.0, 10.0, 100.0, 1000.0)`.",
-   "file": "math.typ",
-   "params": [
-    {
-     "concrete": [
-      "int",
-      "float"
-     ],
-     "default": null,
-     "doc": "Start of the range.",
-     "kind": "positional",
-     "name": "start",
-     "sentinels": [],
-     "types": [
-      "int",
-      "float"
-     ],
-     "widget": "number"
-    },
-    {
-     "concrete": [
-      "int",
-      "float"
-     ],
-     "default": null,
-     "doc": "End of the range.",
-     "kind": "positional",
-     "name": "end",
-     "sentinels": [],
-     "types": [
-      "int",
-      "float"
-     ],
-     "widget": "number"
-    },
-    {
-     "concrete": [
-      "int"
-     ],
-     "default": "50",
-     "doc": "Number of values with evenly-spaced logarithms.",
-     "kind": "named",
-     "name": "num",
-     "sentinels": [],
-     "types": [
-      "int"
-     ],
-     "widget": "integer"
-    },
-    {
-     "concrete": [
-      "bool"
-     ],
-     "default": "true",
-     "doc": "Whether to include the end of the range. If `true`, samples are taken for\nthe closed interval `[start, end]`. Otherwise, the last point is omitted.",
-     "kind": "named",
-     "name": "include-end",
-     "sentinels": [],
-     "types": [
-      "bool"
-     ],
-     "widget": "toggle"
     }
    ]
   },
@@ -4762,20 +4627,6 @@
       "float"
      ],
      "widget": "number"
-    },
-    {
-     "concrete": [
-      "bool"
-     ],
-     "default": "true",
-     "doc": "Whether to use the diagram color cycle for this plot. See @plot.use-cycle.",
-     "kind": "named",
-     "name": "use-cycle",
-     "sentinels": [],
-     "types": [
-      "bool"
-     ],
-     "widget": "toggle"
     }
    ]
   },
@@ -5200,15 +5051,12 @@
      "concrete": [
       "stroke"
      ],
-     "default": "auto",
+     "default": "black",
      "doc": "How to stroke the lines.",
      "kind": "named",
      "name": "stroke",
-     "sentinels": [
-      "auto"
-     ],
+     "sentinels": [],
      "types": [
-      "auto",
       "stroke"
      ],
      "widget": "stroke"
@@ -5242,20 +5090,6 @@
       "float"
      ],
      "widget": "number"
-    },
-    {
-     "concrete": [
-      "bool"
-     ],
-     "default": "false",
-     "doc": "Whether to use the diagram color cycle for this plot. See @plot.use-cycle.",
-     "kind": "named",
-     "name": "use-cycle",
-     "sentinels": [],
-     "types": [
-      "bool"
-     ],
-     "widget": "toggle"
     }
    ]
   },
@@ -5434,20 +5268,6 @@
       "float"
      ],
      "widget": "number"
-    },
-    {
-     "concrete": [
-      "bool"
-     ],
-     "default": "true",
-     "doc": "Whether to use the diagram color cycle for this plot. See @plot.use-cycle.",
-     "kind": "named",
-     "name": "use-cycle",
-     "sentinels": [],
-     "types": [
-      "bool"
-     ],
-     "widget": "toggle"
     }
    ]
   },
@@ -5797,20 +5617,6 @@
       "float"
      ],
      "widget": "number"
-    },
-    {
-     "concrete": [
-      "bool"
-     ],
-     "default": "true",
-     "doc": "Whether to use the diagram color cycle for this plot. See @plot.use-cycle.",
-     "kind": "named",
-     "name": "use-cycle",
-     "sentinels": [],
-     "types": [
-      "bool"
-     ],
-     "widget": "toggle"
     }
    ]
   },
@@ -6226,7 +6032,7 @@
    ]
   },
   "linspace": {
-   "doc": "Generates an array of evenly-spaced numbers in the interval `[start, end)` or ` [start, end]`.",
+   "doc": "Generates an array of evenly-spaced numbers in the interval `[start, end)` or `[start, end]`.",
    "file": "math.typ",
    "params": [
     {
@@ -6291,8 +6097,119 @@
     }
    ]
   },
+  "load-txt": {
+   "doc": "Parses a CSV (comma-separated values) string. This function enhances the\nfunctionality of the built-in Typst function [`csv`](https://typst.app/docs/reference/data-loading/csv/) with features like transforming\nvalues to numerical (or other) types, ignoring comments and selecting only part of\nthe data.\n\nUnlike the built-in `csv` function, this function returns the data as a list of\ncolumns and not as a list of rows.",
+   "file": "loading/txt.typ",
+   "params": [
+    {
+     "concrete": [
+      "str"
+     ],
+     "default": null,
+     "doc": "Raw data loaded from a text file via [`read()`](https://typst.app/docs/reference/data-loading/read/).",
+     "kind": "positional",
+     "name": "data",
+     "sentinels": [],
+     "types": [
+      "str"
+     ],
+     "widget": "text"
+    },
+    {
+     "concrete": [
+      "str"
+     ],
+     "default": "\",\"",
+     "doc": "The delimiter that separates columns in the file.",
+     "kind": "named",
+     "name": "delimiter",
+     "sentinels": [],
+     "types": [
+      "str"
+     ],
+     "widget": "text"
+    },
+    {
+     "concrete": [
+      "str"
+     ],
+     "default": "\"#\"",
+     "doc": "The characters that indicate the start of a single-line comment.",
+     "kind": "named",
+     "name": "comments",
+     "sentinels": [],
+     "types": [
+      "str"
+     ],
+     "widget": "text"
+    },
+    {
+     "concrete": [
+      "int"
+     ],
+     "default": "0",
+     "doc": "The number of leading rows to be skipped, including comments.",
+     "kind": "named",
+     "name": "skip-rows",
+     "sentinels": [],
+     "types": [
+      "int"
+     ],
+     "widget": "integer"
+    },
+    {
+     "concrete": [
+      "array"
+     ],
+     "default": "auto",
+     "doc": "Which columns to extract from the file. Expects an array of indices to columns to\nextract. If `auto`, all columns are extracted.",
+     "kind": "named",
+     "name": "usecols",
+     "sentinels": [
+      "auto"
+     ],
+     "types": [
+      "auto",
+      "array"
+     ],
+     "widget": "array"
+    },
+    {
+     "concrete": [
+      "bool"
+     ],
+     "default": "false",
+     "doc": "If true, the first line is interpreted as a header naming the individual columns.\nThe result is then returned as a dictionary with the headers.",
+     "kind": "named",
+     "name": "header",
+     "sentinels": [],
+     "types": [
+      "bool"
+     ],
+     "widget": "toggle"
+    },
+    {
+     "concrete": [
+      "function",
+      "type",
+      "dictionary"
+     ],
+     "default": "float",
+     "doc": "Optional converter functions or types to use to convert the data entries. This\ncan either be a single function or type that is applied to all columns likewise\nor a dictionary with column indices, or header names if enabled, as keys and functions or types as values.\nThrough the (optional) key `rest`, a default converter can be specified to be used\nfor all columns that have no explicit converter assigned.",
+     "kind": "named",
+     "name": "converters",
+     "sentinels": [],
+     "types": [
+      "function",
+      "type",
+      "dictionary"
+     ],
+     "widget": "variant"
+    }
+   ]
+  },
   "logspace": {
-   "doc": "Generates an array of logarithmically-spaced numbers in the interval `[base^start, base^end)` or ` [base^start, base^end]`.\nUseful for displaying functions on a log-scaled diagram.\n```typ\n#lq.logspace(-4, 4, num: 8, include-end: false)\n```\nThis returns values from $10^{-4}$ to $10^4$: `(0.0001, 0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0)`.",
+   "doc": "Generates an array of logarithmically-spaced numbers in the interval `[base^start, base^end)` or `[base^start, base^end]`.\nUseful for displaying functions on a log-scaled diagram.\n```typ\n#lq.logspace(-4, 4, num: 8, include-end: false)\n```\nThis returns values from $10^{-4}$ to $10^4$: `(0.0001, 0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0)`.",
    "file": "math.typ",
    "params": [
     {
@@ -7128,20 +7045,6 @@
       "float"
      ],
      "widget": "number"
-    },
-    {
-     "concrete": [
-      "bool"
-     ],
-     "default": "true",
-     "doc": "Whether to use the diagram color cycle for this plot. If set to false,\nthe style cycle is neither used nor advanced to the next index.",
-     "kind": "named",
-     "name": "use-cycle",
-     "sentinels": [],
-     "types": [
-      "bool"
-     ],
-     "widget": "toggle"
     }
    ]
   },
@@ -7696,20 +7599,17 @@
     },
     {
      "concrete": [
-      "array",
-      "function"
+      "array"
      ],
-     "curated": true,
      "default": null,
-     "doc": "Specifies either an array of $y$ coordinates or a function that takes an\n`x` value and returns a corresponding `y` coordinate. The number of $x$\nand $y$ coordinates must match.",
+     "doc": "An array of $y$ coordinates. The number of $x$ and $y$ coordinates must match.",
      "kind": "positional",
      "name": "y",
      "sentinels": [],
      "types": [
-      "array",
-      "function"
+      "array"
      ],
-     "widget": "data"
+     "widget": "array"
     },
     {
      "concrete": [
@@ -7843,43 +7743,6 @@
     },
     {
      "concrete": [
-      "array",
-      "dictionary"
-     ],
-     "curated": true,
-     "default": "none",
-     "doc": "Optional errors/uncertainties for $x$ coordinates. See @plot.xerr.",
-     "kind": "named",
-     "name": "xerr",
-     "sentinels": [
-      "none"
-     ],
-     "types": [
-      "none",
-      "array",
-      "dictionary"
-     ],
-     "widget": "structured"
-    },
-    {
-     "concrete": [
-      "array"
-     ],
-     "default": "none",
-     "doc": "Optional errors/uncertainties for $y$ coordinates. See @plot.xerr.",
-     "kind": "named",
-     "name": "yerr",
-     "sentinels": [
-      "none"
-     ],
-     "types": [
-      "none",
-      "array"
-     ],
-     "widget": "array"
-    },
-    {
-     "concrete": [
       "stroke"
      ],
      "default": "auto",
@@ -7898,7 +7761,7 @@
       "array"
      ],
      "default": "100%",
-     "doc": "The fill opacity.",
+     "doc": "The fill opacity. TODO: maybe get rid of it, there is already color.",
      "kind": "named",
      "name": "alpha",
      "sentinels": [],
@@ -7951,20 +7814,6 @@
       "float"
      ],
      "widget": "number"
-    },
-    {
-     "concrete": [
-      "bool"
-     ],
-     "default": "true",
-     "doc": "Whether to use the diagram color cycle for this plot. See @plot.use-cycle.",
-     "kind": "named",
-     "name": "use-cycle",
-     "sentinels": [],
-     "types": [
-      "bool"
-     ],
-     "widget": "toggle"
     }
    ]
   },
@@ -8228,20 +8077,6 @@
       "float"
      ],
      "widget": "number"
-    },
-    {
-     "concrete": [
-      "bool"
-     ],
-     "default": "true",
-     "doc": "Whether to use the diagram color cycle for this plot. See @plot.use-cycle.",
-     "kind": "named",
-     "name": "use-cycle",
-     "sentinels": [],
-     "types": [
-      "bool"
-     ],
-     "widget": "toggle"
     }
    ]
   },
@@ -8318,16 +8153,14 @@
       "stroke"
      ],
      "default": "auto",
-     "doc": "How to stroke the tick mark. If set to `auto`, the stroke is inherited\nfrom the axis spine.",
+     "doc": "How to stroke the tick mark. If set to `auto`, the stroke is inherited\nthe axis spine.",
      "kind": "named",
      "name": "stroke",
      "sentinels": [
-      "auto",
-      "none"
+      "auto"
      ],
      "types": [
       "auto",
-      "none",
       "stroke"
      ],
      "widget": "stroke"
@@ -8892,20 +8725,6 @@
       "float"
      ],
      "widget": "number"
-    },
-    {
-     "concrete": [
-      "bool"
-     ],
-     "default": "true",
-     "doc": "Whether to use the diagram color cycle for this plot. See @plot.use-cycle.",
-     "kind": "named",
-     "name": "use-cycle",
-     "sentinels": [],
-     "types": [
-      "bool"
-     ],
-     "widget": "toggle"
     }
    ]
   },
@@ -9051,15 +8870,12 @@
      "concrete": [
       "stroke"
      ],
-     "default": "auto",
+     "default": "black",
      "doc": "How to stroke the lines.",
      "kind": "named",
      "name": "stroke",
-     "sentinels": [
-      "auto"
-     ],
+     "sentinels": [],
      "types": [
-      "auto",
       "stroke"
      ],
      "widget": "stroke"
@@ -9093,20 +8909,6 @@
       "float"
      ],
      "widget": "number"
-    },
-    {
-     "concrete": [
-      "bool"
-     ],
-     "default": "false",
-     "doc": "Whether to use the diagram color cycle for this plot. See @plot.use-cycle.",
-     "kind": "named",
-     "name": "use-cycle",
-     "sentinels": [],
-     "types": [
-      "bool"
-     ],
-     "widget": "toggle"
     }
    ]
   }
@@ -9115,22 +8917,22 @@
  "stats": {
   "elements": 17,
   "functions": 48,
-  "params": 409,
-  "typed": 407,
+  "params": 398,
+  "typed": 396,
   "widgets": {
    "alignment": 4,
    "angle": 1,
-   "array": 37,
+   "array": 38,
    "color": 8,
    "content": 22,
    "coordinate": 6,
-   "data": 9,
+   "data": 8,
    "dictionary": 6,
    "enum": 13,
    "integer": 7,
    "length": 20,
    "mark": 10,
-   "number": 66,
+   "number": 64,
    "number-or-array": 16,
    "opaque": 29,
    "paint": 18,
@@ -9138,8 +8940,9 @@
    "relative": 4,
    "scale": 7,
    "stroke": 39,
-   "structured": 10,
-   "toggle": 42,
+   "structured": 9,
+   "text": 3,
+   "toggle": 31,
    "variant": 32
   }
  }

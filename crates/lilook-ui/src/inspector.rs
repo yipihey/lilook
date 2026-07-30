@@ -91,7 +91,11 @@ pub fn widget_control(widget: &str) -> Option<Control> {
         "mark" => Control::Mark,
         "scale" => Control::Scale,
         "alignment" => Control::Alignment,
-        "content" => Control::Text,
+        // `content` writes `[..]`; `text` is lilaq's plain `str`, which writes
+        // `".."`. One control, because `Control::Text` already keeps whichever
+        // shape is written -- but the *seed* differs, and getting that wrong is
+        // how `xscale` was once handed `[]`.
+        "content" | "text" => Control::Text,
         "number-or-array" => Control::NumberOrArray,
         // Deliberately the source editor: unions too wide to map, or structures
         // with no small form.
@@ -149,7 +153,11 @@ fn seed(param: Option<&ParamSchema>, control: Control) -> Option<String> {
         Control::Color => Some("red".into()),
         Control::Stroke => Some("1pt".into()),
         Control::Alignment => Some("center".into()),
-        Control::Text => Some("[]".into()),
+        // `[]` only where content is actually a type. lilaq's `load-txt` takes
+        // real free-text strings -- `delimiter: ","`, `comments: "#"` -- and
+        // seeding those with content would be rejected the way `xscale: []` was.
+        Control::Text if takes_text(param) => Some("[]".into()),
+        Control::Text => Some("\"\"".into()),
         Control::Enum | Control::Mark | Control::Scale => param
             .and_then(|p| p.choices.first().cloned())
             .map(|c| format!("\"{c}\"")),
@@ -813,7 +821,8 @@ fn placeholder(widget: &str) -> String {
         Some(Control::Length) => "0pt".into(),
         Some(Control::Toggle) => "false".into(),
         Some(Control::Color) | Some(Control::Stroke) => "black".into(),
-        Some(Control::Text) => "[]".into(),
+        Some(Control::Text) if widget == "content" => "[]".into(),
+        Some(Control::Text) => r#""""#.into(),
         _ => "none".into(),
     }
 }

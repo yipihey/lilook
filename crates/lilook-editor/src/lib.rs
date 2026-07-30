@@ -1341,6 +1341,18 @@ impl Editor {
             }
             // A keyed file answers entry by entry, with each one's shape.
             Some(lilook_core::Answer::Fields(entries)) if !entries.is_empty() => {
+                // Entries that are not arrays are not columns. A JSON file
+                // commonly carries scalar metadata beside its data --
+                // `{"title": "run 4", "age": [..]}` -- and offering `title` as
+                // something to plot would produce a series of nothing.
+                let entries: Vec<_> = entries.into_iter().filter(|(_, n, _)| *n > 0).collect();
+                if entries.is_empty() {
+                    self.link = Some(Link::Failed {
+                        path,
+                        why: "no arrays in it -- every entry is a single value".into(),
+                    });
+                    return;
+                }
                 let columns = lilook_core::Columns {
                     names: entries.iter().map(|(k, _, _)| k.clone()).collect(),
                     // A keyed file's answer *is* its names; there is no header

@@ -472,3 +472,85 @@ fn a_two_dimensional_sidecar_links_to_a_colormesh() {
         "{read:?}"
     );
 }
+
+/// JSON, in the shape lilaq's data-loading tutorial recommends.
+///
+/// That page argues for JSON over CSV specifically because "JSON data is typed"
+/// -- no per-cell `float()`, which is the same reason the sidecar is CBOR. Its
+/// example is an *object of arrays*, destructured whole:
+///
+/// ```typst
+/// #let (age, height, a, b) = json("subjects.json")
+/// ```
+///
+/// lilook links it by lookup instead -- `subjects.age` -- because provenance is
+/// derived from the document each frame: the slot names a binding, the binding
+/// says `json("subjects.json")`. A destructure erases which key a slot came from
+/// and the inspector would have nothing to report. Both forms are live links; the
+/// lookup is the one that can say where its numbers are from.
+#[test]
+fn a_json_object_of_arrays_links_the_way_lilaq_recommends() {
+    let (t, y) = (
+        (0..8).map(|i| i as f64 * 0.5).collect::<Vec<_>>(),
+        (0..8).map(|i| (i as f64 * 0.5).sin()).collect::<Vec<_>>(),
+    );
+    let json = format!(
+        "{{\"age\": {t:?}, \"height\": {y:?}, \"note\": \"not a column\"}}",
+        t = t,
+        y = y
+    );
+    let dir = project("json", &[("subjects.json", json.as_str())]);
+
+    // Exactly what the link flow writes for a keyed file.
+    let kind = lilook_core::SourceKind::of("subjects.json");
+    assert_eq!(kind, lilook_core::SourceKind::Keyed);
+    let cols = lilook_core::Columns {
+        names: vec!["age".into(), "height".into()],
+        has_header: true,
+        grids: vec![None, None],
+    };
+    let src = format!(
+        r#"#import "@preview/lilaq:0.6.0" as lq
+#set page(width: auto, height: auto, margin: 5pt)
+#let subjects = {binding}
+#lq.diagram(width: 6cm, height: 4cm, lq.scatter({xs}, {ys}))
+"#,
+        binding = lilook_core::binding_source("subjects.json", kind, true),
+        xs = lilook_core::column_source("subjects", kind, &cols, 0).unwrap(),
+        ys = lilook_core::column_source("subjects", kind, &cols, 1).unwrap(),
+    );
+    assert!(src.contains(r#"json("subjects.json")"#), "{src}");
+
+    let mut b = Backend::new(&dir, "");
+    let doc = Document::new(&src);
+    let mut hints = lilook_compile::backend::Hints::new();
+    let (render, scenes) = b.render_scenes(&doc, 1.0, &mut hints);
+    if skip(&render) {
+        return;
+    }
+    assert!(!render.failed(), "{:?}", render.diagnostics);
+
+    // The values arrive as numbers, with no `float()` anywhere in the document.
+    assert!(!src.contains("float("), "JSON is typed; nothing to convert");
+    let points = &scenes[0].series[0].points;
+    assert_eq!(points.len(), t.len());
+    for (i, (px, py)) in points.iter().enumerate() {
+        assert!(
+            (px - t[i]).abs() < 1e-12 && (py - y[i]).abs() < 1e-12,
+            "{i}"
+        );
+    }
+
+    // And the JSON is what the compile read, so editing the file refreshes the
+    // figure -- the whole point of a link.
+    let read: Vec<String> = b
+        .dependencies()
+        .into_iter()
+        .filter(|f| f.root == FileRoot::Project)
+        .map(|f| f.path)
+        .collect();
+    assert!(
+        read.iter().any(|p| p.ends_with("subjects.json")),
+        "{read:?}"
+    );
+}
