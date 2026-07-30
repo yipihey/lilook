@@ -8,3 +8,8 @@ __pycache__/
 
 # wasm-bindgen output: 50 MB of generated binary, rebuilt by scripts/web.sh
 crates/lilook-web/pkg/
+
+# SwiftPM build output: 234 MB of object files and manifest caches, regenerated
+# by scripts/swift.sh. It was tracked by accident, so every Swift test run showed
+# up as a diff.
+swift/.build/
