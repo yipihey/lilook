@@ -1140,3 +1140,55 @@ something from *outside* a frame must hold it in editor state and emit it during
 `ui`, the way `dirty` feeds `want_compile`. A link started programmatically
 silently did nothing until `queued_query` existed -- and it was silent, not broken:
 the flow just sat in its "asking" state forever.
+
+## The deploy shipped a module no browser could load
+
+The linked-datasets commit deployed green -- CI success, Pages success, HTTP 200,
+11 MB over the wire -- and the site would not start:
+
+```
+CompileError: WebAssembly.Module doesn't parse at byte 153:
+20th Type is non-Func, non-Struct, and non-Array 0
+```
+
+Two independent parsers agree, at the same byte. `wasm-opt` version 130: "Bad type
+form 0 (at 0:153)". V8, via node: "unknown type form: 0 @+152". Parsing the type
+section by hand shows why -- type #20 is `(i32, i32, structref) -> ()`, a **WasmGC
+type**, and the byte after it is `0x00`, which is not a valid type form for anyone.
+
+Where it entered, established by validating each stage:
+
+| stage | size | V8 |
+| --- | --- | --- |
+| `wasm-bindgen` output | 32.6 MB | compiles |
+| `wasm-opt -all -Oz`, binaryen 130 (local) | 28.4 MB | compiles |
+| `wasm-opt -all -Oz`, Ubuntu's binaryen (CI) | 28.6 MB | **rejected** |
+
+So rustc and wasm-bindgen were fine, and a *newer* binaryen is fine. The
+apt-packaged one wrote a GC `structref` into the type section of a module it could
+still read back itself -- and `wasm-opt` succeeded, exit code 0, no warning.
+
+Three things had to be wrong at once for this to reach a user:
+
+1. **`-all`.** It tells binaryen every proposal is permitted, which is what let it
+   reach for a GC type at all. The features are now listed explicitly. Measured,
+   that costs **10 KB gzipped out of 11 MB** -- 11.06 vs 11.07 -- so the entire
+   class of failure goes away for nothing.
+2. **`2>/dev/null` on the wasm-opt invocation.** Whatever binaryen might have said,
+   nobody could have seen it. Removed.
+3. **Nothing validated the artefact.** This is the real defect. `scripts/web.sh`
+   now runs `new WebAssembly.Module(bytes)` under node -- V8, the same parser the
+   browser uses, not a second opinion from the tool that just wrote the file -- on
+   the optimised module, falling back to the unoptimised one if it fails, and then
+   on whatever is about to be deployed, fatally. A build that cannot start is worse
+   than a build that fails.
+
+Binaryen is now pinned to a release tarball rather than taken from the runner
+image, so its version is part of the build.
+
+**The verification mistake was mine and worth naming.** I reported the deploy
+healthy on the strength of an HTTP 200 and a transfer size. That checks the file is
+*served*, not that it *runs* -- the same "compiling is not seeing" error recorded
+two sections earlier about the Swift `FigureView`, made within the hour. The gate
+that now exists is the one that should have existed before the claim: load the
+module in an engine, in the build, every time.

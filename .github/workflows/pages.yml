@@ -28,10 +28,21 @@ jobs:
       - name: fetch typst packages
         run: scripts/fetch-packages.sh
 
-      # Without binaryen `scripts/web.sh` skips its own optimisation step and
-      # ships a module several MB larger, quietly.
+      # Pinned, not `apt-get install binaryen`. Ubuntu's package produced a
+      # module that no browser would load -- a GC `structref` in the type
+      # section, rejected with "unknown type form: 0" -- while still being
+      # readable by the binaryen that wrote it. The version is now part of the
+      # build rather than part of the runner image.
+      #
+      # Without binaryen at all, `scripts/web.sh` still works and ships a larger
+      # module; it is the silent *wrong* output that had to be ruled out.
       - name: install binaryen
-        run: sudo apt-get update && sudo apt-get install -y binaryen
+        env:
+          BINARYEN: version_130
+        run: |
+          curl -fsSL "https://github.com/WebAssembly/binaryen/releases/download/${BINARYEN}/binaryen-${BINARYEN}-x86_64-linux.tar.gz" \
+            | tar -xz
+          echo "$PWD/binaryen-${BINARYEN}/bin" >> "$GITHUB_PATH"
 
       # Pinned to the version in Cargo.lock: wasm-bindgen refuses a binary whose
       # schema does not match the crate it generated against.
