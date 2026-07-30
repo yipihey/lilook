@@ -767,3 +767,116 @@ fn threshold_lines_are_grabbable_along_their_length() {
     assert_eq!(h.literal_rules(), vec![0, 1]);
     assert_eq!(v.literal_rules(), vec![0]);
 }
+
+/// Distributions: one dataset per argument, positioned by a named `x:`.
+///
+/// The default is `x: auto`, which lilaq resolves to `1..n` -- so without
+/// resolving it the positions would be unknown in the commonest case, and there
+/// would be nothing to hit-test against.
+#[test]
+fn a_boxplot_reports_its_datasets_and_can_be_picked() {
+    use lilook_core::{Axis, SeriesShape};
+
+    let Some(mut app) = app() else { return };
+    let index = EXAMPLES
+        .iter()
+        .position(|(name, _)| *name == "distributions")
+        .expect("the distributions example");
+    app.load(index);
+    run(&mut app, 3);
+    assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+
+    let editor = app.editor();
+    let call = editor
+        .doc
+        .calls()
+        .iter()
+        .find(|c| c.short_name() == "boxplot")
+        .expect("the boxplot");
+    assert_eq!(call.series_shape(), SeriesShape::Distributions(Axis::X));
+    // Not points and not draggable as such: there is no coordinate pair here.
+    assert!(!call.has_literal_points());
+    assert!(call.literal_rules().is_empty());
+
+    let figure = editor.doc.figures().into_iter().next().expect("a diagram");
+    assert!(
+        figure.series.contains(&call.id),
+        "it belongs to the diagram"
+    );
+
+    let scene = &editor.scenes()[0];
+    let geom = scene
+        .series
+        .iter()
+        .find(|g| g.node == call.id)
+        .expect("its data");
+
+    // Three datasets, positioned 1, 2, 3 by `auto`, with the sizes from the file.
+    assert_eq!(geom.summary(), "3 distributions");
+    let dists = geom.distributions();
+    assert_eq!(
+        dists
+            .iter()
+            .map(|(at, v)| (*at, v.len()))
+            .collect::<Vec<_>>(),
+        vec![(1.0, 9), (2.0, 8), (3.0, 10)]
+    );
+    // And the values themselves came back, not just the counts.
+    assert_eq!(dists[1].1.first().copied(), Some(5.2));
+
+    // Each box is pickable where it sits, and reports which argument it was.
+    for (index, (at, values)) in dists.iter().enumerate() {
+        let mid = values.iter().sum::<f64>() / values.len() as f64;
+        let page = (
+            scene.transform.x.to_page(*at),
+            scene.transform.y.to_page(mid),
+        );
+        let hit = scene
+            .hit_distribution(page, 4.0)
+            .unwrap_or_else(|| panic!("no box at x={at}"));
+        assert_eq!(hit.node, call.id);
+        assert_eq!(hit.index, index, "wrong dataset for the box at x={at}");
+    }
+
+    // Well outside every box's range of values, nothing is picked -- the region
+    // is the data's own extent, not the whole column.
+    let far = (
+        scene.transform.x.to_page(1.0),
+        scene.transform.y.to_page(100.0),
+    );
+    assert!(scene.hit_distribution(far, 4.0).is_none());
+}
+
+/// "Materialise" is only offered where there is a flat array to write.
+///
+/// `points` is empty for a mesh, a rule and a distribution, so offering it would
+/// write `()` into the slot and break the figure -- the same shape of bug as
+/// seeding `xlim` with an empty array, which reached a live page once already.
+#[test]
+fn nothing_offers_to_embed_data_it_does_not_have() {
+    use lilook_core::SeriesShape;
+
+    let Some(mut app) = app() else { return };
+    for name in ["colormesh", "thresholds", "distributions"] {
+        let index = EXAMPLES.iter().position(|(n, _)| *n == name).unwrap();
+        app.load(index);
+        run(&mut app, 3);
+        assert!(errors(&app).is_empty(), "{name}: {:?}", errors(&app));
+
+        for geom in app.editor().scenes().iter().flat_map(|s| &s.series) {
+            if geom.shape == SeriesShape::Points {
+                continue;
+            }
+            assert!(
+                geom.points.is_empty(),
+                "{name}: only a paired-point series has points"
+            );
+            // What the inspector would embed: nothing, so it must not offer to.
+            assert_eq!(
+                lilook_core::data_array_source(&[]).unwrap(),
+                "()",
+                "an empty array is what the offer would have written"
+            );
+        }
+    }
+}

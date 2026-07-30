@@ -122,6 +122,44 @@ pub fn inject(doc: &Document, hints: &HashMap<usize, Bounds>) -> (String, Inject
             // line's coordinate, so they are gathered into one array and sent on
             // the axis they belong to. The other axis stays empty -- the line
             // spans the frame, so there is nothing to recover there.
+            // A distributions series carries one dataset per positional argument
+            // and its position on the named axis -- `auto` by default, which lilaq
+            // resolves to `1..n`. Resolving it here, in typst, is what makes the
+            // commonest case (no `x:` at all) recoverable rather than unknown.
+            let mut datasets = String::from("()");
+            if let SeriesShape::Distributions(axis) = series.series_shape() {
+                let n = series.positional.len();
+                let slots = (0..n)
+                    .filter_map(|i| positional(doc, series, i))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                datasets = format!("({slots},)");
+                let name = match axis {
+                    lilook_core::Axis::X => "x",
+                    lilook_core::Axis::Y => "y",
+                };
+                let given = series
+                    .named
+                    .iter()
+                    .find(|a| a.name == name)
+                    .map(|a| doc.text()[a.value.clone()].to_string())
+                    .unwrap_or_else(|| "auto".into());
+                let positions = format!(
+                    "((p) => if type(p) == array {{ p }} \
+                     else if p == auto {{ range(1, {}) }} else {{ (p,) }})({given})",
+                    n + 1
+                );
+                let (x, y) = match axis {
+                    lilook_core::Axis::X => (positions, "()".to_string()),
+                    lilook_core::Axis::Y => ("()".to_string(), positions),
+                };
+                args.push_str(&format!(
+                    ", {lq}.place(0%, 0%, [#metadata((fig: {}, node: {node}, sh: \"dist\", \
+                     x: {x}, y: {y}, ds: {datasets}, ch: (:)))<{SERIES_LABEL}>])",
+                    fig.node
+                ));
+                continue;
+            }
             let (x, y) = match series.series_shape() {
                 SeriesShape::Rules(axis) => {
                     let coords = (0..series.positional.len())
@@ -139,6 +177,7 @@ pub fn inject(doc: &Document, hints: &HashMap<usize, Bounds>) -> (String, Inject
                     _ => continue,
                 },
             };
+            let _ = &datasets;
             // Data-bearing named arguments come back too, as a dictionary keyed
             // by argument name. `yerr` is why: a linked dataset can feed it, and
             // without recovering it an error column would be linkable but
@@ -165,6 +204,7 @@ pub fn inject(doc: &Document, hints: &HashMap<usize, Bounds>) -> (String, Inject
                 SeriesShape::Mesh => "mesh",
                 SeriesShape::Points => "points",
                 SeriesShape::Rules(_) => "rules",
+                SeriesShape::Distributions(_) => "dist",
             };
             // Relative coordinates, so this marker can never widen the data
             // range and change the layout it is trying to measure.
@@ -256,6 +296,14 @@ fn as_pt(v: &Value) -> Option<f64> {
 fn numbers(v: &Value) -> Vec<f64> {
     match v {
         Value::Array(a) => a.iter().filter_map(as_f64).collect(),
+        _ => vec![],
+    }
+}
+
+/// An array of numeric arrays: one row per dataset, or per grid row.
+fn rows(v: Option<&Value>) -> Vec<Vec<f64>> {
+    match v {
+        Some(Value::Array(a)) => a.iter().map(numbers).collect(),
         _ => vec![],
     }
 }
@@ -362,6 +410,27 @@ fn read(doc: &PagedDocument) -> Raw {
                 let mut ch = vec![(name.to_string(), coords)];
                 ch.extend(channels);
                 (SeriesShape::Rules(axis), vec![], None, ch)
+            }
+            "dist" => {
+                let (xs, ys) = (numbers(&x), numbers(&y));
+                let axis = if xs.is_empty() {
+                    lilook_core::Axis::Y
+                } else {
+                    lilook_core::Axis::X
+                };
+                let name = match axis {
+                    lilook_core::Axis::X => "x",
+                    lilook_core::Axis::Y => "y",
+                };
+                let positions = if xs.is_empty() { ys } else { xs };
+                let mut ch = vec![(name.to_string(), positions)];
+                // One channel per dataset, so the inspector can report each
+                // one's size and a linked file can be checked against it.
+                for (i, values) in rows(field(&d, "ds").as_ref()).into_iter().enumerate() {
+                    ch.push((format!("d{i}"), values));
+                }
+                ch.extend(channels);
+                (SeriesShape::Distributions(axis), vec![], None, ch)
             }
             _ => (SeriesShape::Points, points(&x, &y), None, channels),
         };

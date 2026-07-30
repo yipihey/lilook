@@ -1506,3 +1506,54 @@ whereas a line spanning the frame is unambiguous about what was grabbed.
 Three shapes was the point at which "mesh or not" stopped being enough, and a
 consumer holding only a `Scene` -- the canvas, a host frontend -- now reads the
 geometry the same way the probe wrote it.
+
+## Distributions: one dataset per argument, positioned by a named argument
+
+`boxplot(a, b, c)` is three datasets in one call, each its own positional
+argument, and their positions come from a named `x:` -- which defaults to `auto`,
+meaning `1..n`. So without resolving `auto` the positions are unknown in the
+*commonest* case and there is nothing to hit-test against.
+
+They are resolved in typst, inside the injected metadata:
+
+```typst
+((p) => if type(p) == array { p } else if p == auto { range(1, n+1) } else { (p,) })(<x>)
+```
+
+which is the same trick the linked-dataset work used for column discovery: ask the
+compiler rather than reimplement its defaults. Each dataset comes back as its own
+channel, so the inspector reports how many values went into each box, and a linked
+file can later be checked against those lengths.
+
+`hit_distribution` picks by nearest position, but only when the pointer is within
+the *range of values that went into that box* -- lilook does not recompute the
+quartiles, so the region it claims is the data's own extent rather than an
+assertion about where the whiskers ended up. Adjacent categories split the gap
+between them, so two boxes never claim the same pixel.
+
+Hit-test precedence across all four shapes is now by how precisely the user aimed:
+a vertex or segment, then a rule, then a distribution or a mesh area. A scatter
+drawn over a colormesh, or a marker sitting on a threshold, still wins.
+
+### The same bug, caught before shipping this time
+
+The inspector offered "materialise" on every dataset of a boxplot. `points` is
+empty for a mesh, a rule *and* a distribution, so it would have written `()` into
+the slot and broken the figure -- exactly the defect that put `xlim: ()` on a live
+page earlier today. The offer is now gated on the series being paired-point shaped
+*and* having points, and a test walks the three shaped examples asserting none of
+them has points to embed.
+
+Worth noting what caught it: not a test, but looking at the screen after the
+feature "worked". The three shapes had been added one at a time, and the filter
+had been written for the first of them.
+
+### Not done: dragging a box's position
+
+Moving a box along its axis means rewriting one element of the *named* `x:`
+argument, and no intent addresses an element of a named array -- `SetArrayElement`
+indexes positional slots. Adding one means a new `Intent` variant, which means the
+`random_intents_fully_undo` generator, and for the default `x: auto` there is no
+array to edit at all until the positions are materialised first. Recovery,
+selection and the readout are in; the drag is a separate piece of work and is not
+pretended at.

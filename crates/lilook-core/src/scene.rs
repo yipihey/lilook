@@ -86,6 +86,13 @@ impl SeriesGeom {
     /// "0 pts" for a colormesh after the shape landed, because the edit that was
     /// supposed to change it never matched.
     pub fn summary(&self) -> String {
+        if let SeriesShape::Distributions(_) = self.shape {
+            let n = self.distributions().len();
+            return match n {
+                1 => "1 distribution".to_string(),
+                n => format!("{n} distributions"),
+            };
+        }
         if let SeriesShape::Rules(axis) = self.shape {
             let n = self.rules().len();
             let which = match axis {
@@ -108,6 +115,34 @@ impl SeriesGeom {
                 format!("{} pts{extra}", self.points.len())
             }
         }
+    }
+
+    /// Each distribution's position and the values that went into it.
+    ///
+    /// The position comes from the call's `x:`/`y:`, already resolved -- `auto`
+    /// means `1..n`, which is lilaq's default and the commonest case.
+    pub fn distributions(&self) -> Vec<(f64, Vec<f64>)> {
+        let SeriesShape::Distributions(axis) = self.shape else {
+            return vec![];
+        };
+        let positions = match axis {
+            Axis::X => self.channel("x"),
+            Axis::Y => self.channel("y"),
+        }
+        .unwrap_or_default();
+        positions
+            .into_iter()
+            .enumerate()
+            .map(|(i, at)| {
+                let values = self
+                    .channels
+                    .iter()
+                    .find(|(n, _)| n == &format!("d{i}"))
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_default();
+                (at, values)
+            })
+            .collect()
     }
 
     /// The coordinates of a rules series, one per line.
@@ -247,6 +282,72 @@ impl Scene {
                         node: s.node,
                         index,
                         data: p,
+                        distance_pt: d,
+                    });
+                }
+            }
+        }
+        best
+    }
+
+    /// The distribution under this point, if any.
+    ///
+    /// Picked by nearest position, and only when the pointer is within the range
+    /// of values that went into that box. lilook does not compute the quartiles,
+    /// so the region is the data's own extent rather than a claim about where the
+    /// whiskers ended up -- enough to select, and honest about what it knows.
+    pub fn hit_distribution(&self, page_pt: (f64, f64), tolerance_pt: f64) -> Option<SceneHit> {
+        let mut best: Option<SceneHit> = None;
+        for s in &self.series {
+            let SeriesShape::Distributions(axis) = s.shape else {
+                continue;
+            };
+            let boxes = s.distributions();
+            // Half the gap to the next box, so adjacent categories do not both
+            // claim the same pixel. One box on its own gets the tolerance.
+            let mut gaps: Vec<f64> = boxes.windows(2).map(|w| (w[1].0 - w[0].0).abs()).collect();
+            gaps.retain(|g| g.is_finite() && *g > 0.0);
+            let spacing = gaps.into_iter().fold(f64::INFINITY, f64::min);
+            for (index, (at, values)) in boxes.iter().enumerate() {
+                if values.is_empty() {
+                    continue;
+                }
+                let (lo, hi) = values
+                    .iter()
+                    .fold((f64::MAX, f64::MIN), |(l, h), v| (l.min(*v), h.max(*v)));
+                let (along, across, span_lo, span_hi) = match axis {
+                    Axis::X => (
+                        self.transform.x.to_page(*at),
+                        page_pt.0,
+                        self.transform.y.to_page(hi),
+                        self.transform.y.to_page(lo),
+                    ),
+                    Axis::Y => (
+                        self.transform.y.to_page(*at),
+                        page_pt.1,
+                        self.transform.x.to_page(lo),
+                        self.transform.x.to_page(hi),
+                    ),
+                };
+                let value_pt = match axis {
+                    Axis::X => page_pt.1,
+                    Axis::Y => page_pt.0,
+                };
+                if value_pt < span_lo - tolerance_pt || value_pt > span_hi + tolerance_pt {
+                    continue;
+                }
+                let half = if spacing.is_finite() {
+                    (self.transform.x.scale.abs().max(f64::MIN_POSITIVE) * spacing / 2.0)
+                        .max(tolerance_pt)
+                } else {
+                    tolerance_pt * 3.0
+                };
+                let d = (along - across).abs();
+                if d <= half && best.as_ref().is_none_or(|b| d < b.distance_pt) {
+                    best = Some(SceneHit {
+                        node: s.node,
+                        index,
+                        data: self.transform.to_data(page_pt),
                         distance_pt: d,
                     });
                 }

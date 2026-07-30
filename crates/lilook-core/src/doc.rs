@@ -94,7 +94,11 @@ impl CallSite {
     /// How to read the positional arguments: paired coordinates, grid axes, or
     /// one line each.
     pub fn series_shape(&self) -> SeriesShape {
-        match self.short_name() {
+        let name = self.short_name();
+        if let Some((_, axis)) = DISTRIBUTION_SERIES.iter().find(|(n, _)| *n == name) {
+            return SeriesShape::Distributions(*axis);
+        }
+        match name {
             n if MESH_SERIES.contains(&n) => SeriesShape::Mesh,
             "hlines" => SeriesShape::Rules(Axis::Y),
             "vlines" => SeriesShape::Rules(Axis::X),
@@ -155,6 +159,10 @@ pub const XY_SERIES: &[&str] = &[
     "fill-between",
     "hlines",
     "vlines",
+    "boxplot",
+    "violin",
+    "hboxplot",
+    "hviolin",
 ];
 
 /// What slots 0 and 1 *mean*, which is not the same for every series.
@@ -176,6 +184,14 @@ pub enum SeriesShape {
     /// coordinate at all -- the line spans the frame -- so moving one rewrites
     /// that argument rather than an element of an array.
     Rules(Axis),
+    /// Every positional argument is *one dataset*, and its position along the
+    /// carried axis comes from a named `x:`/`y:` -- or from `1..n` when that is
+    /// `auto`, which is the default. `boxplot`, `violin` and their h variants.
+    ///
+    /// The distribution extends along the *other* axis, and lilook does not
+    /// compute the quartiles: it knows where each box sits and what values went
+    /// into it, which is what selection and an honest readout need.
+    Distributions(Axis),
 }
 
 /// Which axis a value sits on.
@@ -187,6 +203,14 @@ pub enum Axis {
 
 /// The mesh-shaped constructors. Their slots 0 and 1 are axes, not coordinates.
 const MESH_SERIES: &[&str] = &["colormesh", "contour", "mesh"];
+
+/// The distribution constructors, and which axis carries their *position*.
+const DISTRIBUTION_SERIES: &[(&str, Axis)] = &[
+    ("boxplot", Axis::X),
+    ("violin", Axis::X),
+    ("hboxplot", Axis::Y),
+    ("hviolin", Axis::Y),
+];
 
 /// A `#show: lq.set-tick(..)` and the region of the document it governs.
 ///

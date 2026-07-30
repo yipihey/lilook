@@ -442,10 +442,20 @@ impl Editor {
                                             .iter()
                                             .flat_map(|s| &s.series)
                                             .find(|s| s.node == call.id)
-                                            // A mesh has axes rather than points,
-                                            // so there is nothing to embed as a
-                                            // flat array: offer nothing.
-                                            .filter(|s| s.grid.is_none())
+                                            // Only a paired-point series has a
+                                            // flat array to embed. A mesh has
+                                            // axes, a rule has one coordinate per
+                                            // argument, a distribution has whole
+                                            // datasets -- and `points` is empty
+                                            // for all three, so offering
+                                            // "materialise" would write `()` into
+                                            // the slot and break the figure. The
+                                            // same shape of bug as seeding `xlim`
+                                            // with an empty array.
+                                            .filter(|s| {
+                                                s.shape == lilook_core::SeriesShape::Points
+                                                    && !s.points.is_empty()
+                                            })
                                             .map(|s| s.points.len()),
                                         slot_sources: &sources,
                                     };

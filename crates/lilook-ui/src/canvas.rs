@@ -638,7 +638,12 @@ fn pick(
         // Vertices and line segments first: an explicit marker beats an area, so
         // a scatter drawn on top of a colormesh is still pickable.
         .filter_map(|s| {
+            // Precedence is by how precisely the user aimed: a vertex or a line
+            // segment, then a rule, then an area -- a box or a field. So a scatter
+            // drawn over a colormesh, or a marker on a threshold, still wins.
             s.hit_segment(pt, tolerance_pt)
+                .or_else(|| s.hit_rule(pt, tolerance_pt))
+                .or_else(|| s.hit_distribution(pt, tolerance_pt))
                 .or_else(|| s.hit_mesh(pt))
                 .map(|h| (page, h))
         })
