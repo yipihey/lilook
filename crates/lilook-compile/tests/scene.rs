@@ -229,3 +229,72 @@ fn auto_limits_far_from_the_origin_still_resolve() {
     assert!((u.x.min - t.x.min).abs() < 1e-6 && (u.x.max - t.x.max).abs() < 1e-6);
     assert!((u.y.min - t.y.min).abs() < 1e-3 && (u.y.max - t.y.max).abs() < 1e-3);
 }
+
+/// A log axis is not a straight line, and the recovered transform has to know it.
+///
+/// The truth used here needs no probe of its own: on an axis spanning `min..max`,
+/// the *middle of the data area in page terms* is the arithmetic mean of the
+/// limits if the axis is linear, and their geometric mean if it is logarithmic.
+/// Fitting a line through two probe points gives the chord, so a log axis came
+/// out linear -- wrong everywhere between the probes, which is hit-testing as well
+/// as panning.
+#[test]
+fn a_log_axis_maps_logarithmically() {
+    let src = r#"#import "@preview/lilaq:0.6.0" as lq
+#set page(width: auto, height: auto, margin: 6pt)
+#let x = lq.linspace(1, 100, num: 40)
+#lq.diagram(
+  width: 9cm, height: 5cm,
+  yscale: "log",
+  lq.plot(x, x.map(n => n * n), mark: none),
+)
+"#;
+    let mut b = Backend::new(std::env::temp_dir(), "");
+    let mut hints = lilook_compile::backend::Hints::new();
+    let doc = Document::new(src);
+    let (r, scenes) = b.render_scenes(&doc, 1.0, &mut hints);
+    if skip(&r) {
+        return;
+    }
+    assert!(!r.failed(), "{:?}", r.errors().collect::<Vec<_>>());
+    let s = &scenes[0];
+
+    // x is linear here, y is log; both are recovered from the same compile, so
+    // this checks the detection as much as the arithmetic.
+    let (x0, x1) = (s.transform.x.min, s.transform.x.max);
+    let (y0, y1) = (s.transform.y.min, s.transform.y.max);
+    assert!(y0 > 0.0, "a log axis cannot include zero: {y0}");
+
+    // The middle of the data area, in page points.
+    let mid_x_page = (s.area.0 + s.area.2) / 2.0;
+    let mid_y_page = (s.area.1 + s.area.3) / 2.0;
+    let mid_x = s.transform.x.to_data(mid_x_page);
+    let mid_y = s.transform.y.to_data(mid_y_page);
+
+    let arithmetic = (x0 + x1) / 2.0;
+    assert!(
+        (mid_x - arithmetic).abs() < (x1 - x0) * 0.02,
+        "x is linear, so the middle of the frame is the arithmetic mean: \
+         got {mid_x}, expected {arithmetic}"
+    );
+
+    let geometric = (y0 * y1).sqrt();
+    let arithmetic_y = (y0 + y1) / 2.0;
+    assert!(
+        (mid_y / geometric - 1.0).abs() < 0.05,
+        "y is a log axis, so the middle of the frame is the geometric mean \
+         {geometric:.3}, not the arithmetic mean {arithmetic_y:.3}; got {mid_y:.3}"
+    );
+
+    // And the round trip holds across the whole axis, which a chord fit does not.
+    for f in [0.0, 0.1, 0.25, 0.5, 0.75, 1.0] {
+        let page = s.area.1 + f * (s.area.3 - s.area.1);
+        let data = s.transform.y.to_data(page);
+        let back = s.transform.y.to_page(data);
+        assert!(
+            (back - page).abs() < 0.01,
+            "y did not round trip at {f}: {page} -> {data} -> {back}"
+        );
+        assert!(data > 0.0, "a log axis produced {data} at {f}");
+    }
+}

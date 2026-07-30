@@ -20,7 +20,7 @@
 
 use std::collections::HashMap;
 
-use lilook_core::compile::{AxisMap, Transform};
+use lilook_core::compile::{AxisMap, AxisScale, Transform};
 use lilook_core::scene::{Bounds, Scene, SeriesGeom};
 use lilook_core::{CallSite, Document};
 use typst::foundations::{Label, Selector, Value};
@@ -95,6 +95,12 @@ pub fn inject(doc: &Document, hints: &HashMap<usize, Bounds>) -> (String, Inject
             ("r1", "100%".to_string(), "100%".to_string()),
             ("d0", fmt(x0), fmt(y0)),
             ("d1", fmt(x1), fmt(y1)),
+            // The midpoint in *data* terms. On an axis that is linear in data,
+            // this lands exactly halfway between `d0` and `d1` on the page; on a
+            // log axis it does not, which is how the scale is recovered without
+            // reading the source. One extra marker per figure, and the findings
+            // record that probes cost nothing measurable.
+            ("dm", fmt((x0 + x1) / 2.0), fmt((y0 + y1) / 2.0)),
         ] {
             args.push_str(&format!(
                 ", {lq}.place({x}, {y}, context [#metadata((fig: {}, k: \"{kind}\", \
@@ -147,13 +153,28 @@ pub fn inject(doc: &Document, hints: &HashMap<usize, Bounds>) -> (String, Inject
     (out, Injection { scale_probes })
 }
 
+/// A probe's data coordinate, exactly.
+///
+/// This used to be `{v:.6}`, and the comment justifying it -- that typst has no
+/// exponent literal in argument position -- was simply untrue; `lq.place(9e-17,
+/// ..)` compiles. Six decimal places did two kinds of damage:
+///
+/// - it wrote any coordinate below a microunit as `0`, so a probe on a log axis
+///   became `lq.place(0, ..)` and lilaq refused the whole figure: "value must be
+///   strictly positive". That is the error a panned log-log plot reported.
+/// - more quietly, the number written into the document then disagreed with the
+///   `f64` that `solve` fits against, so on any figure whose data lives near zero
+///   the recovered transform was wrong by the rounding.
+///
+/// `data_num` is exact and round-trips, which is what a coordinate the transform
+/// is solved from has to be.
 fn fmt(v: f64) -> String {
-    // Typst has no `1e-3` literal for floats in argument position in all
-    // contexts, and `NaN`/`inf` are not literals at all.
+    // `NaN` and the infinities are not typst literals, and a probe cannot be
+    // placed at one anyway.
     if !v.is_finite() {
         return "0".into();
     }
-    format!("{v:.6}")
+    lilook_core::data_num(v)
 }
 
 fn positional(_doc: &Document, call: &CallSite, i: usize) -> Option<String> {
@@ -293,30 +314,73 @@ fn read(doc: &PagedDocument) -> Raw {
 fn solve(
     corners: ((f64, f64), (f64, f64)),
     scale: ((f64, f64), (f64, f64)),
+    mid: (f64, f64),
     data: (f64, f64, f64, f64),
 ) -> Option<Transform> {
     let (r0, r1) = corners;
     let (d0, d1) = scale;
     let (x0, x1, y0, y1) = data;
-    let sx = (d1.0 - d0.0) / (x1 - x0);
-    let sy = (d1.1 - d0.1) / (y1 - y0);
-    if !sx.is_finite() || !sy.is_finite() || sx == 0.0 || sy == 0.0 {
+    Some(Transform {
+        x: axis(x0, x1, (x0 + x1) / 2.0, d0.0, d1.0, mid.0, r0.0, r1.0)?,
+        // `lq.place` relative `0%` is the top-left, and page y grows downward, so
+        // the *first* corner carries ymax.
+        y: axis(y0, y1, (y0 + y1) / 2.0, d0.1, d1.1, mid.1, r1.1, r0.1)?,
+    })
+}
+
+/// One axis, fitted in whichever space it turns out to be linear in.
+///
+/// `dm` is the marker placed at the data midpoint of `v0`..`v1`. If the axis is
+/// linear in data, its page position is the average of `p0` and `p1`. Any other
+/// position means the axis bends, and the only bend lilaq offers is logarithmic --
+/// so the fit is redone against `log10`, which is what stops a log axis coming out
+/// as the chord between two probes.
+#[allow(clippy::too_many_arguments)]
+fn axis(
+    v0: f64,
+    v1: f64,
+    vm: f64,
+    p0: f64,
+    p1: f64,
+    pm: f64,
+    page_lo: f64,
+    page_hi: f64,
+) -> Option<AxisMap> {
+    let linear_prediction = (p0 + p1) / 2.0;
+    let bend = (pm - linear_prediction).abs();
+    // Relative to the span the probes cover, so the test does not depend on the
+    // figure's size. Below this the two fits agree to within a fraction of a
+    // point anyway, so either is right.
+    let straight = bend <= (p1 - p0).abs() * 0.01;
+    let positive = v0 > 0.0 && v1 > 0.0 && vm > 0.0;
+
+    let kind = if straight || !positive {
+        AxisScale::Linear
+    } else {
+        AxisScale::Log
+    };
+    let f = |v: f64| match kind {
+        AxisScale::Linear => v,
+        AxisScale::Log => v.log10(),
+    };
+    let scale = (p1 - p0) / (f(v1) - f(v0));
+    if !scale.is_finite() || scale == 0.0 {
         return None;
     }
-    Some(Transform {
-        x: AxisMap {
-            origin: d0.0 - x0 * sx,
-            scale: sx,
-            min: x0 + (r0.0 - d0.0) / sx,
-            max: x0 + (r1.0 - d0.0) / sx,
-        },
-        y: AxisMap {
-            origin: d0.1 - y0 * sy,
-            scale: sy,
-            min: y0 + (r1.1 - d0.1) / sy,
-            max: y0 + (r0.1 - d0.1) / sy,
-        },
-    })
+    let origin = p0 - f(v0) * scale;
+    let mut map = AxisMap {
+        origin,
+        scale,
+        min: 0.0,
+        max: 0.0,
+        kind,
+    };
+    map.min = map.to_data(page_lo);
+    map.max = map.to_data(page_hi);
+    if !map.min.is_finite() || !map.max.is_finite() {
+        return None;
+    }
+    Some(map)
 }
 
 /// Turn a compiled document plus the injection record into scenes.
@@ -325,13 +389,15 @@ pub fn scenes(doc: &PagedDocument, injection: &Injection) -> Vec<Scene> {
     let mut out = vec![];
     for (&figure, &data) in &injection.scale_probes {
         let get = |k: &str| raw.probes.get(&(figure, k.to_string())).copied();
-        let (Some(r0), Some(r1), Some(d0), Some(d1)) = (get("r0"), get("r1"), get("d0"), get("d1"))
+        let (Some(r0), Some(r1), Some(d0), Some(d1), Some(dm)) =
+            (get("r0"), get("r1"), get("d0"), get("d1"), get("dm"))
         else {
             continue;
         };
         let Some(transform) = solve(
             ((r0.1, r0.2), (r1.1, r1.2)),
             ((d0.1, d0.2), (d1.1, d1.2)),
+            (dm.1, dm.2),
             data,
         ) else {
             continue;

@@ -128,12 +128,14 @@ fn fixture() -> ([PageTexture; 1], Vec<Scene>) {
         transform: Transform {
             x: AxisMap {
                 origin: 20.0,
+                kind: lilook_core::AxisScale::Linear,
                 scale: 16.0,
                 min: 0.0,
                 max: 10.0,
             },
             y: AxisMap {
                 origin: 80.0,
+                kind: lilook_core::AxisScale::Linear,
                 scale: -6.0,
                 min: 0.0,
                 max: 10.0,

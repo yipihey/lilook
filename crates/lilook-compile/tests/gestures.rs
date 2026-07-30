@@ -630,3 +630,104 @@ fn seeded_arguments_compile() {
     // that a change which quietly stops offering `set` at all fails.
     assert!(checked >= 10, "only {checked} seeds were checked");
 }
+
+/// Panning a log-log figure as far as the pointer can go, and the result still
+/// compiles.
+///
+/// The reported bug: lilaq refused the figure with "value must be strictly
+/// positive". Two things were wrong. The recovered limits were *already* negative
+/// before any drag -- a straight-line fit through two probes extrapolates below
+/// them -- and the pan then subtracted a linear delta from a logarithmic axis.
+/// Fixing the mapping fixes both, because a shift in log space is a ratio.
+#[test]
+fn panning_a_log_log_figure_stays_positive_and_compiles() {
+    let src = r#"#import "@preview/lilaq:0.6.0" as lq
+#set page(width: auto, height: auto, margin: 6pt)
+#let x = lq.linspace(1, 100, num: 20)
+#lq.diagram(
+  width: 8cm, height: 5cm,
+  xscale: "log", yscale: "log",
+  lq.plot(x, x.map(n => n * n), mark: none),
+)
+"#;
+    let mut b = Backend::new(std::env::temp_dir(), "");
+    let mut hints = Hints::new();
+    let mut doc = Document::new(src);
+    let (r, scenes) = b.render_scenes(&doc, 1.0, &mut hints);
+    if skip(&r) {
+        return;
+    }
+    assert!(!r.failed(), "{:?}", r.errors().collect::<Vec<_>>());
+
+    // Both axes must have been recognised as logarithmic, or the rest proves
+    // nothing about log panning.
+    let t = scenes[0].transform;
+    assert_eq!(t.x.kind, lilook_core::AxisScale::Log, "x should be log");
+    assert_eq!(t.y.kind, lilook_core::AxisScale::Log, "y should be log");
+    assert!(t.x.min > 0.0 && t.y.min > 0.0, "{:?}", t);
+
+    let figure = doc.figures().first().map(|f| f.node).expect("a diagram");
+
+    // Drags far larger than the figure, in every direction, including ones that
+    // would have taken a linear pan straight through zero.
+    for (dx, dy) in [
+        (0.0, 0.0),
+        (40.0, 0.0),
+        (-40.0, 0.0),
+        (0.0, 60.0),
+        (0.0, -60.0),
+        (500.0, 500.0),
+        (-500.0, -500.0),
+        (2000.0, -2000.0),
+    ] {
+        let (xlo, xhi) = t.x.shifted(dx);
+        let (ylo, yhi) = t.y.shifted(dy);
+        assert!(
+            xlo > 0.0 && xhi > 0.0 && ylo > 0.0 && yhi > 0.0,
+            "a drag of ({dx}, {dy}) left the log axes at ({xlo}, {xhi}) ({ylo}, {yhi})"
+        );
+
+        doc.begin("pan");
+        for (param, (lo, hi)) in [("xlim", (xlo, xhi)), ("ylim", (ylo, yhi))] {
+            // `gesture_num`, exactly as `Editor`'s `SetLimits` does. The local
+            // `num` in this file is the *geometry* formatter, and using it here
+            // reproduced the bug instead of testing the fix: it writes `3e-9` as
+            // `0`, which is what lilaq was refusing.
+            let value = format!(
+                "({}, {})",
+                lilook_core::gesture_num(lo),
+                lilook_core::gesture_num(hi)
+            );
+            let present = doc
+                .call(figure)
+                .is_some_and(|c| c.named.iter().any(|a| a.name == param));
+            let intent = if present {
+                Intent::SetNamedArg {
+                    node: figure,
+                    param: param.into(),
+                    value,
+                }
+            } else {
+                Intent::InsertNamedArg {
+                    node: figure,
+                    param: param.into(),
+                    value,
+                }
+            };
+            doc.apply(intent).expect("the limits are a valid value");
+        }
+        doc.commit();
+
+        let (r, _) = b.render_scenes(&doc, 1.0, &mut hints);
+        assert!(
+            !r.failed(),
+            "after a drag of ({dx}, {dy}) the figure stopped compiling: {:?}\n{}",
+            r.errors().map(|d| d.message.clone()).collect::<Vec<_>>(),
+            doc.text()
+        );
+    }
+
+    // And every pan undoes, as one step each.
+    while doc.undo() {}
+    assert_eq!(doc.text(), src);
+}

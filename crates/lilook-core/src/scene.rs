@@ -9,6 +9,8 @@
 //! The type lives in core rather than in the compile backend so that the UI can
 //! consume it without depending on a typesetter.
 
+#[cfg(test)]
+use crate::compile::AxisScale;
 use crate::compile::Transform;
 
 /// One series' evaluated data, in data units.
@@ -102,13 +104,28 @@ impl Bounds {
 
     /// Degenerate axes (a single-valued series, a constant) would give a
     /// zero-separation probe pair and an unsolvable transform.
+    ///
+    /// The test is *relative*. It used to be `f64::EPSILON * 8.0`, an absolute
+    /// threshold, which called every axis narrower than about 1e-15 degenerate --
+    /// so an axis spanning 1e-64 to 1e-59, which is small but perfectly ordinary
+    /// after panning into a log plot, was replaced by `(-1, 1)`. A probe then went
+    /// to data −1 on a logarithmic axis and lilaq refused the figure: "value must
+    /// be strictly positive".
+    ///
+    /// Padding also keeps the sign of the data it is padding, for the same reason:
+    /// widening a positive axis must not reach through zero.
     pub fn padded(self) -> Bounds {
         let pad = |a: f64, b: f64| {
-            if (b - a).abs() > f64::EPSILON * 8.0 {
+            let span = b - a;
+            let magnitude = a.abs().max(b.abs());
+            if span > magnitude * 1e-12 {
                 (a, b)
-            } else if a.abs() > f64::EPSILON {
-                (a - a.abs() * 0.5, b + b.abs() * 0.5)
+            } else if magnitude > 0.0 {
+                // Half the magnitude either side: for a single positive value this
+                // gives `v/2 .. 3v/2`, which stays positive.
+                (a - magnitude * 0.5, b + magnitude * 0.5)
             } else {
+                // Genuinely nothing to scale by -- every value is zero.
                 (-1.0, 1.0)
             }
         };
@@ -224,12 +241,14 @@ mod tests {
             transform: Transform {
                 x: AxisMap {
                     origin: 0.0,
+                    kind: AxisScale::Linear,
                     scale: 10.0,
                     min: 0.0,
                     max: 10.0,
                 },
                 y: AxisMap {
                     origin: 100.0,
+                    kind: AxisScale::Linear,
                     scale: -10.0,
                     min: 0.0,
                     max: 10.0,
@@ -280,6 +299,39 @@ mod tests {
             .expect("segment hit");
         assert_eq!(hit.node, 7);
         assert!(hit.index == 0 || hit.index == 1);
+    }
+
+    /// Small is not degenerate. An absolute epsilon called any axis narrower than
+    /// ~1e-15 degenerate and replaced it with `(-1, 1)`; a probe then landed at
+    /// data -1 on a log axis, which lilaq refuses outright.
+    #[test]
+    fn a_small_range_is_not_a_degenerate_one() {
+        let tiny = Bounds {
+            x: (3.48e-64, 1.05e-59),
+            y: (1e-20, 2e-18),
+        }
+        .padded();
+        assert_eq!(tiny.x, (3.48e-64, 1.05e-59), "left alone, not widened");
+        assert_eq!(tiny.y, (1e-20, 2e-18));
+
+        // Padding a single positive value stays positive, whatever its size.
+        for v in [5.0, 1e-9, 1e-60, 1e60] {
+            let p = Bounds {
+                x: (v, v),
+                y: (v, v),
+            }
+            .padded();
+            assert!(p.x.0 > 0.0 && p.x.1 > p.x.0, "{v} padded to {:?}", p.x);
+            // And the pad is proportionate, so a probe placed inside it is too.
+            assert!((p.x.1 / p.x.0 - 3.0).abs() < 1e-9, "{:?}", p.x);
+        }
+        // Only an all-zero axis has no magnitude to scale by.
+        let zero = Bounds {
+            x: (0.0, 0.0),
+            y: (0.0, 0.0),
+        }
+        .padded();
+        assert_eq!(zero.x, (-1.0, 1.0));
     }
 
     #[test]

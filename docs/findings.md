@@ -1287,3 +1287,58 @@ compiles it. This is the lesson `scripts/check.sh` was built on -- "the
 trailing-comma insertion bug passed the round-trip test and was caught only by
 recompiling the output" -- rediscovered on a new surface. A round trip is not the
 gate. The compiler is.
+
+## Panning a log axis: one symptom, three bugs
+
+Reported as "panning a log-log plot gives *value must be strictly positive*". The
+pan was the least of it.
+
+**1. The recovered transform was linear, always.** `AxisMap` was `origin + data *
+scale`, fitted from two probe points. On a log axis that is the *chord* between
+them: every value in between maps to the wrong place -- hit-testing as much as
+panning -- and extrapolating past them gave `y.min = -0.40` on a logarithmic axis,
+before any gesture at all. That negative number is what a pan then wrote into
+`ylim`.
+
+So `AxisMap` now carries an `AxisScale`, and maps through it. Which one an axis is
+is **recovered, not parsed**: a third marker, `dm`, goes at the *data* midpoint of
+the probe pair. If the axis is linear in data, `dm` lands exactly halfway between
+the other two on the page; if it does not, the axis bends, and the only bend lilaq
+offers is logarithmic. That keeps the ADR-0008 discipline -- geometry is measured,
+not inferred from source -- and it works whether the scale came from the call, a
+set rule, or an `lq.axis` handed to `xaxis:`.
+
+The test needs no probe of its own: on an axis spanning `min..max`, the middle of
+the data area in page terms is the *arithmetic* mean of the limits if the axis is
+linear and the *geometric* mean if it is logarithmic.
+
+**2. The pan itself was additive.** Now the shift happens in the axis's own space,
+so a log pan multiplies rather than steps. That is the guard the report asked for,
+and it is worth being precise about why it is better than a clamp: a ratio can
+approach zero without ever reaching it, so there is no boundary to special-case
+and no drag that "sticks" at a limit. `nudged` does the same for dragging a point.
+Linear axes are untouched, including their right to go negative.
+
+**3. Two formatters were writing data through a geometry rounder.** Both were the
+P1 defect class, in places P1 did not reach:
+
+- `Editor`'s `SetLimits` used `num()`, six decimal places, so a limit of `3e-9`
+  became `0`. New `gesture_num` keeps six *significant figures* instead: tidy for
+  an ordinary pan (`10.1235`), lossless for a small one.
+- `probe.rs`'s own `fmt` did the same to probe *coordinates*, and the comment
+  justifying it -- that typst has no exponent literal in argument position -- was
+  simply untrue (`lq.place(9e-17, ..)` compiles; checked). So a probe on a log
+  axis became `lq.place(0, ..)` and lilaq refused the figure. More quietly, the
+  number written into the document then disagreed with the `f64` `solve` fits
+  against, so the transform was wrong by the rounding on *any* figure whose data
+  lives near zero.
+
+**And a fourth, found by pushing the test further than the report.** `Bounds::padded`
+used an absolute `f64::EPSILON * 8.0` to decide an axis was degenerate, so any axis
+narrower than ~1e-15 -- ordinary after panning deep into a log plot -- was replaced
+by `(-1, 1)`. A probe then went to data −1 on a log axis. The test is relative now,
+and padding keeps the sign of what it pads.
+
+The lesson repeated from the seeded-arguments work: each of these produced a
+document that *parsed*. Only compiling it found them, and only a drag far larger
+than the figure found the fourth.

@@ -16,6 +16,7 @@
 //! feed the lag back into the gesture and make a drag stutter or run away.
 
 use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
+use lilook_core::compile::AxisMap;
 use lilook_core::scene::{Scene, SceneHit};
 
 use crate::viewport::{stack_pages, stacked_size, PageBox, Viewport};
@@ -91,16 +92,19 @@ enum Gesture {
     /// Pan the data: rewrites the diagram's limits.
     DataPan {
         figure: usize,
-        /// Limits when the press happened.
-        start: ((f64, f64), (f64, f64)),
-        /// Page points per data unit, x and y, at the press.
-        scale: (f64, f64),
+        /// The axes as they were when the press happened -- limits, scale *and*
+        /// which space each is linear in. Carrying the whole map rather than two
+        /// scale factors is what lets a log axis pan multiplicatively, so its
+        /// limits approach zero and never cross it.
+        start: (AxisMap, AxisMap),
     },
     MovePoint {
         node: usize,
         index: usize,
         start: (f64, f64),
-        scale: (f64, f64),
+        /// The axes at the press, for the same reason as above: dragging a point
+        /// on a log axis moves it by a ratio, not by an amount.
+        axes: (AxisMap, AxisMap),
     },
     Resize {
         figure: usize,
@@ -254,7 +258,7 @@ impl Canvas {
                                 node: h.node,
                                 index: h.index,
                                 start: h.data,
-                                scale: (scene.transform.x.scale, scene.transform.y.scale),
+                                axes: (scene.transform.x, scene.transform.y),
                             });
                         }
 
@@ -269,11 +273,7 @@ impl Canvas {
 
                         inside.map(|scene| Gesture::DataPan {
                             figure: scene.figure,
-                            start: (
-                                (scene.transform.x.min, scene.transform.x.max),
-                                (scene.transform.y.min, scene.transform.y.max),
-                            ),
-                            scale: (scene.transform.x.scale, scene.transform.y.scale),
+                            start: (scene.transform.x, scene.transform.y),
                         })
                     })
                     .unwrap_or(Gesture::ViewPan),
@@ -285,22 +285,17 @@ impl Canvas {
 
         if response.dragged() {
             self.drag += response.drag_delta();
-            // Screen pixels -> data units. `scale` is negative on y, which is
-            // what makes dragging up increase the value.
-            let per_data = |s: f64| s * viewport.zoom as f64;
             match &self.gesture {
                 Some(Gesture::ViewPan) => viewport.pan += response.drag_delta(),
-                Some(Gesture::DataPan {
-                    figure,
-                    start,
-                    scale,
-                }) => {
-                    let dx = self.drag.x as f64 / per_data(scale.0);
-                    let dy = self.drag.y as f64 / per_data(scale.1);
+                Some(Gesture::DataPan { figure, start }) => {
+                    // The shift is applied in each axis's own space, so a log
+                    // axis slides by a ratio. Screen pixels are divided by the
+                    // live zoom first, because `scale` is in page points.
+                    let page = |px: f32| px as f64 / viewport.zoom as f64;
                     events.push(CanvasEvent::SetLimits {
                         figure: *figure,
-                        x: (start.0 .0 - dx, start.0 .1 - dx),
-                        y: (start.1 .0 - dy, start.1 .1 - dy),
+                        x: start.0.shifted(page(self.drag.x)),
+                        y: start.1.shifted(page(self.drag.y)),
                     });
                 }
                 Some(Gesture::Resize {
@@ -325,14 +320,18 @@ impl Canvas {
                     node,
                     index,
                     start,
-                    scale,
+                    axes,
                 }) => {
-                    let dx = self.drag.x as f64 / per_data(scale.0);
-                    let dy = self.drag.y as f64 / per_data(scale.1);
+                    // Same reasoning as the pan: on a log axis a point follows the
+                    // pointer only if it moves by a ratio.
+                    let page = |px: f32| px as f64 / viewport.zoom as f64;
                     events.push(CanvasEvent::MovePoint {
                         node: *node,
                         index: *index,
-                        to: (start.0 + dx, start.1 + dy),
+                        to: (
+                            axes.0.nudged(start.0, page(self.drag.x)),
+                            axes.1.nudged(start.1, page(self.drag.y)),
+                        ),
                     });
                 }
                 None => {}

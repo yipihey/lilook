@@ -369,6 +369,32 @@ pub fn data_num(v: f64) -> String {
     }
 }
 
+/// A data value a gesture produced: an axis limit from a pan, a dragged point.
+///
+/// Six *significant figures*, not six decimal places. `lilook-ui`'s `num()` does
+/// the latter, which is right for a width or a margin -- the extra digits there
+/// are mouse jitter -- but wrong for anything on a data axis: it writes `3e-9` as
+/// `0`, and panning a log axis produces limits like that legitimately. lilaq then
+/// refuses the figure, "value must be strictly positive", which is exactly how
+/// this was found.
+///
+/// Six significant figures keeps an ordinary pan tidy (`10.1234`, not seventeen
+/// digits) while never rounding a small number to nothing.
+pub fn gesture_num(v: f64) -> String {
+    if !v.is_finite() || v == 0.0 {
+        return data_num(v);
+    }
+    let magnitude = v.abs().log10().floor();
+    let factor = 10f64.powf(5.0 - magnitude);
+    if !factor.is_finite() || factor == 0.0 {
+        // Near the extremes of the range, scaling would overflow. The exact form
+        // is short there anyway.
+        return data_num(v);
+    }
+    let rounded = (v * factor).round() / factor;
+    data_num(if rounded == 0.0 { v } else { rounded })
+}
+
 /// Render measured values as a Typst array literal.
 ///
 /// The one-element case is why this is not a `join`: `(1)` is a parenthesised
@@ -694,6 +720,33 @@ mod tests {
         assert_eq!(file("README", FileRoot::Project).extension(), None);
         // A dot in a directory name is not an extension on the file.
         assert_eq!(file("v1.2/data", FileRoot::Project).extension(), None);
+    }
+
+    /// Six significant figures, and never a zero where the value was not one.
+    #[test]
+    fn a_gesture_value_keeps_its_significant_figures() {
+        assert_eq!(gesture_num(0.0), "0");
+        assert_eq!(gesture_num(10.0), "10");
+        assert_eq!(gesture_num(1.5), "1.5");
+        // Tidy where `num()` was tidy.
+        assert_eq!(gesture_num(10.123456789), "10.1235");
+        assert_eq!(gesture_num(-0.333333333), "-0.333333");
+        // And correct where `num()` wrote `0`, which is what broke a log pan.
+        for v in [3e-9, 1.234e-12, 5e-300, f64::MIN_POSITIVE] {
+            let s = gesture_num(v);
+            assert_ne!(s, "0", "{v} was flattened");
+            let back: f64 = s.parse().unwrap();
+            assert!(back > 0.0, "{v} -> {s} -> {back}");
+            assert!(
+                (back / v - 1.0).abs() < 1e-5,
+                "{v} -> {s} lost too much precision"
+            );
+        }
+        // Large magnitudes stay short rather than becoming a wall of zeros.
+        assert!(gesture_num(6.02214076e23).len() < 16);
+        for v in [3e-9, -1.0, 1e300, f64::MAX, f64::MIN_POSITIVE] {
+            assert!(check_expr(&gesture_num(v)).is_ok(), "{v}");
+        }
     }
 
     #[test]

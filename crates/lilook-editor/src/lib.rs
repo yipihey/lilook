@@ -760,8 +760,16 @@ impl Editor {
                     self.explicit_tx = false;
                 }
                 CanvasEvent::SetLimits { figure, x, y } => {
+                    // `gesture_num`, not `num`: a limit is a value on a data axis,
+                    // and six decimal places writes `3e-9` as `0`. On a log axis
+                    // that is a limit a pan reaches legitimately, and lilaq then
+                    // refuses the figure -- "value must be strictly positive".
                     for (param, (lo, hi)) in [("xlim", x), ("ylim", y)] {
-                        let value = format!("({}, {})", num(lo), num(hi));
+                        let value = format!(
+                            "({}, {})",
+                            lilook_core::gesture_num(lo),
+                            lilook_core::gesture_num(hi)
+                        );
                         self.set_or_insert(figure, param, value);
                     }
                 }
@@ -783,7 +791,7 @@ impl Editor {
                             node,
                             arg,
                             element: index,
-                            value: num(v),
+                            value: lilook_core::gesture_num(v),
                         };
                         self.apply(intent);
                     }
