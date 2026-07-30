@@ -42,9 +42,11 @@ pub fn read(bytes: &[u8]) -> Result<Dataset, DataError> {
                 columns.extend(bintable(bytes, data_at, &cards, &dims)?);
             }
         } else if data_len > 0 {
-            // An image. One column per row for a 2-D image would be thousands of
-            // columns, so an image comes back flattened under one name -- enough
-            // to plot a spectrum, which is what a 1-D image usually is.
+            // An image. A 1-D one is a spectrum and reads as a column; a 2-D one
+            // is a field and keeps its shape, so it can be linked to a mesh
+            // rather than arriving as one very long column. Anything higher --
+            // a cube -- is flattened, because guessing which plane was wanted
+            // would be worse than saying nothing.
             let raw = take(bytes, data_at, data_len)?;
             let scale = float(&cards, "BSCALE").unwrap_or(1.0);
             let zero = float(&cards, "BZERO").unwrap_or(0.0);
@@ -53,7 +55,12 @@ pub fn read(bytes: &[u8]) -> Result<Dataset, DataError> {
                 .map(|v| v * scale + zero)
                 .collect();
             let name = text(&cards, "EXTNAME").unwrap_or_else(|| format!("hdu{hdu}"));
-            columns.push(Column { name, values });
+            // `NAXIS1` varies fastest, so the bytes are already row-major with
+            // `NAXIS1` columns -- the reading lilook uses everywhere else.
+            columns.push(match dims[..] {
+                [cols, rows] => Column::field(name, values, cols, rows),
+                _ => Column::new(name, values),
+            });
         }
 
         // Every section is padded to a whole number of 2880-byte blocks.
@@ -191,7 +198,7 @@ fn bintable(
                 let c = take(bytes, at, width)?;
                 values.push(one(c, bitpix) * scale + zero);
             }
-            out.push(Column { name, values });
+            out.push(Column::new(name, values));
         }
         offset += field_bytes;
     }

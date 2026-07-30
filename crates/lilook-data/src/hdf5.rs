@@ -76,13 +76,20 @@ fn walk(group: &hdf5::Group, prefix: &str, out: &mut Vec<Column>) {
         }
         if let Some(values) = numbers(&ds) {
             match shape.as_slice() {
-                [_] => out.push(Column { name: path, values }),
+                [_] => out.push(Column::new(path, values)),
+                // Whole, as a field a mesh can take, and also split into
+                // columns -- a 2-D dataset is a table about as often as it is an
+                // image, and the file does not say which. The split is capped so
+                // a 512-pixel-wide image does not bury the field itself.
                 [rows, cols] => {
-                    for c in 0..*cols {
-                        out.push(Column {
-                            name: format!("{path}[{c}]"),
-                            values: (0..*rows).map(|r| values[r * cols + c]).collect(),
-                        });
+                    out.push(Column::field(path.clone(), values.clone(), *cols, *rows));
+                    if *cols <= crate::npy::MAX_SPLIT {
+                        for c in 0..*cols {
+                            out.push(Column::new(
+                                format!("{path}[{c}]"),
+                                (0..*rows).map(|r| values[r * cols + c]).collect(),
+                            ));
+                        }
                     }
                 }
                 _ => {}

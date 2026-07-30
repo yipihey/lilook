@@ -308,7 +308,7 @@ impl WebApp {
         let columns: Vec<lilook_data::Column> = names
             .into_iter()
             .zip(values)
-            .map(|(name, values)| lilook_data::Column { name, values })
+            .map(|(name, values)| lilook_data::Column::new(name, values))
             .collect();
         if columns.is_empty() {
             self.editor

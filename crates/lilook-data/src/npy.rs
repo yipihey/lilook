@@ -53,24 +53,23 @@ pub fn read_archive(bytes: &[u8]) -> Result<Dataset, DataError> {
     Ok(Dataset { columns })
 }
 
+/// Beyond this many columns a 2-D array is an image, not a table, and splitting
+/// it into one column per pixel column helps nobody.
+pub(crate) const MAX_SPLIT: usize = 32;
+
 /// Split a flat array into columns according to its shape.
 fn columns_from(values: Vec<f64>, shape: &[usize], stem: &str) -> Result<Dataset, DataError> {
     match shape {
         // A scalar is a one-value column, which is a legitimate thing to plot.
-        [] => Ok(Dataset {
-            columns: vec![Column {
-                name: stem.into(),
-                values,
-            }],
+        [] | [_] => Ok(Dataset {
+            columns: vec![Column::new(stem, values)],
         }),
-        [_] => Ok(Dataset {
-            columns: vec![Column {
-                name: stem.into(),
-                values,
-            }],
-        }),
-        // Rows by columns, C order: take each column out. Tables are stored
-        // this way often enough that refusing would be unhelpful.
+        // Rows by columns, C order. It comes back whole, as a field a mesh can
+        // take, *and* split into columns -- because a 2-D array is a table about
+        // as often as it is an image and the file does not say which.
+        //
+        // The split is capped: past 32 columns this is an image, and offering
+        // 512 one-pixel-wide columns would bury the entry anyone wanted.
         [rows, cols] => {
             if values.len() != rows * cols {
                 return Err(DataError::Malformed(format!(
@@ -78,14 +77,16 @@ fn columns_from(values: Vec<f64>, shape: &[usize], stem: &str) -> Result<Dataset
                     values.len()
                 )));
             }
-            Ok(Dataset {
-                columns: (0..*cols)
-                    .map(|c| Column {
-                        name: format!("{stem}{}", c + 1),
-                        values: (0..*rows).map(|r| values[r * cols + c]).collect(),
-                    })
-                    .collect(),
-            })
+            let mut columns = vec![Column::field(stem, values.clone(), *cols, *rows)];
+            if *cols <= MAX_SPLIT {
+                columns.extend((0..*cols).map(|c| {
+                    Column::new(
+                        format!("{stem}{}", c + 1),
+                        (0..*rows).map(|r| values[r * cols + c]).collect(),
+                    )
+                }));
+            }
+            Ok(Dataset { columns })
         }
         _ => Err(DataError::Unsupported(format!(
             "{}-dimensional data has no obvious columns",
@@ -302,13 +303,29 @@ mod tests {
     }
 
     #[test]
-    fn a_two_dimensional_array_becomes_one_column_per_column() {
+    fn a_two_dimensional_array_is_both_a_field_and_its_columns() {
         // Two rows of three, C order.
         let file = npy("<f8", "(2, 3)", &f64s(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]));
         let d = read_one(&file).unwrap();
-        assert_eq!(d.names(), ["column1", "column2", "column3"]);
-        assert_eq!(d.columns[0].values, [1.0, 4.0]);
-        assert_eq!(d.columns[2].values, [3.0, 6.0]);
+        // The whole thing first, keeping its shape, because that is what a mesh
+        // takes and a mesh is the only thing that can take it.
+        assert_eq!(d.names(), ["column", "column1", "column2", "column3"]);
+        assert_eq!(d.columns[0].grid, Some((3, 2)));
+        assert_eq!(d.columns[0].values, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        // Then the columns, for when it was a table after all.
+        assert_eq!(d.columns[1].values, [1.0, 4.0]);
+        assert_eq!(d.columns[3].values, [3.0, 6.0]);
+        assert!(d.columns[1].grid.is_none());
+    }
+
+    /// Past the cap, a 2-D array is an image and only the field comes back.
+    #[test]
+    fn a_wide_array_is_not_split_into_a_column_per_pixel() {
+        let cols = MAX_SPLIT + 1;
+        let file = npy("<f8", &format!("(2, {cols})"), &f64s(&vec![0.0; 2 * cols]));
+        let d = read_one(&file).unwrap();
+        assert_eq!(d.columns.len(), 1, "the field alone");
+        assert_eq!(d.columns[0].grid, Some((cols, 2)));
     }
 
     #[test]

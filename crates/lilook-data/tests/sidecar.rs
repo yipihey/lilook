@@ -201,3 +201,64 @@ fn a_sidecar_is_a_slice_rather_than_a_copy() {
     assert!(ratio < 0.6, "{ratio}");
     assert_eq!(Dataset::default().to_cbor(), vec![0xa0]);
 }
+
+/// A 2-D FITS image is a *field*, and has to survive as one.
+///
+/// Flattening it would be the wrong answer twice over: lilaq's `colormesh` takes
+/// `z` as rows of values, so a flat array cannot be linked at all, and reshaping
+/// it in the manuscript is exactly the interpreted arithmetic the sidecar exists
+/// to avoid. `NAXIS1` varies fastest in a FITS image, so the bytes are already
+/// row-major -- the reading lilook uses everywhere else.
+#[test]
+fn a_fits_image_keeps_its_shape_through_the_sidecar() {
+    const COLS: usize = 5;
+    const ROWS: usize = 3;
+    let value = |col: usize, row: usize| (col + 10 * row) as f64;
+
+    let mut data = Vec::new();
+    for row in 0..ROWS {
+        for col in 0..COLS {
+            data.extend_from_slice(&(value(col, row) as f32).to_be_bytes());
+        }
+    }
+    let mut header = String::new();
+    for c in [
+        "SIMPLE  =                    T",
+        "BITPIX  =                  -32",
+        "NAXIS   =                    2",
+        &format!("NAXIS1  = {COLS:>20}"),
+        &format!("NAXIS2  = {ROWS:>20}"),
+    ] {
+        header.push_str(&format!("{c:<80}"));
+    }
+    header.push_str(&format!("{:<80}", "END"));
+    while !header.len().is_multiple_of(2880) {
+        header.push(' ');
+    }
+    let mut bytes = header.into_bytes();
+    bytes.extend_from_slice(&data);
+    while !bytes.len().is_multiple_of(2880) {
+        bytes.push(0);
+    }
+
+    let d = decode(&bytes, Format::Fits).unwrap();
+    assert_eq!(d.names(), ["hdu0"], "one image, one entry");
+    let image = &d.columns[0];
+    assert_eq!(image.grid, Some((COLS, ROWS)));
+    assert_eq!(image.values.len(), COLS * ROWS);
+    for row in 0..ROWS {
+        for col in 0..COLS {
+            assert_eq!(image.values[row * COLS + col], value(col, row));
+        }
+    }
+
+    // And the sidecar nests it: a map of one name to three arrays of five, so
+    // typst reads back exactly the `z` a mesh wants.
+    let sidecar = d.to_cbor();
+    assert_eq!(sidecar[0], 0xa1, "a one-entry map");
+    assert_eq!(sidecar[1..6], *b"\x64hdu0", "the key");
+    assert_eq!(sidecar[6], 0x83, "an array of 3 rows");
+    assert_eq!(sidecar[7], 0x85, "the first row, of 5");
+    // Three rows of five doubles, each with a one-byte array head.
+    assert_eq!(sidecar.len(), 1 + 5 + 1 + ROWS * (1 + COLS * 9));
+}

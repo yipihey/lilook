@@ -63,6 +63,7 @@ pub fn read(text: &str) -> Result<Dataset, DataError> {
     // common, and dropping the whole file over it would be unhelpful.
     let columns = (0..width)
         .map(|c| Column {
+            grid: None,
             name: names
                 .get(c)
                 .map(|n| n.text.clone())

@@ -37,6 +37,32 @@ pub mod zip;
 pub struct Column {
     pub name: String,
     pub values: Vec<f64>,
+    /// `Some((columns, rows))` when this is a two-dimensional *field* rather
+    /// than a column, with `values` flattened row-major.
+    ///
+    /// A FITS image and a 2-D HDF5 dataset are both fields, and a field is only
+    /// linkable to a mesh -- so the shape has to survive decoding. Without it an
+    /// image arrives as one very long column and the user is left to reshape it
+    /// by hand in the manuscript.
+    pub grid: Option<(usize, usize)>,
+}
+
+impl Column {
+    pub fn new(name: impl Into<String>, values: Vec<f64>) -> Column {
+        Column {
+            name: name.into(),
+            values,
+            grid: None,
+        }
+    }
+
+    /// The same, shaped as `columns` by `rows`.
+    pub fn field(name: impl Into<String>, values: Vec<f64>, cols: usize, rows: usize) -> Column {
+        Column {
+            grid: Some((cols, rows)),
+            ..Column::new(name, values)
+        }
+    }
 }
 
 /// What a decoder found: named columns, in file order.
@@ -253,18 +279,9 @@ mod tests {
     fn selecting_columns_is_what_makes_a_sidecar_small() {
         let d = Dataset {
             columns: vec![
-                Column {
-                    name: "t".into(),
-                    values: vec![0.0, 1.0],
-                },
-                Column {
-                    name: "big".into(),
-                    values: (0..1000).map(f64::from).collect(),
-                },
-                Column {
-                    name: "y".into(),
-                    values: vec![2.0, 3.0],
-                },
+                Column::new("t", vec![0.0, 1.0]),
+                Column::new("big", (0..1000).map(f64::from).collect()),
+                Column::new("y", vec![2.0, 3.0]),
             ],
         };
         let picked = d.select(&["t".into(), "y".into()]);

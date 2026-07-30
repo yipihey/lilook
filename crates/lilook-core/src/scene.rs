@@ -61,6 +61,17 @@ impl SeriesGeom {
         }
     }
 
+    /// The field value under a mesh hit, addressed by the row-major cell index
+    /// `hit_mesh` reports. `None` for any other shape, and when `z` was not
+    /// recovered -- a field can be a function whose evaluation lilaq accepted
+    /// but the probe did not.
+    pub fn field_at(&self, index: usize) -> Option<f64> {
+        if self.shape != SeriesShape::Mesh {
+            return None;
+        }
+        self.channel("z")?.get(index).copied()
+    }
+
     /// Every channel's name and length, for a UI that wants to list them.
     pub fn channel_lengths(&self) -> Vec<(String, usize)> {
         if self.grid.is_some() {
@@ -425,6 +436,14 @@ impl Scene {
     /// itself could only be reached from the tree.
     ///
     /// The nearest grid indices come back too, so a UI can say which cell.
+    /// The field value a hit reads, if it landed on a mesh.
+    pub fn field_at(&self, hit: &SceneHit) -> Option<f64> {
+        self.series
+            .iter()
+            .find(|s| s.node == hit.node)?
+            .field_at(hit.index)
+    }
+
     pub fn hit_mesh(&self, page_pt: (f64, f64)) -> Option<SceneHit> {
         let data = self.transform.to_data(page_pt);
         for s in &self.series {

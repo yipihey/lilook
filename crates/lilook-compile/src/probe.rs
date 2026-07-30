@@ -181,6 +181,29 @@ pub fn inject_with(
                 ));
                 continue;
             }
+            // A mesh's field is positional slot 2, and it is usually a *function*
+            // -- so recovering it means evaluating it over the grid. Measured at
+            // ~7% of a compile even at 60,000 cells, because lilaq has already
+            // evaluated the same closure to draw the figure and comemo makes the
+            // second pass nearly free.
+            //
+            // Rows over y, columns over x, which is the shape lilaq documents for
+            // an explicit array; a test pins that by building one field both ways
+            // and asserting the recovered values match.
+            let mut field = String::new();
+            if series.series_shape() == SeriesShape::Mesh {
+                if let (Some(xa), Some(ya), Some(z)) = (
+                    positional(doc, series, 0),
+                    positional(doc, series, 1),
+                    positional(doc, series, 2),
+                ) {
+                    field = format!(
+                        ", zf: ((xa, ya, f) => if type(f) == function \
+                         {{ ya.map(yy => xa.map(xx => f(xx, yy))) }} else {{ f }})\
+                         ({xa}, {ya}, {z})"
+                    );
+                }
+            }
             let (x, y) = match series.series_shape() {
                 // One point, from two scalar arguments.
                 SeriesShape::Anchor => {
@@ -263,7 +286,7 @@ pub fn inject_with(
             // range and change the layout it is trying to measure.
             args.push_str(&format!(
                 ", {lq}.place(0%, 0%, [#metadata((fig: {}, node: {node}, sh: \"{shape}\", \
-                 x: {x}, y: {y}, ch: {channels}))<{SERIES_LABEL}>])",
+                 x: {x}, y: {y}, ch: {channels}{field}))<{SERIES_LABEL}>])",
                 fig.node
             ));
         }
@@ -466,6 +489,11 @@ fn read(doc: &PagedDocument) -> Raw {
                 let (xs, ys) = (numbers(&x), numbers(&y));
                 let grid = Some((xs.len(), ys.len()));
                 let mut ch = vec![("x".to_string(), xs), ("y".to_string(), ys)];
+                // The field, flattened row-major, so `grid` alone indexes it.
+                let z: Vec<f64> = rows(field(&d, "zf").as_ref()).concat();
+                if !z.is_empty() {
+                    ch.push(("z".to_string(), z));
+                }
                 ch.extend(channels);
                 (SeriesShape::Mesh, vec![], grid, ch)
             }

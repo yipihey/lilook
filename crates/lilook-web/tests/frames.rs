@@ -658,7 +658,12 @@ fn a_colormesh_is_a_grid_not_a_diagonal_of_points() {
     assert!(geom.points.is_empty(), "a grid has no paired points");
     assert_eq!(
         geom.channel_lengths(),
-        vec![("x".to_string(), 60), ("y".to_string(), 40)]
+        vec![
+            ("x".to_string(), 60),
+            ("y".to_string(), 40),
+            // The field itself, flattened: one value per cell, not per axis.
+            ("z".to_string(), 2400)
+        ]
     );
     assert!(!mesh_call.has_literal_points(), "nothing to drag on a grid");
 
@@ -691,6 +696,19 @@ fn a_colormesh_is_a_grid_not_a_diagonal_of_points() {
         assert_eq!(hit.node, mesh_call.id);
         // The index names one grid cell, row-major over 60 columns.
         assert!(hit.index < 60 * 40, "{} out of range", hit.index);
+
+        // And it reads the field there. The example's `z` is a function, so this
+        // is the whole recovery path: lilaq evaluated it to draw, and the probe
+        // evaluated it again to report -- which is affordable only because comemo
+        // makes the second pass nearly free.
+        let z = scene.field_at(&hit).expect("the field under the cursor");
+        let (xs, ys) = (geom.channel("x").unwrap(), geom.channel("y").unwrap());
+        let (col, row) = (hit.index % 60, hit.index / 60);
+        let want = (-(xs[col] * xs[col] + ys[row] * ys[row]) / 3.0).exp() * (3.0 * xs[col]).cos();
+        assert!(
+            (z - want).abs() < 1e-9,
+            "field at ({col},{row}) is {z}, expected {want}"
+        );
     }
 
     // Outside the axes there is no mesh to hit.

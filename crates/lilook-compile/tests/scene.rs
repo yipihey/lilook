@@ -359,3 +359,57 @@ fn a_datetime_axis_is_marked_non_numeric() {
     assert_eq!(scenes[0].numeric, (true, true));
     assert_eq!(scenes[0].series[0].points.len(), 3);
 }
+
+/// A mesh's field, recovered the same way whether it was written as a function
+/// or as an explicit array.
+///
+/// The orientation is the thing under test. lilaq documents `z` as m rows by n
+/// columns for n x-values and m y-values, and lilook flattens row-major so that
+/// `hit_mesh`'s single index names one cell. The axes here are deliberately
+/// *unequal* -- 5 columns against 3 rows -- because a transposed convention
+/// would not merely read the wrong value, it would fail to compile at all, which
+/// is a much better failure than a plausible wrong number.
+#[test]
+fn a_meshs_field_is_recovered_row_major_over_y() {
+    const SRC: &str = r#"#import "@preview/lilaq:0.6.0" as lq
+#set page(width: auto, height: auto, margin: 5pt)
+#let xs = (0, 1, 2, 3, 4)
+#let ys = (10, 20, 30)
+#let f = (x, y) => x + y
+#lq.diagram(width: 5cm, height: 4cm,
+  lq.colormesh(xs, ys, f),
+)
+#lq.diagram(width: 5cm, height: 4cm,
+  lq.colormesh(xs, ys, ys.map(yy => xs.map(xx => f(xx, yy)))),
+)
+"#;
+    let mut b = Backend::new(std::env::temp_dir(), "");
+    let doc = Document::new(SRC);
+    let mut hints = Hints::new();
+    let (render, scenes) = b.render_scenes(&doc, 1.0, &mut hints);
+    if skip(&render) {
+        return;
+    }
+    // If the array orientation were the other way round, this is where it ends.
+    assert!(!render.failed(), "{:?}", render.diagnostics);
+    assert_eq!(scenes.len(), 2);
+
+    for (which, scene) in ["function", "array"].iter().zip(&scenes) {
+        let g = &scene.series[0];
+        assert_eq!(g.grid, Some((5, 3)), "{which}");
+        let z = g
+            .channel("z")
+            .unwrap_or_else(|| panic!("{which}: no field"));
+        assert_eq!(z.len(), 15, "{which}: one value per cell");
+        for row in 0..3 {
+            for col in 0..5 {
+                let want = col as f64 + (10 * (row + 1)) as f64;
+                assert_eq!(z[row * 5 + col], want, "{which} at ({col},{row})");
+                assert_eq!(g.field_at(row * 5 + col), Some(want), "{which}");
+            }
+        }
+    }
+
+    // Past the last cell there is no value, rather than a wrapped one.
+    assert_eq!(scenes[0].series[0].field_at(15), None);
+}

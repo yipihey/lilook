@@ -322,18 +322,9 @@ fn a_transcoded_sidecar_is_a_figure_typst_can_draw() {
     let dy: Vec<f64> = y.iter().map(|v| v.abs() * 0.1).collect();
     let data = Dataset {
         columns: vec![
-            Column {
-                name: "t".into(),
-                values: t.clone(),
-            },
-            Column {
-                name: "flux (mJy)".into(),
-                values: y.clone(),
-            },
-            Column {
-                name: "flux_err".into(),
-                values: dy.clone(),
-            },
+            Column::new("t", t.clone()),
+            Column::new("flux (mJy)", y.clone()),
+            Column::new("flux_err", dy.clone()),
         ],
     };
 
@@ -347,6 +338,7 @@ fn a_transcoded_sidecar_is_a_figure_typst_can_draw() {
     let cols = lilook_core::Columns {
         names: data.names(),
         has_header: true,
+        grids: vec![],
     };
     let src = format!(
         r#"#import "@preview/lilaq:0.6.0" as lq
@@ -412,4 +404,71 @@ fn a_transcoded_sidecar_is_a_figure_typst_can_draw() {
             String::from_utf8_lossy(&out.stderr)
         );
     }
+}
+
+/// A FITS image, transcoded to a sidecar, read back as a colormesh's field.
+///
+/// This is the join between the two halves of 2-D linking: `lilook-data` writes
+/// a nested CBOR array, and lilaq takes `z` as rows of values. Both halves have
+/// their own tests; only compiling the result proves they agree, and "it decodes"
+/// has been mistaken for "it compiles" here before.
+#[test]
+fn a_two_dimensional_sidecar_links_to_a_colormesh() {
+    const COLS: usize = 5;
+    const ROWS_N: usize = 3;
+    let value = |col: usize, row: usize| (col + 10 * row) as f64;
+
+    // The sidecar, written exactly as the transcode path writes one.
+    let field: Vec<f64> = (0..ROWS_N)
+        .flat_map(|r| (0..COLS).map(move |c| value(c, r)))
+        .collect();
+    let sidecar = lilook_data::cbor::map_of_arrays(&[lilook_data::Column::field(
+        "image", field, COLS, ROWS_N,
+    )]);
+
+    let dir = project("field", &[]);
+    std::fs::create_dir_all(dir.join(".lilook")).expect("sidecar dir");
+    std::fs::write(dir.join(".lilook/run-image.cbor"), &sidecar).expect("sidecar");
+    // Axes from the grid's own indices, which is what `commit_link` writes when
+    // the file holds the field and nothing else.
+    let src = format!(
+        r#"#import "@preview/lilaq:0.6.0" as lq
+#set page(width: auto, height: auto, margin: 5pt)
+#let run = cbor(".lilook/run-image.cbor")
+#lq.diagram(width: 6cm, height: 4cm,
+  lq.colormesh(range({COLS}), range({ROWS_N}), run.image),
+)
+"#
+    );
+
+    let mut b = Backend::new(&dir, "");
+    let doc = Document::new(&src);
+    let mut hints = lilook_compile::backend::Hints::new();
+    let (render, scenes) = b.render_scenes(&doc, 1.0, &mut hints);
+    if skip(&render) {
+        return;
+    }
+    assert!(!render.failed(), "{:?}", render.diagnostics);
+
+    let g = &scenes[0].series[0];
+    assert_eq!(g.grid, Some((COLS, ROWS_N)));
+    let z = g.channel("z").expect("the field, back out of the sidecar");
+    for row in 0..ROWS_N {
+        for col in 0..COLS {
+            assert_eq!(z[row * COLS + col], value(col, row), "({col},{row})");
+        }
+    }
+
+    // And the sidecar is what the compile read, so changing the file refreshes
+    // the figure -- the point of linking rather than embedding.
+    let read: Vec<String> = b
+        .dependencies()
+        .into_iter()
+        .filter(|f| f.root == FileRoot::Project)
+        .map(|f| f.path)
+        .collect();
+    assert!(
+        read.iter().any(|p| p.ends_with("run-image.cbor")),
+        "{read:?}"
+    );
 }

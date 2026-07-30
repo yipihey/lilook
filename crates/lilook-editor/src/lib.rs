@@ -151,6 +151,10 @@ enum Link {
         columns: lilook_core::Columns,
         x: usize,
         y: usize,
+        /// Which entry supplies a mesh's field, when the target is a mesh and
+        /// the file holds a 2-D one. `None` means link x and y only, which is
+        /// every other series.
+        z: Option<usize>,
     },
     /// The file could not be read, with the compiler's reason.
     Failed { path: String, why: String },
@@ -545,7 +549,14 @@ impl Editor {
                         let d = s.transform.to_data(pt);
                         match &out.hovered {
                             Some((_, hit)) => {
-                                format!("{:.4}, {:.4}   [#{}]", hit.data.0, hit.data.1, hit.node)
+                                // A mesh's field is the whole point of hovering
+                                // one: the position is already on the axes, the
+                                // value is not written anywhere.
+                                let z = match s.field_at(hit) {
+                                    Some(z) => format!("   z {}", lilook_core::data_num(z)),
+                                    None => String::new(),
+                                };
+                                format!("{:.4}, {:.4}{z}   [#{}]", hit.data.0, hit.data.1, hit.node)
                             }
                             None => format!("{:.4}, {:.4}", d.0, d.1),
                         }
@@ -1257,27 +1268,25 @@ impl Editor {
         }
         let path = path.clone();
         match answer {
+            // A delimited file answers with its first row.
             Some(lilook_core::Answer::Strings(row)) if !row.is_empty() => {
-                let kind = lilook_core::SourceKind::of(&path);
-                let columns = match kind {
-                    // A keyed file's answer *is* its column names; there is no
-                    // header row to tell from data.
-                    lilook_core::SourceKind::Keyed => lilook_core::Columns {
-                        names: row,
-                        has_header: true,
-                    },
-                    lilook_core::SourceKind::Delimited => lilook_core::columns_of(&row),
+                self.link_ready(path, lilook_core::columns_of(&row));
+            }
+            // A keyed file answers entry by entry, with each one's shape.
+            Some(lilook_core::Answer::Fields(entries)) if !entries.is_empty() => {
+                let columns = lilook_core::Columns {
+                    names: entries.iter().map(|(k, _, _)| k.clone()).collect(),
+                    // A keyed file's answer *is* its names; there is no header
+                    // row to tell from data.
+                    has_header: true,
+                    grids: entries
+                        .iter()
+                        // Outer length is rows, inner is columns -- the same
+                        // row-major reading a mesh's field gets everywhere else.
+                        .map(|(_, n, m)| (*m > 0).then_some((*m, *n)))
+                        .collect(),
                 };
-                // Second column for y where there is one: the overwhelmingly
-                // common shape is x in the first column and a value in the next.
-                let y = usize::from(columns.names.len() > 1);
-                self.link = Some(Link::Ready {
-                    path,
-                    kind,
-                    columns,
-                    x: 0,
-                    y,
-                });
+                self.link_ready(path, columns);
             }
             _ => {
                 let why = diagnostics
@@ -1311,6 +1320,15 @@ impl Editor {
     /// Returns false when no link is waiting for columns, so a caller that has
     /// lost track of the flow finds out rather than silently doing nothing.
     pub fn confirm_link(&mut self, x: usize, y: usize) -> bool {
+        let z = match &self.link {
+            Some(Link::Ready { z, .. }) => *z,
+            _ => None,
+        };
+        self.confirm_field_link(x, y, z)
+    }
+
+    /// As [`confirm_link`](Self::confirm_link), also giving a mesh its field.
+    pub fn confirm_field_link(&mut self, x: usize, y: usize, z: Option<usize>) -> bool {
         let Some(Link::Ready {
             path,
             kind,
@@ -1320,7 +1338,7 @@ impl Editor {
         else {
             return false;
         };
-        self.commit_link(&path, kind, &columns, x, y);
+        self.commit_link(&path, kind, &columns, x, y, z);
         true
     }
 
@@ -1341,6 +1359,58 @@ impl Editor {
         self.status = format!("could not add {name}: {why}");
     }
 
+    /// Offer the file's entries, with sensible slots already chosen.
+    ///
+    /// A mesh is the only shape that can take a 2-D entry, so a field is offered
+    /// as `z` only when the selected series is one; otherwise a file that holds
+    /// nothing but a field has nothing to link and says so.
+    fn link_ready(&mut self, path: String, columns: lilook_core::Columns) {
+        let kind = lilook_core::SourceKind::of(&path);
+        let (fields, plain) = columns.split_fields();
+        let z = self
+            .link_target()
+            .filter(|_| self.target_is_mesh())
+            .and(fields.first().copied());
+        // x from the first column and y from the next: the overwhelmingly common
+        // shape. For a mesh the field is `z`, so the axes come from what is left,
+        // and when nothing is left `commit_link` uses the grid indices.
+        let (x, y) = match z {
+            Some(_) => (
+                plain.first().copied().unwrap_or(0),
+                plain
+                    .get(1)
+                    .copied()
+                    .or(plain.first().copied())
+                    .unwrap_or(0),
+            ),
+            None => (0, usize::from(columns.names.len() > 1)),
+        };
+        if z.is_none() && plain.is_empty() {
+            self.link = Some(Link::Failed {
+                path,
+                why: "holds only two-dimensional data, which needs a colormesh, \
+                      contour or mesh to link it to"
+                    .into(),
+            });
+            return;
+        }
+        self.link = Some(Link::Ready {
+            path,
+            kind,
+            columns,
+            x,
+            y,
+            z,
+        });
+    }
+
+    /// Is the series a link would land on a mesh?
+    fn target_is_mesh(&self) -> bool {
+        self.link_target()
+            .and_then(|n| self.doc.calls().iter().find(|c| c.id == n))
+            .is_some_and(|c| c.series_shape() == lilook_core::SeriesShape::Mesh)
+    }
+
     /// Write the link: a `#let` for the file, and the two slots that read it.
     ///
     /// One transaction, so undo takes the whole thing back. The order matters for
@@ -1354,16 +1424,23 @@ impl Editor {
         columns: &lilook_core::Columns,
         x: usize,
         y: usize,
+        z: Option<usize>,
     ) {
         let Some(node) = self.link_target() else {
             self.status = "select a series to link the file to".into();
             return;
         };
         let name = lilook_core::binding_name_for(path, |n| self.doc.binding_of(n).is_some());
-        let (Some(xs), Some(ys)) = (
-            lilook_core::column_source(&name, kind, columns, x),
-            lilook_core::column_source(&name, kind, columns, y),
-        ) else {
+        // A field's axes may not be in the file at all -- a FITS image is pixels
+        // and nothing else -- so an axis that would otherwise name the field
+        // becomes the grid's own indices, which is what the pixels are numbered
+        // by anyway.
+        let axis = |i: usize, n: usize| match columns.grid(i) {
+            Some(_) => Some(format!("range({n})")),
+            None => lilook_core::column_source(&name, kind, columns, i),
+        };
+        let (cols, rows) = z.and_then(|i| columns.grid(i)).unwrap_or((0, 0));
+        let (Some(xs), Some(ys)) = (axis(x, cols), axis(y, rows)) else {
             self.status = "that column is not in the file".into();
             return;
         };
@@ -1383,6 +1460,13 @@ impl Editor {
             index: 1,
             value: ys,
         });
+        if let Some(zs) = z.and_then(|i| lilook_core::column_source(&name, kind, columns, i)) {
+            self.apply(Intent::SetPositionalArg {
+                node,
+                index: 2,
+                value: zs,
+            });
+        }
         self.apply(Intent::ReplaceRange {
             range: at..at,
             value: format!(
@@ -1402,7 +1486,10 @@ impl Editor {
                     .cloned()
                     .unwrap_or_else(|| i.to_string())
             };
-            self.status = format!("linked {path}: {} against {}", label(y), label(x));
+            self.status = match z {
+                Some(i) => format!("linked {path}: {} over {}×{}", label(i), cols, rows),
+                None => format!("linked {path}: {} against {}", label(y), label(x)),
+            };
         }
     }
 
@@ -1582,22 +1669,51 @@ impl Editor {
                 columns,
                 x,
                 y,
+                z,
                 ..
             }) => {
                 ui.weak(&path);
                 let mut x = x;
                 let mut y = y;
-                let pick = |ui: &mut egui::Ui, label: &str, sel: &mut usize| {
+                let mut z = z;
+                let (fields, plain) = columns.split_fields();
+                let all: Vec<usize> = (0..columns.names.len()).collect();
+                // Only entries of the right rank are offered for each slot: a
+                // 2-D field is not an axis, and a column is not a field.
+                let pick = |ui: &mut egui::Ui, label: &str, from: &[usize], sel: &mut usize| {
                     egui::ComboBox::from_label(label)
                         .selected_text(columns.names.get(*sel).cloned().unwrap_or_default())
                         .show_ui(ui, |ui| {
-                            for (i, name) in columns.names.iter().enumerate() {
-                                ui.selectable_value(sel, i, name);
+                            for i in from {
+                                ui.selectable_value(sel, *i, &columns.names[*i]);
                             }
                         });
                 };
-                pick(ui, "x", &mut x);
-                pick(ui, "y", &mut y);
+                if let Some(sel) = &mut z {
+                    egui::ComboBox::from_label("field")
+                        .selected_text(columns.names.get(*sel).cloned().unwrap_or_default())
+                        .show_ui(ui, |ui| {
+                            for i in &fields {
+                                let (c, r) = columns.grid(*i).unwrap_or_default();
+                                ui.selectable_value(
+                                    sel,
+                                    *i,
+                                    format!("{} ({c}×{r})", columns.names[*i]),
+                                );
+                            }
+                        });
+                }
+                if z.is_some() && plain.is_empty() {
+                    ui.weak("axes: grid indices").on_hover_text(
+                        "The file holds the field and nothing else -- an image \
+                         is pixels -- so the axes are numbered by cell, which is \
+                         what the pixels are numbered by anyway.",
+                    );
+                } else {
+                    let from = if z.is_some() { &plain } else { &all };
+                    pick(ui, "x", from, &mut x);
+                    pick(ui, "y", from, &mut y);
+                }
                 if !columns.has_header {
                     ui.weak("no header row: columns are positional")
                         .on_hover_text(
@@ -1612,20 +1728,27 @@ impl Editor {
                         .on_disabled_hover_text("select a series in the tree above")
                         .clicked()
                     {
-                        confirm = Some((x, y));
+                        confirm = Some((x, y, z));
                     }
                     cancel |= ui.small_button("cancel").clicked();
                 });
                 // Keep the choices across frames.
-                if let Some(Link::Ready { x: sx, y: sy, .. }) = &mut self.link {
+                if let Some(Link::Ready {
+                    x: sx,
+                    y: sy,
+                    z: sz,
+                    ..
+                }) = &mut self.link
+                {
                     *sx = x;
                     *sy = y;
+                    *sz = z;
                 }
             }
             None => {}
         }
-        if let Some((x, y)) = confirm {
-            self.confirm_link(x, y);
+        if let Some((x, y, z)) = confirm {
+            self.confirm_field_link(x, y, z);
         }
         if cancel {
             self.cancel_link();

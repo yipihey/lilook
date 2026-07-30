@@ -8,20 +8,45 @@
 
 use crate::Column;
 
-/// A CBOR map from column name to array of `f64`.
+/// A CBOR map from column name to array of `f64`, or -- for a two-dimensional
+/// column -- to an array of rows.
+///
+/// The nesting is what lets a FITS image or a 2-D HDF5 dataset be linked at all:
+/// lilaq's `colormesh`, `contour` and `mesh` take `z` as m rows of n values, so
+/// a field has to arrive already shaped. Flattening it here would leave the user
+/// to reshape it in the manuscript, which is exactly the interpreted arithmetic
+/// the sidecar exists to avoid.
 pub fn map_of_arrays(columns: &[Column]) -> Vec<u8> {
     let mut out = Vec::new();
     head(&mut out, 5, columns.len() as u64); // map
     for c in columns {
         head(&mut out, 3, c.name.len() as u64); // text string
         out.extend_from_slice(c.name.as_bytes());
-        head(&mut out, 4, c.values.len() as u64); // array
-        for v in &c.values {
-            out.push(0xfb); // IEEE 754 double
-            out.extend_from_slice(&v.to_bits().to_be_bytes());
+        match c.grid {
+            // Row-major, the same reading the probe gives a mesh's field.
+            Some((cols, rows)) if cols > 0 && c.values.len() >= cols * rows => {
+                head(&mut out, 4, rows as u64);
+                for r in 0..rows {
+                    head(&mut out, 4, cols as u64);
+                    for v in &c.values[r * cols..(r + 1) * cols] {
+                        double(&mut out, *v);
+                    }
+                }
+            }
+            _ => {
+                head(&mut out, 4, c.values.len() as u64); // array
+                for v in &c.values {
+                    double(&mut out, *v);
+                }
+            }
         }
     }
     out
+}
+
+fn double(out: &mut Vec<u8>, v: f64) {
+    out.push(0xfb); // IEEE 754 double
+    out.extend_from_slice(&v.to_bits().to_be_bytes());
 }
 
 /// A CBOR item head: three bits of major type, then the argument in the smallest
@@ -54,6 +79,7 @@ mod tests {
         Column {
             name: name.into(),
             values: values.to_vec(),
+            grid: None,
         }
     }
 

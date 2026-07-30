@@ -67,6 +67,13 @@ impl DataFile {
 pub enum Answer {
     Strings(Vec<String>),
     Numbers(Vec<f64>),
+    /// A keyed file described entry by entry: name, outer length, and inner
+    /// length -- the last being zero unless the value is an array of arrays.
+    ///
+    /// Names alone were enough while every linkable value was a column. A 2-D
+    /// array is a *field*, which can only be linked to a mesh's `z`, and nothing
+    /// about the name says which one it is.
+    Fields(Vec<(String, usize, usize)>),
     Int(i64),
     Text(String),
     /// Something came back, in a shape lilook did not ask for.
@@ -79,6 +86,26 @@ pub struct Columns {
     pub names: Vec<String>,
     /// Whether the first row named the columns rather than being data.
     pub has_header: bool,
+    /// Each entry's shape as `(columns, rows)` when it is two-dimensional, in
+    /// the same order as `names`.
+    ///
+    /// Empty for a delimited file, whose first row cannot describe anything but
+    /// columns. A keyed file -- which is what lilook writes a FITS image or a
+    /// 2-D HDF5 dataset out as -- can hold a field, and a field is linkable only
+    /// to a mesh.
+    pub grids: Vec<Option<(usize, usize)>>,
+}
+
+impl Columns {
+    /// The shape of entry `i`, if it is a field rather than a column.
+    pub fn grid(&self, i: usize) -> Option<(usize, usize)> {
+        *self.grids.get(i)?
+    }
+
+    /// The indices of the entries that are fields, and of those that are not.
+    pub fn split_fields(&self) -> (Vec<usize>, Vec<usize>) {
+        (0..self.names.len()).partition(|i| self.grid(*i).is_some())
+    }
 }
 
 /// Work out a delimited file's columns from its first row.
@@ -98,6 +125,7 @@ pub fn columns_of(first_row: &[String]) -> Columns {
                 .map(|i| format!("column {}", i + 1))
                 .collect(),
             has_header: false,
+            grids: vec![],
         };
     }
     Columns {
@@ -110,6 +138,7 @@ pub fn columns_of(first_row: &[String]) -> Columns {
             })
             .collect(),
         has_header: true,
+        grids: vec![],
     }
 }
 
@@ -197,7 +226,16 @@ impl SourceKind {
         let p = string_literal(path);
         match self {
             SourceKind::Delimited => format!("csv({p}).at(0, default: ())"),
-            SourceKind::Keyed => format!("{}({p}).keys()", self.reader(path)),
+            // Not `.keys()`: a keyed file can hold a 2-D array, and the shape is
+            // what decides whether an entry can be linked at all. Each entry
+            // comes back as (name, outer length, inner length).
+            SourceKind::Keyed => format!(
+                "{}({p}).pairs().map(((k, v)) => {{ \
+                 let n = if type(v) == array {{ v.len() }} else {{ 0 }}; \
+                 let m = if n > 0 and type(v.at(0)) == array {{ v.at(0).len() }} else {{ 0 }}; \
+                 (k, n, m) }})",
+                self.reader(path)
+            ),
         }
     }
 }
@@ -625,6 +663,7 @@ mod tests {
         assert_eq!(binding_source("run.yml", k, true), r#"yaml("run.yml")"#);
 
         let cols = Columns {
+            grids: vec![],
             names: vec!["t".into(), "flux (mJy)".into()],
             has_header: true,
         };
@@ -646,10 +685,12 @@ mod tests {
         assert!(SourceKind::Delimited
             .columns_expr("run.csv")
             .starts_with("csv("));
-        assert_eq!(
-            SourceKind::Keyed.columns_expr("run.cbor"),
-            r#"cbor("run.cbor").keys()"#
-        );
+        // Not `.keys()`: a keyed file can hold a 2-D array, and the shape is
+        // what decides whether an entry is a column or a mesh's field. It has to
+        // be a real expression, since it is compiled rather than parsed.
+        let keyed = SourceKind::Keyed.columns_expr("run.cbor");
+        assert!(keyed.starts_with(r#"cbor("run.cbor").pairs()"#), "{keyed}");
+        assert!(check_expr(&keyed).is_ok(), "{keyed:?}");
     }
 
     #[test]

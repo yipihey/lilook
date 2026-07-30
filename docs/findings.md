@@ -1657,3 +1657,39 @@ its data cannot be touched.
 axis property alongside linear/log -- the axis's *data type* -- and it needs a way
 to write `datetime(year: .., month: ..)` from a drag. Scoped, not started, and the
 gestures that would produce nonsense are declined in the meantime.
+
+## Recovering a colormesh's field costs 7%, because comemo has already paid for it
+
+2026-07-30. A mesh's `z` is usually a *function* -- `(x, y) => calc.exp(..)` -- so
+recovering the field means evaluating it over the whole grid through typst's
+interpreter. At 300x200 that is 60,000 calls, and the fear was that a
+value-under-the-cursor readout would be affordable only up to some grid size,
+needing a cap and a story about what happens past it.
+
+Measured before building anything, warm, with `comemo::evict(0)` between cases:
+
+| grid | cells | without `z` | with `z` |
+| --- | --- | --- | --- |
+| 20x15 | 300 | 10.2 ms | 8.8 ms |
+| 60x40 | 2,400 | 13.9 ms | 14.5 ms |
+| 120x90 | 10,800 | 35.1 ms | 37.7 ms |
+| 300x200 | 60,000 | 155.4 ms | 167.0 ms |
+
+**About 7%, flat, and inside the noise at the sizes anyone actually plots.** The
+reason is the same one that makes the whole probe technique work: lilaq has
+already called that closure for every cell to draw the figure, and comemo memoises
+it, so the probe's evaluation is a cache lookup rather than a second computation.
+The 300x200 row is dominated by lilaq drawing 60,000 quads, not by the field.
+
+So recovery is unconditional -- no cap, no size-dependent behaviour, no explaining
+to the user why the readout stopped working. The same measurement says the *first*
+attempt at this would have been wrong in the other direction too: a flat 7% is not
+worth an opt-in toggle either.
+
+Two conventions were pinned by test rather than by reading lilaq's source. The
+field comes back as rows over y and columns over x, flattened row-major so
+`hit_mesh`'s single index still names one cell; and an explicitly-written 2-D
+array is passed through unchanged in that same shape. The array test uses a
+deliberately non-square grid -- 5 columns by 3 rows -- because a transposed
+convention there does not read the wrong number, it fails to compile, which is a
+much better failure than a plausible one.

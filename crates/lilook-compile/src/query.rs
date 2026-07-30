@@ -71,6 +71,23 @@ fn classify(value: &Value) -> Answer {
             if let Some(s) = strings {
                 return Answer::Strings(s);
             }
+            // (name, outer length, inner length) per entry: what a keyed file
+            // answers with, since a 2-D value is a field rather than a column.
+            let fields: Option<Vec<(String, usize, usize)>> = a
+                .iter()
+                .map(|v| match v {
+                    Value::Array(t) => match t.iter().collect::<Vec<_>>()[..] {
+                        [Value::Str(k), Value::Int(n), Value::Int(m)] => {
+                            Some((k.to_string(), (*n).max(0) as usize, (*m).max(0) as usize))
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect();
+            if let Some(f) = fields.filter(|f| !f.is_empty()) {
+                return Answer::Fields(f);
+            }
             let numbers: Option<Vec<f64>> = a
                 .iter()
                 .map(|v| match v {
