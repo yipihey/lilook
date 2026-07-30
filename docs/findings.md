@@ -1342,3 +1342,30 @@ and padding keeps the sign of what it pads.
 The lesson repeated from the seeded-arguments work: each of these produced a
 document that *parsed*. Only compiling it found them, and only a drag far larger
 than the figure found the fourth.
+
+## A flaky test, and why the product order stays
+
+CI went red on a commit that changed nothing but which files git tracks --
+`actor.rs`, "the UI must be woken". Every prior commit had passed, which is what
+identified it: a latent race the runner finally lost, not a regression.
+
+The compile thread **sends the frame and then wakes**:
+
+```rust
+if tx.send(Frame { .. }).is_err() { return; }
+wake();
+```
+
+`actor.wait()` returns the instant the send lands, so the test asserted the wake
+counter while the wake was still a few instructions away.
+
+The tempting fix is to swap the two lines, and it would be wrong: waking first
+lets a UI repaint, find no frame waiting, and go back to sleep until something
+else disturbs it. The ordering is load-bearing. So the *test* waits for the wake
+with a deadline instead, and says why in the place someone would otherwise
+"tidy" it.
+
+Worth stating plainly because it cuts the other way from the last several
+findings: those were cases where a passing test hid a real bug. This one is a
+failing test hiding nothing -- and the answer is not to relax the assertion but
+to fix the assumption it was making about ordering.

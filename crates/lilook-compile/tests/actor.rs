@@ -21,6 +21,20 @@ fn returns_a_frame_for_the_generation_it_was_asked_for() {
     let frame = actor.wait().expect("a frame");
     assert_eq!(frame.generation, g);
     assert_eq!(frame.render.pages.len(), 1);
+
+    // The wake is asserted with a deadline, not immediately, and the ordering is
+    // the reason: the compile thread *sends the frame and then wakes*, so
+    // `wait()` returns while the wake is still a few instructions away. Asserting
+    // it straight after the receive is a race the test loses on a loaded runner --
+    // which is exactly what happened once on CI, on a commit that changed nothing
+    // but which files git tracks.
+    //
+    // The order in the actor is deliberate and stays: waking first would let a UI
+    // repaint, find no frame waiting, and go back to sleep.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while woke.load(Ordering::Relaxed) == 0 && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
     assert!(woke.load(Ordering::Relaxed) >= 1, "the UI must be woken");
 }
 
