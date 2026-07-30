@@ -34,16 +34,34 @@ pub struct Frame {
     /// pixels -- the probes provably do not change the rendering, so there is
     /// no second pass to keep them in step with.
     pub scenes: Vec<Scene>,
+    /// Every file this compile read, so the shell can watch the ones the figure
+    /// actually depends on rather than guess from the source text. Carried as
+    /// paths relative to the root: resolving them to absolute paths needs the
+    /// system loader, which is the shell's business and not portable.
+    pub data_files: Vec<lilook_core::DataFile>,
 }
 
 struct Slot {
     pending: Option<Job>,
+    /// Expressions to evaluate. A queue rather than latest-wins, because unlike
+    /// a compile every query has a caller waiting for its particular answer.
+    queries: Vec<String>,
     quit: bool,
+}
+
+/// The answer to one `CompileActor::query`.
+#[derive(Debug)]
+pub struct Answered {
+    /// The expression that was asked, so a caller can tell whose answer this is.
+    pub expr: String,
+    pub answer: Option<lilook_core::data::Answer>,
+    pub diagnostics: Vec<lilook_core::Diagnostic>,
 }
 
 pub struct CompileActor {
     slot: Arc<(Mutex<Slot>, Condvar)>,
     out: Receiver<Frame>,
+    answers: Receiver<Answered>,
     /// True while a job is queued or running, so the UI can say "stale".
     busy: Arc<AtomicBool>,
     next_generation: u64,
@@ -60,11 +78,13 @@ impl CompileActor {
         let slot = Arc::new((
             Mutex::new(Slot {
                 pending: None,
+                queries: vec![],
                 quit: false,
             }),
             Condvar::new(),
         ));
         let (tx, out) = channel();
+        let (qtx, answers) = channel();
         let busy = Arc::new(AtomicBool::new(false));
 
         let thread = {
@@ -80,13 +100,36 @@ impl CompileActor {
                         let job = {
                             let (lock, cv) = &*slot;
                             let mut s = lock.lock().unwrap();
-                            while s.pending.is_none() && !s.quit {
+                            while s.pending.is_none() && s.queries.is_empty() && !s.quit {
                                 s = cv.wait(s).unwrap();
                             }
                             if s.quit {
                                 return;
                             }
-                            s.pending.take().unwrap()
+                            // Queries first: they are quick, and something in the
+                            // UI is waiting on each one. A compile that is about
+                            // to be superseded anyway must not hold them up.
+                            let queries = std::mem::take(&mut s.queries);
+                            drop(s);
+                            for expr in queries {
+                                let (answer, diagnostics) = backend.query(&expr);
+                                if qtx
+                                    .send(Answered {
+                                        expr,
+                                        answer,
+                                        diagnostics,
+                                    })
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                                wake();
+                            }
+                            let mut s = lock.lock().unwrap();
+                            match s.pending.take() {
+                                Some(job) => job,
+                                None => continue,
+                            }
                         };
                         // Reparsing here rather than sending a `Document` keeps
                         // the channel to plain data. Call-site ids are a pure
@@ -94,6 +137,8 @@ impl CompileActor {
                         let doc = Document::new(job.source);
                         let (render, scenes) =
                             backend.render_scenes(&doc, job.pixel_per_pt, &mut hints);
+                        // After the compile, so the list is that compile's.
+                        let data_files = backend.dependencies();
                         let generation = job.generation;
                         // Only clear `busy` once nothing newer is waiting.
                         let idle = slot.0.lock().unwrap().pending.is_none();
@@ -105,6 +150,7 @@ impl CompileActor {
                                 generation,
                                 render,
                                 scenes,
+                                data_files,
                             })
                             .is_err()
                         {
@@ -119,6 +165,7 @@ impl CompileActor {
         CompileActor {
             slot,
             out,
+            answers,
             busy,
             next_generation: 1,
             thread: Some(thread),
@@ -138,6 +185,21 @@ impl CompileActor {
         });
         cv.notify_one();
         generation
+    }
+
+    /// Queue an expression for the compiler to evaluate.
+    ///
+    /// Not latest-wins, unlike `request`: something is waiting for each answer,
+    /// so none is dropped.
+    pub fn query(&mut self, expr: impl Into<String>) {
+        let (lock, cv) = &*self.slot;
+        lock.lock().unwrap().queries.push(expr.into());
+        cv.notify_one();
+    }
+
+    /// Answers that have arrived since this was last called.
+    pub fn take_answers(&self) -> Vec<Answered> {
+        std::iter::from_fn(|| self.answers.try_recv().ok()).collect()
     }
 
     /// The newest finished frame, discarding any that were superseded while the

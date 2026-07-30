@@ -53,6 +53,31 @@ impl<L: typst_kit::files::FileLoader + Send + Sync> Backend<L> {
         &self.world
     }
 
+    /// Mutable access to whatever supplies files -- how the browser build adds a
+    /// file the user dropped onto the page.
+    pub fn loader_mut(&mut self) -> &mut L {
+        self.world.loader_mut()
+    }
+
+    /// Ask the compiler about a file. See `LilookWorld::query`.
+    ///
+    /// Note this does *not* touch `self.last`: a query's document has no figure
+    /// in it, and the canvas must keep drawing the one that does.
+    pub fn query(
+        &mut self,
+        expr: &str,
+    ) -> (
+        Option<lilook_core::data::Answer>,
+        Vec<lilook_core::Diagnostic>,
+    ) {
+        self.world.query(expr)
+    }
+
+    /// Every file the last compile read. See `LilookWorld::dependencies`.
+    pub fn dependencies(&mut self) -> Vec<lilook_core::DataFile> {
+        self.world.dependencies()
+    }
+
     pub fn document(&self) -> Option<&PagedDocument> {
         self.last.as_ref()
     }

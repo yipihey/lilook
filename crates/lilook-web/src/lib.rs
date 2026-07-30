@@ -70,6 +70,13 @@ pub struct WebApp {
     narrow: bool,
 }
 
+/// Where a transcoded file lands. The same `.lilook/` the desktop shell uses, so
+/// a document written in one shell links in the other.
+fn sidecar_name(name: &str) -> String {
+    let stem = name.rsplit_once('.').map(|(s, _)| s).unwrap_or(name);
+    format!(".lilook/{stem}.cbor")
+}
+
 impl Default for WebApp {
     fn default() -> Self {
         Self::new()
@@ -122,7 +129,11 @@ impl WebApp {
     fn compile(&mut self, ctx: &egui::Context, source: String, ppp: f32) {
         let doc = Document::new(source);
         let (render, scenes) = self.backend.render_scenes(&doc, ppp, &mut self.hints);
-        self.editor.accept(ctx, render, scenes);
+        // The bundle is the whole file system here, so this lists the packages'
+        // own sources plus anything the user dropped in -- and the panel's filter
+        // is what makes the second visible among the first.
+        let data_files = self.backend.dependencies();
+        self.editor.accept(ctx, render, scenes, data_files);
     }
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
@@ -175,6 +186,7 @@ impl WebApp {
     pub fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let now = ctx.input(|i| i.time);
+        self.take_deliveries();
 
         // A narrow window cannot carry three panels; the figure is the thing
         // worth keeping.
@@ -192,9 +204,112 @@ impl WebApp {
             self.editor.status =
                 "this is the browser build — use “copy source”, or edit the text below".into();
         }
+        for d in requests.adopt {
+            self.adopt(d);
+        }
+        if let Some(expr) = requests.query {
+            // In process and in the frame, like the compile: there is no thread
+            // to wait for, so the answer is already there when the editor next
+            // draws.
+            let (answer, diagnostics) = self.backend.query(&expr);
+            self.editor.accept_answer(&expr, answer, &diagnostics);
+        }
         if let Some((source, ppp)) = requests.compile {
             self.compile(&ctx, source, ppp);
         }
+    }
+
+    /// Take a dropped file into the page's file system.
+    ///
+    /// There is no disk here, so "bringing the file into the project" means
+    /// putting its bytes where the compiler's loader will find them. That makes
+    /// a browser link real in every way except durability: it lasts as long as
+    /// the tab, because there is nowhere else for it to live.
+    /// Put a file into this tab's file system, under the project root.
+    ///
+    /// Public because the page needs it: a drop arrives through egui, but a file
+    /// decoded in JavaScript -- an HDF5 read by h5wasm, say -- arrives from
+    /// there, and both end up here.
+    pub fn insert_file(&mut self, name: &str, bytes: Vec<u8>) {
+        self.backend
+            .loader_mut()
+            .insert(format!("project/{name}"), bytes);
+    }
+
+    fn adopt(&mut self, d: lilook_editor::Dropped) {
+        let Some(bytes) = d.bytes else {
+            self.editor
+                .adoption_failed(&d.name, "the drop carried no contents");
+            return;
+        };
+
+        // A format typst cannot read becomes a CBOR sidecar, exactly as it does
+        // on the desktop -- the decoders take `&[u8]` and so port unchanged.
+        if let Some(format) = lilook_data::sniff(&bytes, &d.name) {
+            if !format.available() {
+                // HDF5 is the case this exists for: libhdf5 is C and has no wasm
+                // build, so the page reads it in JavaScript instead and calls
+                // `insert_columns`. Saying so beats a silent failure.
+                if matches!(format, lilook_data::Format::Hdf5) {
+                    // Not a dead end here: the page is loading h5wasm and will
+                    // call `deliver_columns`. Say that rather than "unavailable",
+                    // which would be true of this Rust build and false of lilook.
+                    self.editor.status = format!("reading {} with h5wasm...", d.name);
+                } else {
+                    self.editor
+                        .adoption_failed(&d.name, format.unavailable_because());
+                }
+                return;
+            }
+            match lilook_data::decode(&bytes, format) {
+                Ok(data) if !data.columns.is_empty() => {
+                    let n = data.columns.len();
+                    let rel = sidecar_name(&d.name);
+                    self.insert_file(&rel, data.to_cbor());
+                    self.editor.file_adopted(rel.clone());
+                    self.editor.status = format!("read {n} column(s) from {} into {rel}", d.name);
+                    return;
+                }
+                Ok(_) => {
+                    self.editor
+                        .adoption_failed(&d.name, "nothing in it is a column of numbers");
+                    return;
+                }
+                Err(e) => {
+                    self.editor.adoption_failed(&d.name, &e.to_string());
+                    return;
+                }
+            }
+        }
+
+        let n = bytes.len();
+        self.insert_file(&d.name, bytes);
+        self.editor.file_adopted(d.name.clone());
+        self.editor.status = format!("{} ({n} bytes) is in this tab's file system", d.name);
+    }
+
+    /// Columns decoded outside Rust, e.g. an HDF5 file read by h5wasm.
+    ///
+    /// Turned into the same CBOR sidecar a native transcode produces, so the rest
+    /// of the feature -- linking, refreshing, unlocking -- does not know or care
+    /// which path the numbers came in by.
+    pub fn insert_columns(&mut self, name: &str, names: Vec<String>, values: Vec<Vec<f64>>) {
+        let columns: Vec<lilook_data::Column> = names
+            .into_iter()
+            .zip(values)
+            .map(|(name, values)| lilook_data::Column { name, values })
+            .collect();
+        if columns.is_empty() {
+            self.editor
+                .adoption_failed(name, "no columns of numbers came back");
+            return;
+        }
+        let n = columns.len();
+        let rel = sidecar_name(name);
+        let data = lilook_data::Dataset { columns };
+        self.insert_file(&rel, data.to_cbor());
+        self.editor.file_adopted(rel.clone());
+        self.editor.status = format!("read {n} column(s) from {name} into {rel}");
     }
 }
 
@@ -232,4 +347,87 @@ pub fn start(fonts: js_sys::Array) -> Result<(), wasm_bindgen::JsValue> {
             .expect("failed to start eframe");
     });
     Ok(())
+}
+
+// Columns decoded in JavaScript, waiting for the next frame to collect them.
+//
+// A mailbox rather than a handle, because `eframe::WebRunner` owns the app and
+// JavaScript has no way to reach into it. Also the natural shape for the job:
+// reading an HDF5 file is asynchronous, and the frame that asked for it is long
+// over by the time the answer arrives.
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static INBOX: std::cell::RefCell<Vec<Delivered>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// What JavaScript hands back for a file Rust could not read here.
+#[cfg(target_arch = "wasm32")]
+enum Delivered {
+    Columns {
+        name: String,
+        names: Vec<String>,
+        values: Vec<Vec<f64>>,
+    },
+    Failed {
+        name: String,
+        why: String,
+    },
+}
+
+/// Hand lilook the columns of a file the page decoded itself.
+///
+/// This is how HDF5 works in a browser: libhdf5 is C and has no wasm build, so
+/// `index.html` loads h5wasm -- lazily, only once someone actually drops an
+/// `.h5` -- reads the datasets, and calls this. What arrives becomes the same
+/// CBOR sidecar a native transcode produces, so linking, rereading and unlocking
+/// do not know which route the numbers took.
+///
+/// `values` is an array of `Float64Array`, one per name.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn deliver_columns(name: String, names: js_sys::Array, values: js_sys::Array) {
+    use wasm_bindgen::JsCast as _;
+    let names: Vec<String> = names.iter().filter_map(|v| v.as_string()).collect();
+    let values: Vec<Vec<f64>> = values
+        .iter()
+        .filter_map(|v| v.dyn_into::<js_sys::Float64Array>().ok())
+        .map(|a| a.to_vec())
+        .collect();
+    INBOX.with_borrow_mut(|q| {
+        q.push(Delivered::Columns {
+            name,
+            names,
+            values,
+        })
+    });
+}
+
+/// Report that the page could not decode a file after all -- h5wasm failed to
+/// load, or the file was not what it claimed. Better in the panel than in a
+/// console nobody has open.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn deliver_error(name: String, why: String) {
+    INBOX.with_borrow_mut(|q| q.push(Delivered::Failed { name, why }));
+}
+
+impl WebApp {
+    /// Collect anything JavaScript decoded since the last frame.
+    #[cfg(target_arch = "wasm32")]
+    fn take_deliveries(&mut self) {
+        let items: Vec<Delivered> = INBOX.with_borrow_mut(std::mem::take);
+        for item in items {
+            match item {
+                Delivered::Columns {
+                    name,
+                    names,
+                    values,
+                } => self.insert_columns(&name, names, values),
+                Delivered::Failed { name, why } => self.editor.adoption_failed(&name, &why),
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn take_deliveries(&mut self) {}
 }

@@ -7,6 +7,7 @@
 //! Nothing in this crate knows about impress, implore, egui or Swift.
 
 pub mod compile;
+pub mod data;
 pub mod doc;
 pub mod edit;
 pub mod intent;
@@ -15,6 +16,11 @@ pub mod scene;
 pub mod schema;
 
 pub use compile::{AxisMap, CliCompiler, Compiler, Hit, Transform};
+pub use data::{
+    binding_name_for, binding_source, column_source, columns_of, csv_binding_source,
+    csv_column_source, data_array_source, data_num, is_plain_identifier, string_literal, Answer,
+    Columns, DataFile, FileRoot, SourceKind, TooManyValues, MAX_EMBEDDED_VALUES,
+};
 pub use doc::{
     check_expr, CallSite, Document, Editability, Figure, NamedArg, PositionalArg, SetRule,
     XY_SERIES,

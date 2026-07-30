@@ -15,12 +15,14 @@ pub mod actor;
 pub mod backend;
 pub mod files;
 pub mod probe;
+pub mod query;
 pub mod world;
 
 #[cfg(feature = "system")]
 pub use actor::{CompileActor, Frame};
 pub use backend::{Backend, Image, Page, Render};
 pub use files::{MainOverlay, MemoryFiles};
+pub use lilook_core::data::Answer;
 pub use probe::{inject, scenes};
 #[cfg(feature = "system")]
 pub use world::root_for;

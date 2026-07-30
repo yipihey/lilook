@@ -99,8 +99,103 @@
       } catch {
         await init(bytes);
       }
+      const wasm = await import("./pkg/lilook_web.js");
       start((await fonts).filter(Boolean));
+      hdf5Bridge(wasm);
       boot.remove();
+
+    // HDF5 in a browser.
+    //
+    // libhdf5 is C and has no wasm build, so the Rust decoders that cover npz,
+    // FITS, CSV and Veusz ASCII cannot cover this one. h5wasm can -- it is
+    // libhdf5 through emscripten -- and it is about a megabyte, so it is loaded
+    // *only* when someone actually drops an .h5. Nobody else pays for it, and
+    // the page's own cold start is unchanged.
+    //
+    // What goes back to Rust is plain columns: names and Float64Arrays. Rust
+    // turns them into the same CBOR sidecar a native transcode produces, so the
+    // rest of the feature cannot tell which route the numbers took.
+    function hdf5Bridge(wasm) {
+      const EXT = /\.(h5|hdf5|he5|hdf)$/i;
+      let h5 = null;
+
+      async function library() {
+        if (!h5) {
+          // Configurable so a deployment can vendor it rather than reach a CDN.
+          const url = window.LILOOK_H5WASM_URL ||
+            "https://cdn.jsdelivr.net/npm/h5wasm@0.7.8/dist/esm/hdf5_hl.js";
+          const mod = await import(/* webpackIgnore: true */ url);
+          await mod.ready;
+          h5 = mod;
+        }
+        return h5;
+      }
+
+      // Every numeric dataset, groups included, named by its full path -- the
+      // same naming the native reader uses so a document links the same way.
+      function collect(group, prefix, names, values) {
+        for (const key of group.keys()) {
+          const item = group.get(key);
+          if (!item) continue;
+          const path = prefix + "/" + key;
+          if (item.keys) {
+            collect(item, path, names, values);
+          } else if (item.shape && item.shape.length >= 1 && item.shape.length <= 2) {
+            const v = item.value;
+            // Strings and compound types come back as something other than a
+            // numeric TypedArray; skip them rather than plotting nonsense.
+            if (v && typeof v.length === "number" && typeof v[0] === "number") {
+              if (item.shape.length === 1) {
+                names.push(path);
+                values.push(new Float64Array(v));
+              } else {
+                const [rows, cols] = item.shape;
+                for (let c = 0; c < cols; c++) {
+                  const col = new Float64Array(rows);
+                  for (let r = 0; r < rows; r++) col[r] = v[r * cols + c];
+                  names.push(path + "[" + c + "]");
+                  values.push(col);
+                }
+              }
+            }
+          }
+        }
+      }
+
+      async function read(file) {
+        try {
+          const lib = await library();
+          const buffer = new Uint8Array(await file.arrayBuffer());
+          // h5wasm reads through emscripten's in-memory file system.
+          const tmp = "/lilook-" + Date.now() + "-" + file.name;
+          lib.FS.writeFile(tmp, buffer);
+          const f = new lib.File(tmp, "r");
+          const names = [], values = [];
+          try {
+            collect(f, "", names, values);
+          } finally {
+            f.close();
+            try { lib.FS.unlink(tmp); } catch {}
+          }
+          if (!names.length) {
+            wasm.deliver_error(file.name, "no datasets of numbers in that file");
+          } else {
+            wasm.deliver_columns(file.name, names, values);
+          }
+        } catch (e) {
+          wasm.deliver_error(file.name, "h5wasm: " + (e && e.message ? e.message : String(e)));
+        }
+      }
+
+      // egui reads the same drop for every other format; this only claims the
+      // extensions Rust said it could not handle.
+      window.addEventListener("drop", ev => {
+        const files = ev.dataTransfer && ev.dataTransfer.files;
+        if (!files) return;
+        for (const f of files) if (EXT.test(f.name)) read(f);
+      }, true);
+    }
+
     } catch (e) {
       const why = e && (e.stack || e.message) ? (e.name + ": " + e.message) : String(e);
       boot.innerHTML = `<div><b>could not start</b><code style="font-size:13px">${why}</code>

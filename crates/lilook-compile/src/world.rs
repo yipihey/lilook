@@ -32,6 +32,9 @@ pub struct LilookWorld<L: FileLoader + Send + Sync = MemoryFiles> {
     fonts: FontStore,
     files: FileStore<MainOverlay<L>>,
     main: FileId,
+    /// While a query is running this is what `World::main` reports, so the
+    /// document's own parsed source is never touched by one.
+    querying: Option<FileId>,
 }
 
 /// The id of the buffer being edited. It is never on disk -- the whole point is
@@ -58,6 +61,7 @@ impl<L: FileLoader + Send + Sync> LilookWorld<L> {
             fonts,
             files: FileStore::new(MainOverlay::new(main, text, loader)),
             main,
+            querying: None,
         }
     }
 
@@ -92,6 +96,82 @@ impl<L: FileLoader + Send + Sync> LilookWorld<L> {
     pub fn set_source(&mut self, text: impl Into<String>) {
         self.files.loader().set_text(text);
         self.files.reset();
+    }
+
+    /// Mutable access to whatever supplies the non-main files.
+    pub fn loader_mut(&mut self) -> &mut L {
+        // Adding a file has to invalidate the store, or the next compile serves
+        // the `NotFound` it cached the last time something asked for that path.
+        self.files.reset();
+        self.files.loader_mut().inner_mut()
+    }
+
+    /// Evaluate one expression and hand back what it produced.
+    ///
+    /// Compiles a throwaway document under its own file id, so the buffer being
+    /// edited keeps its parsed `Source` and the next real compile stays warm. The
+    /// expression is evaluated at document scope with no imports, so it can use
+    /// typst's builtins -- `csv`, `read`, `cbor` -- and nothing else.
+    ///
+    /// `None` means the expression did not evaluate; the diagnostics say why.
+    pub fn query(&mut self, expr: &str) -> (Option<lilook_core::data::Answer>, Vec<Diagnostic>) {
+        let id = crate::query::query_id();
+        self.files
+            .loader()
+            .set_query(Some((id, crate::query::document(expr))));
+        self.querying = Some(id);
+        self.files.reset();
+
+        let (doc, diags) = self.compile();
+        let answer = doc.as_ref().and_then(crate::query::answer);
+
+        // Put everything back before returning, including on the failure path:
+        // a world left in query mode would compile the wrong document next.
+        self.querying = None;
+        self.files.loader().set_query(None);
+        self.files.reset();
+        (answer, diags)
+    }
+
+    /// Every file the last compile read, main excluded.
+    ///
+    /// `FileStore` tracks this already, and `set_source` resets the store before
+    /// each compile, so calling this *after* `compile()` yields exactly that
+    /// compile's file set -- including files that were asked for and were not
+    /// there, which is what makes a missing `csv("run.csv")` reportable rather
+    /// than merely a diagnostic.
+    ///
+    /// Two-pass probe refinement calls `compile()` twice; the second pass reads
+    /// the same files, so nothing here depends on which one this follows.
+    pub fn dependencies(&mut self) -> Vec<lilook_core::DataFile> {
+        // Collected first: `dependencies()` borrows the store mutably and holds
+        // that borrow for as long as the iterator lives, so the `loaded` check
+        // below cannot happen inside the loop.
+        let ids: Vec<FileId> = {
+            let (_, ids) = self.files.dependencies();
+            ids.collect()
+        };
+        let mut out: Vec<lilook_core::DataFile> = ids
+            .into_iter()
+            .filter(|id| *id != self.main)
+            .map(|id| lilook_core::DataFile {
+                path: id.vpath().get_without_slash().to_string(),
+                root: match id.root() {
+                    VirtualRoot::Project => lilook_core::FileRoot::Project,
+                    VirtualRoot::Package(spec) => lilook_core::FileRoot::Package(format!(
+                        "{}/{}/{}",
+                        spec.namespace, spec.name, spec.version
+                    )),
+                },
+                // The slot is already populated or already holds its error, so
+                // this is a cache read rather than a second trip to disk.
+                loaded: self.files.file(id).is_ok(),
+            })
+            .collect();
+        // The store yields these in arbitrary order, and a panel that reshuffles
+        // itself between compiles is unusable.
+        out.sort();
+        out
     }
 
     pub fn compile(&self) -> (Option<PagedDocument>, Vec<Diagnostic>) {
@@ -149,7 +229,7 @@ impl<L: FileLoader + Send + Sync> World for LilookWorld<L> {
         self.fonts.book()
     }
     fn main(&self) -> FileId {
-        self.main
+        self.querying.unwrap_or(self.main)
     }
     fn source(&self, id: FileId) -> FileResult<Source> {
         self.files.source(id)

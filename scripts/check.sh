@@ -51,6 +51,27 @@ scripts/swift.sh
 if rustup target list --installed 2>/dev/null | grep -q wasm32-unknown-unknown; then
   cargo check --quiet --target wasm32-unknown-unknown -p lilook-core -p lilook-ui -p lilook-editor
   cargo check --quiet --target wasm32-unknown-unknown -p lilook-compile --no-default-features
+  # Every data decoder except HDF5 ports unchanged, because each one takes
+  # `&[u8]` and none opens a file. HDF5 is C, and `Format::available()` is what
+  # tells the browser so rather than failing silently.
+  cargo check --quiet --target wasm32-unknown-unknown -p lilook-data
   cargo check --quiet --target wasm32-unknown-unknown -p lilook-web
   echo "wasm32 targets check cleanly"
+fi
+
+# Each data format on its own, so a decoder cannot come to depend on another
+# being compiled in. The default build has no `hdf5`: that needs a C toolchain,
+# and `cargo install lilook` must not.
+for f in npz fits ascii; do
+  cargo check --quiet -p lilook-data --no-default-features --features "$f"
+done
+cargo check --quiet -p lilook-data --no-default-features
+echo "each data format builds on its own"
+
+# HDF5, only where someone has asked for it. `static` vendors libhdf5 1.14, so
+# the first build takes a few minutes; a system HDF5 2.x is rejected by the
+# binding, which is why the feature does not use one.
+if [ "${LILOOK_HDF5:-0}" = "1" ]; then
+  cargo test --quiet -p lilook-data --features hdf5
+  echo "hdf5 reads a file libhdf5 wrote"
 fi

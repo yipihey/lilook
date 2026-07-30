@@ -30,6 +30,14 @@ use typst_layout::PagedDocument;
 pub const PROBE_LABEL: &str = "lilook-probe";
 pub const SERIES_LABEL: &str = "lilook-series";
 
+/// Named arguments that carry data rather than style, and so are worth
+/// recovering as channels alongside x and y.
+///
+/// A list rather than a schema lookup: the schema says a parameter's *type*, and
+/// several style parameters also take arrays. What matters here is whether the
+/// values are measurements, and that is a fact about lilaq's vocabulary.
+pub const DATA_ARGS: [&str; 4] = ["yerr", "xerr", "z", "size"];
+
 /// Where the scale probes sit inside the data range. Not 0 and 1: a probe on
 /// the very edge of the axis limits is the case most likely to fall outside
 /// them once lilaq applies its own padding, and a probe outside the limits
@@ -105,11 +113,28 @@ pub fn inject(doc: &Document, hints: &HashMap<usize, Bounds>) -> (String, Inject
             else {
                 continue;
             };
+            // Data-bearing named arguments come back too, as a dictionary keyed
+            // by argument name. `yerr` is why: a linked dataset can feed it, and
+            // without recovering it an error column would be linkable but
+            // invisible. The expressions are the user's own source text,
+            // re-evaluated in the scope they were written in, exactly as x and y
+            // are.
+            let extra: Vec<String> = series
+                .named
+                .iter()
+                .filter(|a| DATA_ARGS.contains(&a.name.as_str()))
+                .map(|a| format!("{}: {}", a.name, &doc.text()[a.value.clone()]))
+                .collect();
+            let channels = if extra.is_empty() {
+                "(:)".to_string()
+            } else {
+                format!("({})", extra.join(", "))
+            };
             // Relative coordinates, so this marker can never widen the data
             // range and change the layout it is trying to measure.
             args.push_str(&format!(
-                ", {lq}.place(0%, 0%, [#metadata((fig: {}, node: {node}, x: {x}, y: {y}))\
-                 <{SERIES_LABEL}>])",
+                ", {lq}.place(0%, 0%, [#metadata((fig: {}, node: {node}, x: {x}, y: {y}, \
+                 ch: {channels}))<{SERIES_LABEL}>])",
                 fig.node
             ));
         }
@@ -156,7 +181,7 @@ struct Raw {
     series: HashMap<usize, Vec<SeriesGeom>>,
 }
 
-fn label(name: &str) -> Selector {
+pub(crate) fn label(name: &str) -> Selector {
     Selector::Label(Label::new(PicoStr::intern(name)).expect("non-empty label"))
 }
 
@@ -231,11 +256,28 @@ fn read(doc: &PagedDocument) -> Raw {
         let (Some(fig), Some(node)) = (as_f64(&fig), as_f64(&node)) else {
             continue;
         };
+        // Channels are optional: an older injection, or a series with no data
+        // arguments, simply has none.
+        let channels = match field(&d, "ch") {
+            Some(Value::Dict(ch)) => ch
+                .iter()
+                .filter_map(|(k, v)| {
+                    let Value::Array(a) = v else { return None };
+                    let values: Vec<f64> = a.iter().filter_map(as_f64).collect();
+                    // A partly-numeric array is not a data channel; refusing it
+                    // is better than reporting a length that is not the file's.
+                    (values.len() == a.len() && !values.is_empty())
+                        .then(|| (k.as_str().to_string(), values))
+                })
+                .collect(),
+            _ => vec![],
+        };
         raw.series
             .entry(fig as usize)
             .or_default()
             .push(SeriesGeom {
                 node: node as usize,
+                channels,
                 points: points(&x, &y),
             });
     }

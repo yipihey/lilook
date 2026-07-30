@@ -31,3 +31,6 @@ comemo = { workspace = true }
 # implemented on this platform" -- and the backend times every compile. This is
 # the same shim eframe uses, so it is already in the tree.
 web-time = "1"
+
+[dev-dependencies]
+lilook-data = { path = "../lilook-data" }

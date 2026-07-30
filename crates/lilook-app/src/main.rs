@@ -10,6 +10,12 @@ use lilook_editor::Editor;
 
 const SCHEMA: &str = include_str!("../../../assets/lilaq-0.6.0.schema.json");
 
+/// Where transcoded sidecars and their manifest live, relative to the document.
+///
+/// Under the project root because a typst path cannot escape it, and in a dotted
+/// directory because these are lilook's working files rather than the user's.
+const SIDECAR_DIR: &str = ".lilook";
+
 struct App {
     editor: Editor,
     path: Option<PathBuf>,
@@ -25,6 +31,10 @@ struct App {
     conflict: bool,
     /// Frame time of the last staleness check.
     checked_at: f64,
+    /// Frame time of the last linked-data check, and what those files looked
+    /// like when they were last believed.
+    data_checked_at: f64,
+    watched: std::collections::HashMap<String, Watch>,
     /// `--screenshot PATH`: draw until the figure is on screen, save a PNG of
     /// the window, quit. The findings record that capturing the shell used to
     /// hang; an agent that cannot see its own UI cannot claim it renders.
@@ -62,6 +72,8 @@ impl App {
             saved_at: mtime(path.as_ref()),
             conflict: false,
             checked_at: 0.0,
+            data_checked_at: 0.0,
+            watched: std::collections::HashMap::new(),
             screenshot: screenshot.map(|path| Screenshot {
                 path,
                 countdown: 0,
@@ -71,13 +83,20 @@ impl App {
     }
 
     /// Feed the compile thread and take back whatever it finished.
-    fn pump(&mut self, ctx: &egui::Context, request: Option<(String, f32)>) {
+    fn pump(&mut self, ctx: &egui::Context, request: Option<(String, f32)>, query: Option<String>) {
         if let Some((source, ppp)) = request {
             self.actor.request(source, ppp);
         }
+        if let Some(expr) = query {
+            self.actor.query(expr);
+        }
+        for a in self.actor.take_answers() {
+            self.editor.accept_answer(&a.expr, a.answer, &a.diagnostics);
+        }
         self.editor.set_busy(self.actor.busy());
         if let Some(frame) = self.actor.take_latest() {
-            self.editor.accept(ctx, frame.render, frame.scenes);
+            self.editor
+                .accept(ctx, frame.render, frame.scenes, frame.data_files);
         }
     }
 
@@ -100,6 +119,219 @@ impl App {
 
     fn unsaved(&self) -> bool {
         self.editor.text() != self.saved_text
+    }
+
+    /// The directory relative paths in the document resolve against.
+    fn root(&self) -> PathBuf {
+        lilook_compile::root_for(self.path.as_ref())
+    }
+
+    /// Bring a dropped file into the project.
+    ///
+    /// A typst path cannot escape the project root, so a file anywhere else is
+    /// not linkable where it lies. Copying it in is the only thing that keeps the
+    /// document compilable by plain `typst`, and it is done explicitly rather
+    /// than silently: the status line says what happened.
+    fn adopt(&mut self, dropped: Vec<lilook_editor::Dropped>) {
+        let root = self.root();
+        for d in dropped {
+            let Some(from) = d.path.as_deref().map(PathBuf::from) else {
+                self.editor
+                    .adoption_failed(&d.name, "the drop carried no path");
+                continue;
+            };
+            // Formats typst cannot read at all become a CBOR sidecar, wherever
+            // the original lives. That also solves the root problem for them: the
+            // original stays put and only the sidecar comes into the project.
+            match self.transcode(&from, &d.name) {
+                Some(Ok(rel)) => {
+                    self.editor.file_adopted(rel);
+                    continue;
+                }
+                Some(Err(why)) => {
+                    self.editor.adoption_failed(&d.name, &why);
+                    continue;
+                }
+                None => {}
+            }
+            // Already under the root: link it where it is, and do not touch it.
+            if let Ok(rel) = from.strip_prefix(&root) {
+                self.editor.file_adopted(rel.to_string_lossy().into_owned());
+                continue;
+            }
+            let to = root.join(&d.name);
+            if to.exists() {
+                // Overwriting someone's data file to link it would be the worst
+                // thing this feature could do.
+                self.editor.adoption_failed(
+                    &d.name,
+                    "a file of that name is already in the project directory",
+                );
+                continue;
+            }
+            match std::fs::copy(&from, &to) {
+                Ok(_) => self.editor.file_adopted(d.name.clone()),
+                Err(e) => self.editor.adoption_failed(&d.name, &e.to_string()),
+            }
+        }
+    }
+
+    /// Turn a file typst cannot read into a CBOR sidecar it can.
+    ///
+    /// `None` for a format typst reads itself -- a CSV is linked directly, and
+    /// transcoding it would add an artefact for nothing. Otherwise the sidecar
+    /// goes in `.lilook/` beside the document, with a manifest recording where it
+    /// came from so it can be regenerated and so a change to the *original* can
+    /// be noticed.
+    ///
+    /// The original is never modified and never moved.
+    fn transcode(&mut self, from: &std::path::Path, name: &str) -> Option<Result<String, String>> {
+        let bytes = match std::fs::read(from) {
+            Ok(b) => b,
+            Err(e) => return Some(Err(e.to_string())),
+        };
+        let format = lilook_data::sniff(&bytes, name)?;
+        if !format.available() {
+            return Some(Err(format.unavailable_because().to_string()));
+        }
+        // HDF5 is the one format read from a path rather than from bytes, because
+        // libhdf5's API is built that way. Everything else is portable.
+        let decoded = match format {
+            #[cfg(feature = "hdf5")]
+            lilook_data::Format::Hdf5 => lilook_data::hdf5::read_path(from),
+            _ => lilook_data::decode(&bytes, format),
+        };
+        let data = match decoded {
+            Ok(d) => d,
+            Err(e) => return Some(Err(e.to_string())),
+        };
+        if data.columns.is_empty() {
+            return Some(Err("nothing in that file is a column of numbers".into()));
+        }
+
+        let stem = name.rsplit_once('.').map(|(s, _)| s).unwrap_or(name);
+        let rel = format!("{SIDECAR_DIR}/{stem}.cbor");
+        let dir = self.root().join(SIDECAR_DIR);
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            return Some(Err(e.to_string()));
+        }
+        if let Err(e) = std::fs::write(self.root().join(&rel), data.to_cbor()) {
+            return Some(Err(e.to_string()));
+        }
+        self.record_link(&rel, from, &bytes, &data);
+        self.editor.status = format!(
+            "read {} column(s) from {name} into {rel}",
+            data.columns.len()
+        );
+        Some(Ok(rel))
+    }
+
+    /// Note in `.lilook/links.toml` where a sidecar came from.
+    ///
+    /// Beside the data rather than in the `.typ`, deliberately. The document then
+    /// contains only plain typst that the compiler fully validates, provenance
+    /// cannot go stale against it, and copying a `#let` into another project
+    /// carries an honest link rather than a claim about a file that is not there.
+    /// The length and a cheap digest are what let a stale sidecar be detected.
+    fn record_link(
+        &self,
+        sidecar: &str,
+        origin: &std::path::Path,
+        bytes: &[u8],
+        data: &lilook_data::Dataset,
+    ) {
+        let path = self.root().join(SIDECAR_DIR).join("links.toml");
+        let previous = std::fs::read_to_string(&path).unwrap_or_default();
+        // Drop any earlier record of the same sidecar, then append.
+        let kept: String = previous
+            .split("\n[[link]]")
+            .filter(|block| !block.contains(&format!("sidecar = {:?}", sidecar)))
+            .collect::<Vec<_>>()
+            .join("\n[[link]]");
+        let mut out = if kept.trim().is_empty() {
+            String::from(
+                "# Written by lilook. Where each sidecar under this directory came\n\
+                 # from, so it can be regenerated and so a change to the original\n\
+                 # can be noticed. The figure itself does not read this file.\n",
+            )
+        } else {
+            kept
+        };
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(&format!(
+            "\n[[link]]\nsidecar = {:?}\norigin = {:?}\nbytes = {}\ndigest = \"{:016x}\"\ncolumns = [{}]\n",
+            sidecar,
+            origin.to_string_lossy(),
+            bytes.len(),
+            digest(bytes),
+            data.names()
+                .iter()
+                .map(|n| format!("{n:?}"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        ));
+        let _ = std::fs::write(path, out);
+    }
+
+    /// Notice a linked data file changing under the figure.
+    ///
+    /// Polls, because there is no dependency worth adding for this and the files
+    /// to watch change with every compile. Two guards make polling honest:
+    ///
+    /// - mtime *and* size, since a rewrite can preserve either one alone;
+    /// - a change has to hold across two consecutive polls before it counts,
+    ///   which is what keeps a file caught mid-write out of the figure.
+    ///
+    /// It still cannot see a sub-second rewrite, or a writer that preserves both
+    /// (`rsync -t`). That is another reason the result is offered rather than
+    /// applied.
+    fn watch_data(&mut self, now: f64) {
+        if now - self.data_checked_at < 1.0 {
+            return;
+        }
+        self.data_checked_at = now;
+        let root = self.root();
+        let linked: Vec<String> = self
+            .editor
+            .data_files()
+            .iter()
+            .filter(|d| d.is_data())
+            .map(|d| d.path.clone())
+            .collect();
+        // Forget files the figure no longer reads, or the list grows forever and
+        // reports changes to data nothing plots.
+        self.watched.retain(|p, _| linked.contains(p));
+
+        let mut changed = vec![];
+        for path in linked {
+            let stamp = stamp(&root.join(&path));
+            match self.watched.get_mut(&path) {
+                // First sight: whatever it is now is the baseline, because the
+                // compile that read it read *this*.
+                None => {
+                    self.watched.insert(
+                        path,
+                        Watch {
+                            settled: stamp,
+                            seen: stamp,
+                        },
+                    );
+                }
+                Some(w) => {
+                    let steady = stamp == w.seen;
+                    w.seen = stamp;
+                    if steady && stamp != w.settled {
+                        w.settled = stamp;
+                        changed.push(path);
+                    }
+                }
+            }
+        }
+        if !changed.is_empty() {
+            self.editor.files_changed(&changed);
+        }
     }
 
     /// Notice a file edited in another program.
@@ -207,9 +439,40 @@ impl App {
     }
 }
 
+/// A cheap content digest, for noticing that a sidecar no longer matches the file
+/// it came from.
+///
+/// FNV-1a: not cryptographic and not meant to be. What it has to catch is a file
+/// that was regenerated or edited, and for that a 64-bit non-cryptographic hash
+/// is plenty -- the alternative is a dependency for one function.
+fn digest(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100_0000_01b3);
+    }
+    h
+}
+
 /// The file's modification time, if it exists.
 fn mtime(path: Option<&PathBuf>) -> Option<std::time::SystemTime> {
     std::fs::metadata(path?).ok()?.modified().ok()
+}
+
+/// Modification time and size together, since a rewrite can preserve either one
+/// on its own. `None` for a file that is not there, which is itself a change
+/// worth noticing.
+fn stamp(path: &std::path::Path) -> Option<(std::time::SystemTime, u64)> {
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.modified().ok()?, m.len()))
+}
+
+/// What a watched data file looked like.
+struct Watch {
+    /// The last state that held still long enough to be believed.
+    settled: Option<(std::time::SystemTime, u64)>,
+    /// The state at the previous poll, which may be a file mid-write.
+    seen: Option<(std::time::SystemTime, u64)>,
 }
 
 impl eframe::App for App {
@@ -217,6 +480,7 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         let now = ctx.input(|i| i.time);
         self.check_disk(now);
+        self.watch_data(now);
         self.retitle(&ctx);
 
         let mut reload = false;
@@ -246,7 +510,10 @@ impl eframe::App for App {
         if requests.save {
             self.save();
         }
-        self.pump(&ctx, requests.compile);
+        if !requests.adopt.is_empty() {
+            self.adopt(requests.adopt);
+        }
+        self.pump(&ctx, requests.compile, requests.query);
         self.screenshot_step(&ctx);
     }
 }

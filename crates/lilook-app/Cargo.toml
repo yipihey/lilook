@@ -8,6 +8,8 @@ license = "MIT"
 lilook-core = { path = "../lilook-core" }
 lilook-compile = { path = "../lilook-compile" }
 lilook-editor = { path = "../lilook-editor" }
+# The formats typst cannot read. `hdf5` is off by default: it needs a C library.
+lilook-data = { path = "../lilook-data" }
 egui = { workspace = true }
 # Only for `--screenshot`: the same tiny-skia typst-render already links, so it
 # costs no extra build.
@@ -18,3 +20,10 @@ eframe = { version = "0.35", default-features = false, features = [
     "x11",
     "wayland",
 ] }
+
+[features]
+default = []
+# HDF5 support, off by default because it needs a C toolchain. `cargo build
+# --features hdf5` vendors and builds libhdf5 1.14 the first time (about three
+# minutes) and links it thereafter.
+hdf5 = ["lilook-data/hdf5"]

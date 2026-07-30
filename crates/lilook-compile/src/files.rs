@@ -78,6 +78,12 @@ impl FileLoader for MemoryFiles {
 pub struct MainOverlay<L> {
     main: FileId,
     text: std::sync::Mutex<String>,
+    /// A second in-memory document, for asking the compiler a one-off question
+    /// -- "what are the column names in this file?" -- without disturbing the
+    /// buffer being edited. It gets its own id so the editing buffer's parsed
+    /// `Source` survives, which is the whole reason warm recompiles are 20 ms
+    /// and not 108.
+    query: std::sync::Mutex<Option<(FileId, String)>>,
     inner: L,
 }
 
@@ -86,6 +92,7 @@ impl<L: FileLoader> MainOverlay<L> {
         MainOverlay {
             main,
             text: std::sync::Mutex::new(text.into()),
+            query: std::sync::Mutex::new(None),
             inner,
         }
     }
@@ -94,8 +101,19 @@ impl<L: FileLoader> MainOverlay<L> {
         *self.text.lock().unwrap() = text.into();
     }
 
+    /// Park a query document at `id`, or clear it with `None`.
+    pub fn set_query(&self, doc: Option<(FileId, String)>) {
+        *self.query.lock().unwrap() = doc;
+    }
+
     pub fn inner(&self) -> &L {
         &self.inner
+    }
+
+    /// Mutable access to whatever supplies the non-main files -- how a browser
+    /// build adds a file the user dropped onto the page.
+    pub fn inner_mut(&mut self) -> &mut L {
+        &mut self.inner
     }
 }
 
@@ -103,6 +121,11 @@ impl<L: FileLoader> FileLoader for MainOverlay<L> {
     fn load(&self, id: FileId) -> FileResult<Bytes> {
         if id == self.main {
             return Ok(Bytes::new(self.text.lock().unwrap().clone().into_bytes()));
+        }
+        if let Some((qid, text)) = &*self.query.lock().unwrap() {
+            if *qid == id {
+                return Ok(Bytes::new(text.clone().into_bytes()));
+            }
         }
         self.inner.load(id)
     }
@@ -133,6 +156,9 @@ pub fn bundle_from_dir(
                     "typ"
                         | "toml"
                         | "csv"
+                        // The sidecar a transcoded binary file becomes, so a
+                        // bundle can carry linked data too.
+                        | "cbor"
                         | "json"
                         | "yaml"
                         | "yml"

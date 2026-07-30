@@ -1,0 +1,29 @@
+[package]
+name = "lilook-data"
+version = "0.1.0"
+edition = "2021"
+description = "Decoders for the binary and ASCII data formats lilook links figures to."
+
+[dependencies]
+# Deliberately almost nothing. Every decoder here takes `&[u8]`, so this crate
+# never touches a file system and builds for `wasm32-unknown-unknown` with no
+# feature gate -- the `system` boundary is about who *hands* you the bytes, not
+# about reading them.
+#
+# `flate2` with its pure-Rust `miniz_oxide` backend is the one exception, for the
+# deflate inside an `.npz`. It is already in the tree, and it has no C in it.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# `static` vendors and builds libhdf5 1.14 rather than linking the system one.
+# Needed here because a Homebrew HDF5 2.x is rejected outright by the binding
+# ("Invalid H5_VERSION"), and a feature that only builds on some machines is not
+# a feature. Costs a cmake build the first time, and nothing thereafter.
+hdf5 = { package = "hdf5-metno", version = "0.10", optional = true, features = ["static", "zlib"] }
+
+[features]
+default = ["npz", "fits", "ascii"]
+npz = []
+fits = []
+ascii = []
+# Native only, and off by default: HDF5 means libhdf5, which is C and will not
+# build for wasm32. `scripts/check.sh` keeps the default build honest about that.
+hdf5 = ["dep:hdf5"]

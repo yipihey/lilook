@@ -461,3 +461,96 @@ fn dragging_the_frame_resizes_the_figure_in_the_users_own_unit() {
     doc.undo();
     assert_eq!(doc.text(), src);
 }
+
+/// What the data emitter writes has to be something typst evaluates, not merely
+/// something typst parses. `check_expr` covers the parser; only a compile covers
+/// `float.nan` being a real value and `1e-300` being a real literal.
+#[test]
+fn emitted_data_values_survive_a_real_compile() {
+    let mut b = Backend::new(std::env::temp_dir(), "");
+    let awkward = [
+        0.0,
+        -0.0,
+        1.234e-9,
+        1e-300,
+        5e-324,
+        f64::MAX,
+        f64::MIN,
+        std::f64::consts::PI,
+        6.02214076e23,
+        f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    let array = lilook_core::data_array_source(&awkward).unwrap();
+    // `#assert` makes the compile itself the assertion: a value typst read as
+    // something other than a float would change the count or the type.
+    let source = format!(
+        r#"#set page(width: 4cm, height: 2cm)
+#let vals = {array}
+#assert(vals.len() == {})
+#assert(vals.all(v => type(v) == float or type(v) == int))
+#assert(vals.at(9) != vals.at(9), message: "nan must not compare equal to itself")
+#assert(vals.at(10) > 0 and vals.at(11) < 0, message: "the infinities kept their signs")
+ok
+"#,
+        awkward.len()
+    );
+    let r = b.render(&source, 1.0);
+    assert!(
+        !r.failed(),
+        "{:?}",
+        r.errors().map(|d| d.message.clone()).collect::<Vec<_>>()
+    );
+
+    // And the single-element form, which is the one `(1)` got wrong: a scalar
+    // there is not a compile error, it is a *plot* of nothing.
+    let one = lilook_core::data_array_source(&[2.5]).unwrap();
+    assert_eq!(one, "(2.5,)");
+    let source = format!(
+        r#"#set page(width: 4cm, height: 2cm)
+#assert(type({one}) == array and {one}.len() == 1)
+ok
+"#
+    );
+    assert!(!b.render(&source, 1.0).failed());
+}
+
+/// A one-point series is a real figure, and its point is recoverable -- the case
+/// the old emitter turned into a scalar.
+#[test]
+fn a_single_point_series_plots_and_is_recovered() {
+    let mut b = Backend::new(std::env::temp_dir(), "");
+    let mut hints = Hints::new();
+    let src = format!(
+        r#"#import "@preview/lilaq:0.6.0" as lq
+#set page(width: auto, height: auto, margin: 5pt)
+#lq.diagram(width: 6cm, height: 4cm,
+  lq.plot({}, {}, stroke: red)
+)
+"#,
+        lilook_core::data_array_source(&[1.5]).unwrap(),
+        lilook_core::data_array_source(&[2.5]).unwrap(),
+    );
+    let doc = Document::new(&src);
+    let (render, scenes) = b.render_scenes(&doc, 1.0, &mut hints);
+    if skip(&render) {
+        return;
+    }
+    assert!(
+        !render.failed(),
+        "{:?}",
+        render
+            .errors()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(scenes.len(), 1);
+    assert_eq!(scenes[0].series.len(), 1);
+    assert_eq!(scenes[0].series[0].points.len(), 1);
+    let (x, y) = scenes[0].series[0].points[0];
+    assert!(
+        (x - 1.5).abs() < 1e-12 && (y - 2.5).abs() < 1e-12,
+        "{x} {y}"
+    );
+}

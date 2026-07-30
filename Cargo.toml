@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/lilook-core",
+    "crates/lilook-data",
     "crates/lilook-ffi",
     "crates/lilook-ui",
     "crates/lilook-app",

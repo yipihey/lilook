@@ -142,10 +142,12 @@ fn fixture() -> ([PageTexture; 1], Vec<Scene>) {
         series: vec![
             SeriesGeom {
                 node: 2,
+                channels: vec![],
                 points: vec![(0.0, 0.0), (5.0, 9.0), (10.0, 1.0)],
             },
             SeriesGeom {
                 node: 3,
+                channels: vec![],
                 points: vec![(0.0, 5.0), (10.0, 5.0)],
             },
         ],

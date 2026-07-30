@@ -182,3 +182,79 @@ fn event_shape_maps_onto_a_transaction() {
     doc.undo();
     assert_eq!(doc.text(), SRC);
 }
+
+/// Every link state a data slot can be in has to render, and only a linked slot
+/// may offer to unlock. The states are independent per slot: x can be fresh
+/// while y is stale, because they are separate links.
+#[test]
+fn a_data_slot_renders_in_every_link_state() {
+    use lilook_ui::{Context, SlotSource};
+
+    let schema = schema();
+    let doc = Document::new(SRC);
+    let call = doc
+        .calls()
+        .iter()
+        .find(|c| c.is_xy_series())
+        .expect("a series");
+    let f = schema.function_for_callee(&call.callee);
+
+    let linked = |file: &str| SlotSource {
+        file: Some(file.into()),
+        missing: false,
+        stale: false,
+    };
+    let cases: Vec<(&str, Option<usize>, Vec<SlotSource>)> = vec![
+        // Nothing known: no provenance row, no unlock button.
+        ("unlinked, no data recovered", None, vec![]),
+        // An expression whose values lilook has: materialise is offered.
+        (
+            "unlinked, data recovered",
+            Some(64),
+            vec![SlotSource::default(), SlotSource::default()],
+        ),
+        // Linked and fresh: unlock is offered, and it says what it will end.
+        (
+            "linked",
+            Some(3),
+            vec![linked("run.csv"), linked("flux.npz")],
+        ),
+        // x fresh, y stale -- the case a per-call flag could not express.
+        (
+            "one slot stale",
+            Some(3),
+            vec![
+                linked("run.csv"),
+                SlotSource {
+                    stale: true,
+                    ..linked("flux.npz")
+                },
+            ],
+        ),
+        (
+            "one slot missing",
+            Some(3),
+            vec![
+                SlotSource {
+                    missing: true,
+                    ..linked("gone.csv")
+                },
+                linked("flux.npz"),
+            ],
+        ),
+    ];
+
+    for (what, recovered_points, slot_sources) in cases {
+        let insp = RefCell::new(Inspector::new(f).with_context(Context {
+            recovered_points,
+            slot_sources: &slot_sources,
+        }));
+        egui::__run_test_ui(|ui| insp.borrow_mut().ui(ui, call));
+        // Drawing a state must never itself be an edit.
+        assert!(
+            insp.borrow().events.is_empty(),
+            "{what} emitted {:?}",
+            insp.borrow().events
+        );
+    }
+}

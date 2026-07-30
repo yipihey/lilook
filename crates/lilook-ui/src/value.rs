@@ -285,11 +285,12 @@ pub fn alignment_source(h: &Option<String>, v: &Option<String>) -> String {
     }
 }
 
-/// Render a recovered series as a Typst array literal, for "materialise".
-pub fn array_source(values: impl Iterator<Item = f64>) -> String {
-    let items: Vec<String> = values.map(num).collect();
-    format!("({})", items.join(", "))
-}
+// Recovered series data is emitted by `lilook_core::data_array_source`, not from
+// here. `num()` below is for numbers a *gesture* produced, where six decimal
+// places is right because the rest is mouse jitter; running data through it
+// truncated small magnitudes to zero and turned every non-finite value into a
+// real measurement of zero. Two emitters is how that stayed invisible, so there
+// is now one.
 
 #[cfg(test)]
 mod tests {
@@ -396,10 +397,13 @@ mod tests {
         );
     }
 
+    /// `num()` is for gesture geometry, and rounds hard on purpose. The tests
+    /// that this is *not* good enough for data live next to the data emitter in
+    /// `lilook-core`.
     #[test]
-    fn materialised_arrays_are_valid_source() {
-        let s = array_source([0.0, 1.5, -2.25].into_iter());
-        assert_eq!(s, "(0, 1.5, -2.25)");
-        assert!(lilook_core::check_expr(&s).is_ok());
+    fn gesture_numbers_round_to_something_a_person_would_type() {
+        assert_eq!(num(6.000000001), "6");
+        assert_eq!(num(2.5), "2.5");
+        assert_eq!(num(-0.3333333333), "-0.333333");
     }
 }

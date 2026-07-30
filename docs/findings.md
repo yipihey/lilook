@@ -929,3 +929,214 @@ depends on `lilook-core` alone.
 
 What is still untested is the *SwiftUI* part: `FigureView` compiles, and nobody
 has ever looked at it on a device. Compiling is not seeing.
+
+## Reading data at compile time costs nothing measurable
+
+The Veusz-style linked-dataset design rested on a performance claim, so it was
+measured before anything was built. `crates/lilook-compile/examples/measure-data.rs`
+reproduces it.
+
+The claim was that `csv()` returns *strings*, so a linked dataset spends one
+interpreted `float()` call per cell, while `cbor()` returns native floats with no
+per-cell interpretation -- and that the gap would be wide enough to force a
+transcoded sidecar for text formats too. The prediction was "fine at 1k, marginal
+at 10k, unusable at 100k".
+
+The prediction was wrong. Warm recompiles, best of five, release build:
+
+| rows | csv+float | csv inlined | cbor | literal array |
+| --- | --- | --- | --- | --- |
+| 1k | 21.7 ms | 21.6 ms | 20.2 ms | 20.1 ms |
+| 10k | 161.9 ms | 182.3 ms | 155.1 ms | 161.5 ms |
+| 100k | 1.8 s | 2.2 s | 1.9 s | 2.0 s |
+
+Every shape is within noise of every other at every size. **How the data reaches
+the document does not measurably affect compile time**; what costs is lilaq
+drawing N points, which it does identically whatever produced them. At 100k the
+literal array carries 2.8 MB of source and still compiles in the same time as a
+286-byte document that reads a file.
+
+Three consequences:
+
+- There is no row count above which lilook must prefer a sidecar to a live CSV
+  link. Text formats can be linked directly at any size lilaq can plot, and the
+  sidecar's justification is *capability* -- typst cannot read HDF5, npz or FITS
+  at all -- plus slicing, so a 2 GB file need not be loaded and hashed to plot two
+  columns of it. Not speed.
+- The probe's second evaluation really is nearly free, which `probe.rs` already
+  claimed at 1k and which now holds even for the worst case: an expression inlined
+  into the series slot rather than bound to a name, where the conversion genuinely
+  happens twice. That costs ~10% at 10k (182 vs 165 ms), not 2x.
+- The wall is point count and nothing else. ~160 ms warm at 10k and ~1.9 s at 100k
+  are the numbers decimation has to answer, and they are unrelated to linking.
+
+One methodological note, because the first run of this measurement produced
+garbage: comemo's cache is **process-global**, and `Backend::render` evicts lazily
+(`comemo::evict(20)`). Six cases in one process therefore let each inherit the
+previous ones' work, which made the fourth case look like the fastest way to read
+a file -- csv-inlined-no-probe at 1.0 s against 2.4 s for a shape doing strictly
+less work. A fresh `Backend` is not a fresh cache; `comemo::evict(0)` per case is.
+
+## Linked datasets: what the compiler already knew
+
+Veusz-style linked datasets turned out to need much less new machinery than
+expected, because two things already existed and one measurement removed a third.
+
+**typst's file store already tracks dependencies.** `FileStore::dependencies()`
+returns every file a compile read, *including failed loads*, and `reset()` --
+already called before every compile -- already marks them stale. So a figure that
+reads a CSV already follows that file correctly; `tests/dependencies.rs` asserts
+that changing the file changes `scenes[0].series[0].points` while `doc.text()` and
+`history_depth()` are both unchanged. Nothing had to be built for that. What was
+missing was only a *trigger* and a way to say so in the UI.
+
+The list needs one filter to be usable: a compile of a lilaq figure reads 20-odd
+package `.typ` files, so the panel shows project files that are not `.typ`. That
+is `DataFile::is_data`, and the test asserts the unfiltered list really is
+dominated by the package, so the filter is the point rather than a detail.
+
+**The series probe already recovers linked data.** It works by re-evaluating a
+slot's own source text, and it does not care whether that text is a literal array
+or `run.map(r => float(r.t))`. A linked series appears in the tree with its point
+count, hit-tests, and inspects with no new code at all.
+
+**A query needs its own file id, and that is the whole reason it is not a probe.**
+"What columns are in `run.csv`?" cannot go through `probe.rs`: a probe injects into
+a diagram's argument list, and linking a file to a document with no diagram yet is
+the first-run case. Compiling a throwaway `#metadata(csv("f.csv").at(0))` document
+under its own `FileId` costs ~9 ms on top of a warm recompile (38.7 ms against
+29.8), where reusing `main`'s slot would have rewritten the document's cached
+source and put the next edit back in the 151 ms cold band. There is a test that
+asserts which band it lands in.
+
+Two things worth writing down for anyone extending this:
+
+- **`Editor::ui` clears `requests` at the top of every frame**, so anything that
+  wants to ask the shell for something from *outside* a frame has to hold it in
+  editor state and emit it during `ui`, the way `dirty` feeds `want_compile`. A
+  link started programmatically silently did nothing until `queued_query` existed.
+- **A typst path cannot escape the project root.** Verified in
+  `typst-syntax/src/path.rs`: `test("../world.txt", Err(PathError::Escapes))`.
+  Since lilook roots at the `.typ` file's parent, `/scratch/run.h5` and
+  `../data/run.csv` are inexpressible in any document plain `typst` can compile.
+  This is the one Veusz behaviour that cannot be mirrored, so a drop from outside
+  the root offers to copy the file in, and says that it did.
+
+## The formats typst cannot read, and what that costs
+
+Four of the five formats Veusz reads are not typst's: HDF5, npz, FITS, and Veusz's
+descriptor ASCII (which typst *could* parse with `read` + `split` + `float`, at the
+cost of a five-line interpreted parser living in the user's manuscript). Those four
+decode in `lilook-data` and become a **CBOR sidecar** the document links.
+
+CBOR rather than CSV for one reason worth recording: typst reads it back as native
+`f64`, so the values that reach the figure are bit-exact -- `tests/dependencies.rs`
+asserts `channel("x") == t` on the nose. A CSV sidecar would round-trip through
+decimal text and through `float()` per cell.
+
+**The whole crate is pure and portable, and that was a design choice with teeth:**
+every decoder takes `&[u8]` rather than a path. So `lilook-data` builds for
+`wasm32-unknown-unknown` with no feature gate, and npz, FITS and descriptor ASCII
+work identically in the browser. `scripts/check.sh` checks each format's feature
+on its own, so one decoder cannot come to depend on another being compiled in.
+
+Three hand-rolled decoders instead of dependencies, and the reasoning was the same
+each time -- the format is small, and the crate that reads it brings a world:
+
+- **npy/npz**: `ndarray-npy` pulls `ndarray` plus `zip` to read a Python dict
+  literal and a block of little-endian doubles. The reader is ~250 lines; the zip
+  container is another ~150 using `flate2`, which was already in the tree with its
+  pure-Rust `miniz_oxide` backend.
+- **FITS**: there is no mature pure-Rust reader -- `fitsio` wraps cfitsio, which is
+  C and cannot target wasm. The format is kind to this: 2880-byte blocks of
+  80-column cards, then big-endian data the cards fully describe. `BSCALE`/`BZERO`
+  had to be applied, not skipped: unsigned 16-bit data is conventionally stored
+  signed with `BZERO = 32768`, so ignoring it halves every value and wraps the top
+  half negative.
+- **CBOR**: forty lines for a map of arrays of doubles, which is the one shape
+  needed. The test asserts the encoding byte for byte and checks all five
+  length-head widths, because a head that lies about its length is unreadable and
+  the file is not human-inspectable.
+
+One bug worth naming, because it is the kind that hides: in FITS, `NAXIS = 0` means
+*no data*, and the product of no dimensions is 1. A primary header therefore
+claimed one byte of data, which pushed every subsequent HDU one block out of
+alignment -- so a `BINTABLE` after a primary header read as nothing at all.
+
+## HDF5: verified, at the cost of vendoring
+
+HDF5 is the exception to `lilook-data`'s rule. libhdf5 is C, its API is built
+around a *path* rather than bytes, and there is no wasm build. So `hdf5.rs` takes a
+path, is `cfg`'d off for wasm32, and sits behind an off-by-default feature.
+
+The system HDF5 here is **2.1.1, and `hdf5-metno-sys` 0.10.1 rejects it outright**
+("Invalid H5_VERSION"). Rather than ship a feature that only builds on machines
+with a 1.x installed -- the "written, not compiled" trap the Swift package fell into
+-- the feature uses `static`, which vendors and builds libhdf5 1.14. Three minutes
+once, cached after, and the test writes a file *with libhdf5* and reads it back with
+lilook's reader, so the walk, the type dispatch and the shape handling are checked
+against a real file rather than against themselves.
+
+In the browser the answer is different and better than "unsupported": the page
+loads **h5wasm** on the `drop` event for an `.h5`, reads the datasets in
+JavaScript, and hands back names and `Float64Array`s through `deliver_columns`.
+Rust turns those into the same CBOR sidecar a native transcode produces, so
+linking, rereading and unlocking cannot tell which route the numbers came by. It
+is lazy by construction -- the `import()` is inside the drop handler -- so the cold
+start is unchanged and only someone who opens an HDF5 file pays the ~1 MB.
+
+**Not verified**: the h5wasm path has never run in a browser. The Rust side is
+tested and the loader parses, but nobody has dropped an `.h5` on the page. That is
+the same "compiling is not seeing" gap the Swift `FigureView` has, and it should be
+said rather than assumed away.
+
+## Refresh is not an edit, and that is the load-bearing property
+
+The design's one non-obvious payoff. Because a linked file is read *by the
+document*, rereading it is a recompile:
+`a_changed_linked_file_is_reported_and_reread_without_touching_the_document`
+asserts that after a reread the points changed while `doc.text()` **and**
+`history_depth()` are byte-identical. Nothing to coalesce, nothing for undo to know
+about, no interaction with the idle-transaction machinery at all.
+
+Had the values been embedded instead, every refresh would have been a 20,000-number
+transaction landing in whatever the user was typing. That is what made the sidecar
+worth a generated file.
+
+The watcher offers rather than acts, following `check_disk`'s precedent for the
+manuscript: mtime *and* size, and a change must hold across two consecutive polls
+before it counts, which keeps a file caught mid-write out of the figure. It still
+cannot see a sub-second rewrite or a writer that preserves both (`rsync -t`), which
+is a second reason not to act unasked. "Follow" is opt-in and never fires while a
+gesture or an idle transaction is open.
+
+## Provenance read from the source, not stored anywhere
+
+The plan considered recording where a slot's data came from in a comment, and that
+was the right thing to reject: it is state only lilook can validate, in the one
+place the compiler cannot see.
+
+The replacement turned out to need no storage at all. The slot says
+`run.map(r => float(r.t))`, `run` is a binding, and the binding says
+`csv("run.csv")` -- so provenance is *derived* every frame from the document, one
+hop, in `file_behind`. It cannot go stale, cannot lie after a copy into another
+project, and there is no lilook-only syntax anywhere in the `.typ`.
+
+`read_path` deliberately refuses to answer for a computed path: `csv("runs/" + name)`
+yields `None` rather than `"runs/"`. The file is still tracked -- the compiler
+reports what it read -- but a confident wrong answer about where data came from is
+worse than no answer. The first version of that function got this wrong, stopping at
+the closing quote without checking the argument ended there.
+
+Unlocking then had to remove the binding it orphaned. Without that the document
+would keep reading a file nothing plots, so the Data panel would go on listing it
+and the figure would look linked when it was not.
+
+## `Editor::ui` clears `requests` every frame
+
+Worth writing down for anyone extending the editor: `ui` starts with
+`self.requests = Requests::default()`, so anything that wants to ask the shell for
+something from *outside* a frame must hold it in editor state and emit it during
+`ui`, the way `dirty` feeds `want_compile`. A link started programmatically
+silently did nothing until `queued_query` existed -- and it was silent, not broken:
+the flow just sat in its "asking" state forever.

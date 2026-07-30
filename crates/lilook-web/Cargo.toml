@@ -11,6 +11,9 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 lilook-core = { path = "../lilook-core" }
 lilook-editor = { path = "../lilook-editor" }
+# npz, FITS and descriptor ASCII, which port to wasm unchanged because every
+# decoder takes `&[u8]`. Not `hdf5`: that is C, and the page uses h5wasm instead.
+lilook-data = { path = "../lilook-data" }
 # No `system` feature: there is no file system, no package downloader and no
 # thread to compile on. Packages come from the bundle built in build.rs.
 lilook-compile = { path = "../lilook-compile", default-features = false }

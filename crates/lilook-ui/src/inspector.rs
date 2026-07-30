@@ -133,17 +133,42 @@ pub fn control_for(param: Option<&ParamSchema>) -> Control {
 }
 
 /// What the shell knows and the inspector cannot work out for itself.
+///
+/// Borrowed rather than `Copy`: it carries one entry per data slot now, because
+/// a series' x and y are linked independently and the inspector has to say so
+/// for each of them separately.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct Context {
+pub struct Context<'a> {
     /// Points recovered for this call site's series, if it is one. Enables the
     /// materialise action on a computed data slot.
     pub recovered_points: Option<usize>,
+    /// Where each data slot's numbers come from, indexed by slot. Per slot
+    /// rather than per call because x and y link independently: x can come from
+    /// one file's column and y from another's.
+    pub slot_sources: &'a [SlotSource],
+}
+
+/// What a data slot reads, as far as the document says.
+///
+/// Read out of the source rather than recorded anywhere: the slot expression
+/// names a binding, and the binding says `csv("run.csv")`. So provenance cannot
+/// go stale, cannot lie after a copy into another document, and needs no format
+/// of lilook's own -- the compiler remains the only thing that decides what a
+/// document means.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SlotSource {
+    /// The file this slot's data is read from, if it is read from one.
+    pub file: Option<String>,
+    /// The file is named but was not there at the last compile.
+    pub missing: bool,
+    /// The file changed since the last compile and has not been reread.
+    pub stale: bool,
 }
 
 pub struct Inspector<'a> {
     pub schema: Option<&'a FunctionSchema>,
     pub events: Vec<UiEvent>,
-    pub context: Context,
+    pub context: Context<'a>,
     /// Parameter chosen in the "add argument" combo, kept across frames.
     adding: Option<String>,
 }
@@ -158,7 +183,7 @@ impl<'a> Inspector<'a> {
         }
     }
 
-    pub fn with_context(mut self, context: Context) -> Self {
+    pub fn with_context(mut self, context: Context<'a>) -> Self {
         self.context = context;
         self
     }
@@ -221,6 +246,8 @@ impl<'a> Inspector<'a> {
                 .get(index)
                 .cloned()
                 .unwrap_or_else(|| format!("#{index}"));
+            let source = self.context.slot_sources.get(index);
+            let linked = source.and_then(|s| s.file.as_deref());
             ui.horizontal(|ui| {
                 ui.label(&name);
                 if slot.elements.is_empty() {
@@ -230,14 +257,27 @@ impl<'a> Inspector<'a> {
                     // writing them into the source is an explicit conversion
                     // rather than a silent regeneration.
                     if let Some(n) = self.context.recovered_points {
-                        if ui
-                            .small_button("materialise")
-                            .on_hover_text(format!(
-                                "replace this expression with the {n} evaluated values, \
-                                 so the points become draggable"
-                            ))
-                            .clicked()
-                        {
+                        // Veusz calls this unlocking, and the word is better:
+                        // for a linked slot it does not just make the points
+                        // draggable, it *ends the link*.
+                        let (label, hint) = match linked {
+                            Some(f) => (
+                                "unlock",
+                                format!(
+                                    "stop reading {f} and write the {n} values into \
+                                     the document. The figure stops following the \
+                                     file, and the points become draggable."
+                                ),
+                            ),
+                            None => (
+                                "materialise",
+                                format!(
+                                    "replace this expression with the {n} evaluated \
+                                     values, so the points become draggable"
+                                ),
+                            ),
+                        };
+                        if ui.small_button(label).on_hover_text(hint).clicked() {
                             self.events.push(UiEvent::Materialize {
                                 node: call.id,
                                 index,
@@ -249,6 +289,26 @@ impl<'a> Inspector<'a> {
                         .on_hover_text(ellipsis(&slot.text, 200));
                 }
             });
+            // Where the numbers come from, said per slot: x and y link
+            // independently, so one can be fresh while the other is stale.
+            if let (Some(file), Some(s)) = (linked, source) {
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    if s.missing {
+                        ui.colored_label(
+                            ui.visuals().error_fg_color,
+                            format!("↥ {file} · missing"),
+                        );
+                    } else if s.stale {
+                        ui.colored_label(ui.visuals().warn_fg_color, format!("↥ {file} · changed"));
+                    } else {
+                        ui.weak(format!("↥ {file}")).on_hover_text(
+                            "Linked: this file is the source of truth, and the \
+                             figure follows it. Nothing is stored in the document.",
+                        );
+                    }
+                });
+            }
         }
     }
 

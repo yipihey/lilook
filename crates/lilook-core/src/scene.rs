@@ -16,7 +16,44 @@ use crate::compile::Transform;
 pub struct SeriesGeom {
     /// The call site that drew it.
     pub node: usize,
+    /// The positions the series drew, which are the only values that can be
+    /// hit-tested or dragged. Kept as pairs rather than folded into `channels`
+    /// because that is a real distinction: `x` and `y` are geometry, and an error
+    /// bar is not a place on the page you can pick up.
     pub points: Vec<(f64, f64)>,
+    /// Other numeric arrays the call passed, by argument name -- `yerr`, `xerr`
+    /// and anything else that carries data rather than style.
+    ///
+    /// Needed because Veusz's ASCII descriptor names error columns (`+-`, `+`,
+    /// `-`), so a linked dataset can feed `yerr:`. Without this such a column
+    /// would be linkable but invisible: no length to check, no staleness, no
+    /// unlock.
+    pub channels: Vec<(String, Vec<f64>)>,
+}
+
+impl SeriesGeom {
+    /// A channel by name, `x` and `y` included.
+    pub fn channel(&self, name: &str) -> Option<Vec<f64>> {
+        match name {
+            "x" => Some(self.points.iter().map(|p| p.0).collect()),
+            "y" => Some(self.points.iter().map(|p| p.1).collect()),
+            _ => self
+                .channels
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, v)| v.clone()),
+        }
+    }
+
+    /// Every channel's name and length, for a UI that wants to list them.
+    pub fn channel_lengths(&self) -> Vec<(String, usize)> {
+        let mut out = vec![
+            ("x".to_string(), self.points.len()),
+            ("y".to_string(), self.points.len()),
+        ];
+        out.extend(self.channels.iter().map(|(n, v)| (n.clone(), v.len())));
+        out
+    }
 }
 
 /// Axis-aligned extent in data units.
@@ -201,10 +238,12 @@ mod tests {
             series: vec![
                 SeriesGeom {
                     node: 7,
+                    channels: vec![],
                     points: vec![(0.0, 0.0), (5.0, 5.0), (10.0, 0.0)],
                 },
                 SeriesGeom {
                     node: 9,
+                    channels: vec![],
                     points: vec![(0.0, 9.0), (10.0, 9.0)],
                 },
             ],
