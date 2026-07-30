@@ -1192,3 +1192,47 @@ healthy on the strength of an HTTP 200 and a transfer size. That checks the file
 two sections earlier about the Swift `FigureView`, made within the hour. The gate
 that now exists is the one that should have existed before the claim: load the
 module in an engine, in the build, every time.
+
+## Two frames of state on a one-frame object
+
+"Add argument" never worked. Picking a parameter from the combo did nothing: it
+snapped straight back to "add argument…" and the "add" button never appeared.
+
+The chosen parameter was a field on `Inspector`, commented "kept across frames".
+It was not kept across anything -- the shell builds a fresh `Inspector` every
+frame:
+
+```rust
+let mut insp = Inspector::new(f).with_context(context);
+```
+
+So the pick was stored and then dropped, microseconds later, between the click
+that made it and the frame that would have acted on it. Any state a widget needs
+across frames cannot live on an object that does not survive one.
+
+**Why seven inspector tests missed it.** Every one of them holds the inspector in
+a `RefCell` across `__run_test_ui` calls:
+
+```rust
+let insp = RefCell::new(Inspector::new(f));
+egui::__run_test_ui(|ui| insp.borrow_mut().ui(ui, call));
+egui::__run_test_ui(|ui| insp.borrow_mut().ui(ui, call));
+```
+
+That is the opposite of what the app does, so the tests preserved exactly the
+state the app threw away. A test harness that is more generous than production
+cannot fail on a bug that production has -- and this one had been green through
+the whole of M6, which is when the feature was written.
+
+The fix puts the choice in egui's own per-widget store, keyed by
+`add_argument_choice_id(call.id)`. Derived from the call site alone, deliberately:
+not from the inspector, and not via `make_persistent_id`, which mixes in the
+enclosing `Ui`'s hash -- and the panel the inspector draws into is not guaranteed
+to hash the same across frames as the tree above it grows and shrinks.
+
+The new test asserts the seam with a *fresh inspector each frame*, mirroring the
+shell. It deliberately stops short of synthesising the click: egui's widget-rect
+records are private, and a test that fakes its way to a position is a test that
+will drift. The click path was verified in a browser instead -- pick `title`, the
+"add" button appears, pressing it writes `title: none,` into the call, one undo
+step, recompiled in 20 ms, and the combo clears so it cannot fire twice.

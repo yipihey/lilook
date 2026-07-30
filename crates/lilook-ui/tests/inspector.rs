@@ -258,3 +258,69 @@ fn a_data_slot_renders_in_every_link_state() {
         );
     }
 }
+
+/// The "add argument" choice has to outlive the `Inspector` that made it.
+///
+/// This is the test that was missing, and the shape of the gap is worth keeping:
+/// the chosen parameter used to be a field on `Inspector`, while the shell builds
+/// a **fresh `Inspector` every frame**. Every other test in this file holds one in
+/// a `RefCell` across frames, so the state the app threw away was exactly the
+/// state the tests preserved -- they could not have caught it. In the app the pick
+/// was dropped between the click that made it and the frame that would have acted
+/// on it: the combo snapped back to "add argument..." and "add" never appeared.
+///
+/// This asserts the seam only. Whether a *click* on "add" lands is a matter of
+/// pixels and egui's private layout records, and is checked in a browser instead.
+#[test]
+fn the_add_argument_choice_outlives_the_inspector_that_made_it() {
+    let schema = schema();
+    let doc = Document::new(SRC);
+    let call = doc
+        .calls()
+        .iter()
+        .find(|c| c.short_name() == "diagram")
+        .expect("a diagram");
+    let f = schema
+        .function_for_callee(&call.callee)
+        .expect("its schema");
+    let param = f
+        .params
+        .iter()
+        .find(|p| p.kind != "positional" && !call.named.iter().any(|a| a.name == p.name))
+        .expect("a parameter the call does not have yet")
+        .name
+        .clone();
+
+    // One context across frames, as a real app has; a new inspector each frame,
+    // as the shell builds.
+    let ctx = egui::Context::default();
+    let frame = |ctx: &egui::Context| {
+        let mut insp = Inspector::new(Some(f));
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| insp.ui(ui, call));
+        insp.events
+    };
+    let id = lilook_ui::add_argument_choice_id(call.id);
+
+    assert!(frame(&ctx).is_empty(), "nothing chosen, nothing to do");
+
+    // Choose a parameter, the way the combo does.
+    ctx.data_mut(|d| d.insert_temp(id, param.clone()));
+
+    // A later frame with a different inspector still sees it. Before the fix this
+    // read back `None`: it had never left the inspector that was dropped.
+    assert!(
+        frame(&ctx).is_empty(),
+        "showing a choice must not be an edit"
+    );
+    let stored: Option<String> = ctx.data(|d| d.get_temp(id));
+    assert_eq!(
+        stored.as_deref(),
+        Some(param.as_str()),
+        "the choice has to outlive the inspector that made it"
+    );
+
+    // The id is derived from the call site alone -- not from the inspector, and
+    // not from the enclosing `Ui`, whose hash moves as the panel above it grows.
+    assert_eq!(id, lilook_ui::add_argument_choice_id(call.id));
+    assert_ne!(id, lilook_ui::add_argument_choice_id(call.id + 1));
+}

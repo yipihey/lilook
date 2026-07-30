@@ -169,8 +169,6 @@ pub struct Inspector<'a> {
     pub schema: Option<&'a FunctionSchema>,
     pub events: Vec<UiEvent>,
     pub context: Context<'a>,
-    /// Parameter chosen in the "add argument" combo, kept across frames.
-    adding: Option<String>,
 }
 
 impl<'a> Inspector<'a> {
@@ -179,7 +177,6 @@ impl<'a> Inspector<'a> {
             schema,
             events: vec![],
             context: Context::default(),
-            adding: None,
         }
     }
 
@@ -504,10 +501,20 @@ impl<'a> Inspector<'a> {
             return;
         }
 
+        // The chosen parameter lives in egui's own per-widget store, keyed by the
+        // combo's id, *not* in a field on `Inspector`.
+        //
+        // It used to be a field, and the field was useless: the shell builds a
+        // fresh `Inspector` every frame, so the choice was dropped between the
+        // click that made it and the frame that would have acted on it -- the
+        // combo reset to "add argument…" and the "add" button never appeared. Two
+        // frames of state cannot live on a one-frame object.
+        let choice_id = add_argument_choice_id(call.id);
+        let chosen: Option<String> = ui.data(|d| d.get_temp::<String>(choice_id));
+
         ui.separator();
         ui.horizontal(|ui| {
-            let selected = self
-                .adding
+            let selected = chosen
                 .clone()
                 .unwrap_or_else(|| "add argument…".to_string());
             let mut picked = None;
@@ -515,7 +522,7 @@ impl<'a> Inspector<'a> {
                 .selected_text(selected)
                 .show_ui(ui, |ui| {
                     for p in &missing {
-                        let is = self.adding.as_deref() == Some(p.name.as_str());
+                        let is = chosen.as_deref() == Some(p.name.as_str());
                         if ui
                             .selectable_label(is, &p.name)
                             .on_hover_text(first_line(&p.doc))
@@ -525,12 +532,14 @@ impl<'a> Inspector<'a> {
                         }
                     }
                 });
-            if picked.is_some() {
-                self.adding = picked;
+            if let Some(name) = picked.clone() {
+                ui.data_mut(|d| d.insert_temp(choice_id, name));
             }
 
-            let ready = self
-                .adding
+            // This frame's pick counts immediately, so the "add" button appears
+            // as soon as something is chosen rather than a frame later.
+            let current = picked.or(chosen);
+            let ready = current
                 .as_ref()
                 .and_then(|n| missing.iter().find(|p| &p.name == n));
             if let Some(p) = ready {
@@ -547,7 +556,7 @@ impl<'a> Inspector<'a> {
                         param: p.name.clone(),
                         value,
                     });
-                    self.adding = None;
+                    ui.data_mut(|d| d.remove::<String>(choice_id));
                 }
             }
         });
@@ -555,6 +564,17 @@ impl<'a> Inspector<'a> {
 }
 
 // ------------------------------------------------------------------ helpers
+
+/// Where the "add argument" combo keeps the parameter you picked.
+///
+/// Derived from the call site alone, deliberately. It must not depend on the
+/// `Inspector` (the shell builds a new one every frame) and it must not depend on
+/// the enclosing `Ui` either -- `make_persistent_id` mixes that in, and the panel
+/// the inspector draws into is not guaranteed to hash the same across frames as
+/// the tree above it grows and shrinks.
+pub fn add_argument_choice_id(node: usize) -> egui::Id {
+    egui::Id::new((node, "add-argument-choice"))
+}
 
 fn set(node: usize, param: &str, value: String) -> UiEvent {
     UiEvent::Set {

@@ -17,7 +17,8 @@ pub mod viewport;
 
 pub use canvas::{Canvas, CanvasEvent, CanvasInput, CanvasOutput, PageTexture};
 pub use inspector::{
-    control_for, refine, widget_control, Context, Control, Inspector, SlotSource, UiEvent,
+    add_argument_choice_id, control_for, refine, widget_control, Context, Control, Inspector,
+    SlotSource, UiEvent,
 };
 pub use value::{num, split_numeric};
 pub use viewport::{stack_pages, stacked_size, PageBox, Viewport};
