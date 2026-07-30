@@ -323,10 +323,17 @@ impl Canvas {
                             });
                         }
 
-                        inside.map(|scene| Gesture::DataPan {
-                            figure: scene.figure,
-                            start: (scene.transform.x, scene.transform.y),
-                        })
+                        // Panning writes `xlim`/`ylim` as numbers. On a datetime
+                        // axis that *compiles* and silently replaces a calendar
+                        // with a numeric range, so the data pan is declined and
+                        // the view pans instead -- the figure still moves under
+                        // the pointer, it just does not rewrite the document.
+                        inside
+                            .filter(|scene| scene.numeric.0 && scene.numeric.1)
+                            .map(|scene| Gesture::DataPan {
+                                figure: scene.figure,
+                                start: (scene.transform.x, scene.transform.y),
+                            })
                     })
                     .unwrap_or(Gesture::ViewPan),
             );

@@ -35,11 +35,13 @@ pub const SERIES_LABEL: &str = "lilook-series";
 ///
 /// `y2` is `fill-between`'s second surface: `fill-between(x, y1, y2: ..)` fits the
 /// paired-point contract for slots 0 and 1, and its upper edge arrives this way.
+/// `width` and `base` are `bar`'s -- both take one value per bar, so a linked file
+/// can drive them and their lengths are worth checking against the data's.
 ///
 /// A list rather than a schema lookup: the schema says a parameter's *type*, and
 /// several style parameters also take arrays. What matters here is whether the
 /// values are measurements, and that is a fact about lilaq's vocabulary.
-pub const DATA_ARGS: [&str; 5] = ["yerr", "xerr", "y2", "z", "size"];
+pub const DATA_ARGS: [&str; 7] = ["yerr", "xerr", "y2", "z", "size", "width", "base"];
 
 /// Where the scale probes sit inside the data range. Not 0 and 1: a probe on
 /// the very edge of the axis limits is the case most likely to fall outside
@@ -66,6 +68,21 @@ pub struct Injection {
 /// figure last time round, which is what lets the steady state be one compile
 /// rather than two.
 pub fn inject(doc: &Document, hints: &HashMap<usize, Bounds>) -> (String, Injection) {
+    inject_with(doc, hints, true)
+}
+
+/// As [`inject`], but able to leave out the *scale* probes.
+///
+/// Those are the only markers placed at data coordinates, and on an axis that is
+/// not numeric -- `datetime` -- lilaq maps a number like `0.1` onto a calendar and
+/// the `auto`-sized page grows without bound. Without them the figure lays out
+/// normally and still draws; what is lost is the data<->page transform, which was
+/// never recoverable for that axis anyway.
+pub fn inject_with(
+    doc: &Document,
+    hints: &HashMap<usize, Bounds>,
+    with_scale: bool,
+) -> (String, Injection) {
     let mut out = doc.text().to_string();
     let mut scale_probes = HashMap::new();
 
@@ -93,18 +110,22 @@ pub fn inject(doc: &Document, hints: &HashMap<usize, Bounds>) -> (String, Inject
         scale_probes.insert(fig.node, (x0, x1, y0, y1));
 
         let mut args = String::new();
-        for (kind, x, y) in [
-            ("r0", "0%".to_string(), "0%".to_string()),
-            ("r1", "100%".to_string(), "100%".to_string()),
-            ("d0", fmt(x0), fmt(y0)),
-            ("d1", fmt(x1), fmt(y1)),
-            // The midpoint in *data* terms. On an axis that is linear in data,
-            // this lands exactly halfway between `d0` and `d1` on the page; on a
-            // log axis it does not, which is how the scale is recovered without
-            // reading the source. One extra marker per figure, and the findings
-            // record that probes cost nothing measurable.
-            ("dm", fmt((x0 + x1) / 2.0), fmt((y0 + y1) / 2.0)),
-        ] {
+        let mut markers: Vec<(&str, String, String)> = vec![
+            ("r0", "0%".into(), "0%".into()),
+            ("r1", "100%".into(), "100%".into()),
+        ];
+        if with_scale {
+            markers.extend([
+                ("d0", fmt(x0), fmt(y0)),
+                ("d1", fmt(x1), fmt(y1)),
+                // The midpoint in *data* terms. On an axis that is linear in
+                // data, this lands exactly halfway between `d0` and `d1` on the
+                // page; on a log axis it does not, which is how the scale is
+                // recovered without reading the source.
+                ("dm", fmt((x0 + x1) / 2.0), fmt((y0 + y1) / 2.0)),
+            ]);
+        }
+        for (kind, x, y) in markers {
             args.push_str(&format!(
                 ", {lq}.place({x}, {y}, context [#metadata((fig: {}, k: \"{kind}\", \
                  pos: here().position()))<{PROBE_LABEL}>])",
@@ -302,6 +323,8 @@ struct Raw {
     probes: HashMap<(usize, String), (usize, f64, f64)>,
     /// figure -> [(series node, points)]
     series: HashMap<usize, Vec<SeriesGeom>>,
+    /// figure -> whether each axis's data is numeric. Absent means it is.
+    non_numeric: HashMap<usize, (bool, bool)>,
 }
 
 pub(crate) fn label(name: &str) -> Selector {
@@ -412,6 +435,25 @@ fn read(doc: &PagedDocument) -> Raw {
                 .collect(),
             _ => vec![],
         };
+        // A slot that held values but yielded no numbers is not empty -- it is not
+        // numeric. `datetime` is that case in practice.
+        let len_of = |v: &Value| match v {
+            Value::Array(a) => a.len(),
+            _ => 0,
+        };
+        let (x_len, y_len) = (len_of(&x), len_of(&y));
+        if x_len > 0 && numbers(&x).is_empty() {
+            raw.non_numeric
+                .entry(fig as usize)
+                .or_insert((true, true))
+                .0 = false;
+        }
+        if y_len > 0 && numbers(&y).is_empty() {
+            raw.non_numeric
+                .entry(fig as usize)
+                .or_insert((true, true))
+                .1 = false;
+        }
         let sh = match field(&d, "sh") {
             Some(Value::Str(s)) => s.to_string(),
             _ => "points".to_string(),
@@ -563,10 +605,38 @@ fn axis(
 
 /// Turn a compiled document plus the injection record into scenes.
 pub fn scenes(doc: &PagedDocument, injection: &Injection) -> Vec<Scene> {
-    let raw = read(doc);
+    let mut raw = read(doc);
     let mut out = vec![];
     for (&figure, &data) in &injection.scale_probes {
         let get = |k: &str| raw.probes.get(&(figure, k.to_string())).copied();
+        // Without the scale probes there is no transform to solve, but the corners
+        // still give the frame -- so the diagram can be drawn, selected and
+        // resized. `numeric: (false, false)` is what stops anything asking an
+        // identity transform for a data coordinate it cannot supply.
+        if let (Some(r0), Some(r1), None) = (get("r0"), get("r1"), get("d0")) {
+            let flat = AxisMap {
+                origin: 0.0,
+                scale: 1.0,
+                min: 0.0,
+                max: 0.0,
+                kind: AxisScale::Linear,
+            };
+            let series = raw.series.remove(&figure).unwrap_or_default();
+            out.push(Scene {
+                figure,
+                page: r0.0,
+                area: (
+                    r0.1.min(r1.1),
+                    r0.2.min(r1.2),
+                    r0.1.max(r1.1),
+                    r0.2.max(r1.2),
+                ),
+                transform: Transform { x: flat, y: flat },
+                numeric: (false, false),
+                series,
+            });
+            continue;
+        }
         let (Some(r0), Some(r1), Some(d0), Some(d1), Some(dm)) =
             (get("r0"), get("r1"), get("d0"), get("d1"), get("dm"))
         else {
@@ -592,6 +662,11 @@ pub fn scenes(doc: &PagedDocument, injection: &Injection) -> Vec<Scene> {
                 r0.2.max(r1.2),
             ),
             transform,
+            numeric: raw
+                .non_numeric
+                .get(&figure)
+                .copied()
+                .unwrap_or((true, true)),
             series,
         });
     }

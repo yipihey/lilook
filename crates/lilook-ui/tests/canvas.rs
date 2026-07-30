@@ -124,6 +124,7 @@ use lilook_ui::CanvasEvent;
 fn fixture() -> ([PageTexture; 1], Vec<Scene>) {
     let scene = Scene {
         figure: 1,
+        numeric: (true, true),
         page: 0,
         area: (20.0, 20.0, 180.0, 80.0),
         transform: Transform {

@@ -280,6 +280,14 @@ pub struct Scene {
     pub area: (f64, f64, f64, f64),
     pub transform: Transform,
     pub series: Vec<SeriesGeom>,
+    /// Whether each axis's data is numbers at all.
+    ///
+    /// lilaq plots `datetime` coordinates too, and everything lilook does in data
+    /// space assumes numbers: the probe recovers none, so the series is invisible
+    /// to the canvas, and a pan would write `xlim: (0, 100)` -- which *compiles*,
+    /// and silently replaces a calendar axis with a numeric one. Refusing the
+    /// gesture is the honest answer until datetimes can be read and written back.
+    pub numeric: (bool, bool),
 }
 
 impl Scene {
@@ -510,6 +518,7 @@ mod tests {
         // 10 data units across 100 pt, y inverted as on a page.
         Scene {
             figure: 0,
+            numeric: (true, true),
             page: 0,
             area: (0.0, 0.0, 100.0, 100.0),
             transform: Transform {

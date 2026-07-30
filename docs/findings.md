@@ -1602,3 +1602,58 @@ must not touch -- `margin: -2pt`, `aspect-ratio: -1`, any coordinate below zero
 `split_numeric` had always read the sign. The classifier simply never let it.
 One arm, and a test over `-1`, `-2.5`, `+3`, `-1pt` and `-y` -- the last staying
 opaque, because a negated *expression* is still a program.
+
+## The completeness sweep, and the crash it found
+
+Measured rather than recalled: lilaq 0.6.0 has 48 functions, 17 elements and 409
+parameters, cross-referenced against lilook's own tables.
+
+**No lilaq function is unknown to lilook.** Every one is a recognised series, a
+structural call (`diagram`, `layout`, `grid`, `axis`, `colorbar`, ...), a helper
+that returns data (`linspace`, `percentile`, ...) or an element. Set-rule coverage
+is complete *by construction* -- the "add style" menu is built from
+`schema.elements` at runtime, so all 17 are offered and a lilaq release that adds
+one gets it for free.
+
+Only two real data gaps: `bar`'s `width` and `base`, both one value per bar, now
+recovered as channels.
+
+### And then: lilook crashed on a document that compiles
+
+`datetime` axes. lilaq plots them; lilook assumes numbers everywhere. Three
+distinct failures, in increasing seriousness:
+
+1. The series recovers **no points**, so it is invisible to the canvas.
+2. A pan would write `xlim: (0, 100)`, which *compiles* -- silently swapping a
+   calendar axis for a numeric one. Compiling is not the same as being right.
+3. **`typst_render` panicked**, on a figure that `typst compile` handles fine.
+
+The third is the one that mattered. lilook's *scale probes* are placed at data
+coordinates -- `0.1`, `0.5`, `0.9` -- and lilaq maps those onto a calendar, so an
+`auto`-sized page grows without bound. `typst_render::render` allocates its pixmap
+with `Pixmap::new(w, h).unwrap()`, which returns `None` when the allocation is too
+large, and the panic is inside a call no caller can catch. In the desktop build
+that kills the compile thread; in the browser, where the profile is
+`panic = "abort"`, it kills the app.
+
+Three fixes, in order of what each buys:
+
+- **Never call the renderer on an implausible page.** 64 megapixels is far beyond
+  any figure and far below what fails to allocate. This is the guard that turns a
+  crash into a degraded view, and it protects against any future cause, not just
+  this one.
+- **Retry without the scale probes.** They are the only markers placed at data
+  coordinates. Without them the layout is the user's own and the figure draws
+  normally; what is lost is a transform that was never recoverable for that axis.
+- **Say so.** `Scene::numeric` records that the axis is not usable in data space,
+  and the canvas declines the data pan, falling back to panning the view. The
+  figure still moves under the pointer; it just does not rewrite the document.
+
+The corners are relative (`0%`/`100%`), so they are safe on any axis and still give
+the frame -- which means a datetime figure can be selected and resized even though
+its data cannot be touched.
+
+**Not done:** reading datetimes as data and writing them back. That is a third
+axis property alongside linear/log -- the axis's *data type* -- and it needs a way
+to write `datetime(year: .., month: ..)` from a drag. Scoped, not started, and the
+gestures that would produce nonsense are declined in the meantime.

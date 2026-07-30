@@ -135,7 +135,26 @@ impl<L: typst_kit::files::FileLoader + Send + Sync> Backend<L> {
         hints: &mut Hints,
     ) -> (Render, Vec<Scene>) {
         let (source, injection) = probe::inject(doc, hints);
-        let render = self.render(&source, pixel_per_pt);
+        let mut render = self.render(&source, pixel_per_pt);
+
+        // A page too large to rasterise means the *probes* blew the layout up,
+        // not the user's figure: placing a number like `0.1` on a `datetime` axis
+        // makes an `auto`-sized page grow without bound. Retry without the scale
+        // probes -- the figure then lays out and draws normally, and what is lost
+        // is a data<->page transform that was never recoverable for that axis.
+        if render.pages.iter().any(|p| p.image.width == 0) {
+            let (plain, plain_injection) = probe::inject_with(doc, hints, false);
+            let retry = self.render(&plain, pixel_per_pt);
+            if retry.pages.iter().all(|p| p.image.width > 0) {
+                let scenes = self
+                    .document()
+                    .map(|d| probe::scenes(d, &plain_injection))
+                    .unwrap_or_default();
+                return (retry, scenes);
+            }
+            render = retry;
+        }
+
         let mut scenes = self
             .document()
             .map(|d| probe::scenes(d, &injection))
@@ -177,6 +196,10 @@ fn learn(hints: &mut Hints, scenes: &[Scene]) {
     }
 }
 
+/// The most pixels lilook will ask for in one page: 64 megapixels, or 256 MB of
+/// RGBA. Far beyond any figure, and far below what makes the allocator fail.
+const MAX_RASTER_PIXELS: f64 = 64.0 * 1024.0 * 1024.0;
+
 fn rasterize(doc: &PagedDocument, pixel_per_pt: f32) -> Vec<Page> {
     let opts = typst_render::RenderOptions {
         pixel_per_pt: typst::utils::Scalar::new(pixel_per_pt as f64),
@@ -186,11 +209,33 @@ fn rasterize(doc: &PagedDocument, pixel_per_pt: f32) -> Vec<Page> {
         .iter()
         .enumerate()
         .map(|(index, page)| {
-            let pixmap = typst_render::render(page, &opts);
             let size = page.frame.size();
+            let size_pt = (size.x.to_pt(), size.y.to_pt());
+            // `typst_render::render` allocates a pixmap and *unwraps* it, so an
+            // implausibly large page panics inside the renderer with no way to
+            // catch it. The only guard is not calling it.
+            //
+            // This is not hypothetical: a `datetime` axis blows the layout up,
+            // because lilook's own scale probes are placed at numeric data
+            // coordinates and lilaq maps those onto a calendar. An
+            // `auto`-sized page then grows without bound and the whole editor
+            // died on a document that compiles perfectly well by itself.
+            let pixels = (size_pt.0 * pixel_per_pt as f64) * (size_pt.1 * pixel_per_pt as f64);
+            if !pixels.is_finite() || pixels > MAX_RASTER_PIXELS {
+                return Page {
+                    index,
+                    size_pt,
+                    image: Image {
+                        width: 0,
+                        height: 0,
+                        rgba: vec![],
+                    },
+                };
+            }
+            let pixmap = typst_render::render(page, &opts);
             Page {
                 index,
-                size_pt: (size.x.to_pt(), size.y.to_pt()),
+                size_pt,
                 image: Image {
                     width: pixmap.width(),
                     height: pixmap.height(),

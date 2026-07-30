@@ -298,3 +298,64 @@ fn a_log_axis_maps_logarithmically() {
         assert!(data > 0.0, "a log axis produced {data} at {f}");
     }
 }
+
+/// A datetime axis is not numbers, and lilook says so instead of guessing.
+///
+/// lilaq plots `datetime` coordinates. Everything lilook does in data space
+/// assumes numbers, so the probe recovers none of them -- and a pan would write
+/// `xlim: (0, 100)`, which *compiles* and silently swaps a calendar axis for a
+/// numeric one. Compiling is not the same as being right, so the scene records
+/// that the axis is not numeric and the canvas declines the data pan.
+#[test]
+fn a_datetime_axis_is_marked_non_numeric() {
+    let src = r#"#import "@preview/lilaq:0.6.0" as lq
+#set page(width: auto, height: auto, margin: 6pt)
+#let days = (
+  datetime(year: 2026, month: 1, day: 1),
+  datetime(year: 2026, month: 2, day: 1),
+  datetime(year: 2026, month: 3, day: 1),
+)
+#lq.diagram(width: 7cm, height: 4cm, lq.plot(days, (3, 5, 4)))
+"#;
+    let mut b = Backend::new(std::env::temp_dir(), "");
+    let mut hints = lilook_compile::backend::Hints::new();
+    let doc = Document::new(src);
+
+    // The user's document is fine, and lilook's probes must not break it.
+    let (r, scenes) = b.render_scenes(&doc, 1.0, &mut hints);
+    if skip(&r) {
+        return;
+    }
+    assert!(
+        !r.failed(),
+        "probing a datetime figure broke it: {:?}",
+        r.errors().map(|d| d.message.clone()).collect::<Vec<_>>()
+    );
+
+    // The figure still *draws*: the retry drops the scale probes, so the layout is
+    // the user's own and the page rasterises. Before that it was 0x0 -- the page
+    // had grown too large to allocate, and `typst_render` panicked inside an
+    // `unwrap` that no caller can catch.
+    assert!(
+        r.pages.iter().all(|p| p.image.width > 0),
+        "a datetime figure has to render"
+    );
+
+    let s = &scenes[0];
+    // Neither axis is usable in data space: without the scale probes there is no
+    // transform to solve for either. Coarser than "x is dates, y is numbers", and
+    // honest -- what matters is that nothing offers a gesture it cannot express.
+    assert_eq!(s.numeric, (false, false));
+    assert!(s.series[0].points.is_empty(), "no numbers were recovered");
+    // The frame is still known, so the diagram can be selected and resized.
+    assert!(s.area.2 > s.area.0 && s.area.3 > s.area.1, "{:?}", s.area);
+
+    // An ordinary numeric figure is unaffected.
+    let plain = r#"#import "@preview/lilaq:0.6.0" as lq
+#set page(width: auto, height: auto, margin: 6pt)
+#lq.diagram(width: 7cm, height: 4cm, lq.plot((0, 1, 2), (3, 5, 4)))
+"#;
+    let (_, scenes) = b.render_scenes(&Document::new(plain), 1.0, &mut hints);
+    assert_eq!(scenes[0].numeric, (true, true));
+    assert_eq!(scenes[0].series[0].points.len(), 3);
+}
