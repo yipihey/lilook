@@ -1039,3 +1039,58 @@ fn typing_into_the_source_is_a_minimal_edit_that_undoes() {
     assert!(doc.undo());
     assert_eq!(doc.text(), DOC);
 }
+
+/// A negative number is still a number.
+///
+/// `-1` parses as a unary negation of `1`, not as a literal token, so the
+/// classifier called it opaque: every coordinate below zero in a lilaq call got a
+/// raw source editor instead of a number control. Found via `lq.ellipse(7.85, -1)`
+/// refusing to be draggable, but it reaches much further than annotations --
+/// `margin: -2pt`, `aspect-ratio: -1`, any negative argument at all.
+#[test]
+fn a_signed_number_is_editable_as_a_number() {
+    let src = r#"#import "@preview/lilaq:0.6.0" as lq
+#lq.diagram(
+  lq.place(1, -1, [a]),
+  lq.place(-2.5, +3, [b]),
+  lq.rect(-1pt, 2, width: -0.5),
+  lq.place(x, -y, [c]),
+)
+"#;
+    let doc = Document::new(src);
+    let slot = |call: usize, i: usize| {
+        doc.calls()
+            .iter()
+            .filter(|c| c.short_name() == "place" || c.short_name() == "rect")
+            .nth(call)
+            .and_then(|c| c.positional.get(i).cloned())
+            .unwrap_or_else(|| panic!("call {call} slot {i}"))
+    };
+
+    for (call, i, text) in [(0, 1, "-1"), (1, 0, "-2.5"), (1, 1, "+3"), (2, 0, "-1pt")] {
+        let s = slot(call, i);
+        assert_eq!(s.text, text);
+        assert_eq!(
+            s.editability,
+            Editability::Literal,
+            "{text} should be editable as a number"
+        );
+    }
+
+    // A negated *expression* is still opaque: `-y` is a program, not a number.
+    assert_eq!(slot(3, 1).text, "-y");
+    assert_eq!(slot(3, 1).editability, Editability::Opaque);
+
+    // And the annotation is movable now, which is what surfaced this.
+    let places: Vec<_> = doc
+        .calls()
+        .iter()
+        .filter(|c| c.short_name() == "place")
+        .collect();
+    assert!(places[0].has_literal_anchor(), "place(1, -1)");
+    assert!(places[1].has_literal_anchor(), "place(-2.5, +3)");
+    assert!(
+        !places[2].has_literal_anchor(),
+        "place(x, -y) is not literal"
+    );
+}

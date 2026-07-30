@@ -45,6 +45,10 @@ pub const EXAMPLES: &[(&str, &str)] = &[
         "distributions",
         include_str!("../examples/10-distributions.typ"),
     ),
+    (
+        "annotations",
+        include_str!("../examples/11-annotations.typ"),
+    ),
 ];
 
 /// Decode the bundle: `u32 key_len, key, u32 data_len, data`, repeated.

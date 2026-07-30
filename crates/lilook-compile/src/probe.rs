@@ -161,6 +161,31 @@ pub fn inject(doc: &Document, hints: &HashMap<usize, Bounds>) -> (String, Inject
                 continue;
             }
             let (x, y) = match series.series_shape() {
+                // One point, from two scalar arguments.
+                SeriesShape::Anchor => {
+                    match (positional(doc, series, 0), positional(doc, series, 1)) {
+                        (Some(x), Some(y)) => (format!("({x},)"), format!("({y},)")),
+                        _ => continue,
+                    }
+                }
+                // One point per slot, each slot an `(x, y)` array. Split into two
+                // parallel arrays so they arrive as ordinary paired points.
+                SeriesShape::Vertices => {
+                    let slots: Vec<String> = (0..series.positional.len())
+                        .filter_map(|i| positional(doc, series, i))
+                        .collect();
+                    if slots.is_empty() {
+                        continue;
+                    }
+                    let axis = |k: usize| {
+                        let parts: Vec<String> = slots
+                            .iter()
+                            .map(|v| format!("({v}).at({k}, default: float.nan)"))
+                            .collect();
+                        format!("({},)", parts.join(", "))
+                    };
+                    (axis(0), axis(1))
+                }
                 SeriesShape::Rules(axis) => {
                     let coords = (0..series.positional.len())
                         .filter_map(|i| positional(doc, series, i))
@@ -205,6 +230,13 @@ pub fn inject(doc: &Document, hints: &HashMap<usize, Bounds>) -> (String, Inject
                 SeriesShape::Points => "points",
                 SeriesShape::Rules(_) => "rules",
                 SeriesShape::Distributions(_) => "dist",
+                // Both fill `points`, so `Scene::hit` finds them with no new case.
+                // But the shape still travels: the *edit* differs, and so does what
+                // may be embedded. Calling them "points" let the inspector offer to
+                // materialise an anchor, which would have written `(7.85,)` where a
+                // scalar belongs -- the third outing for that same bug.
+                SeriesShape::Anchor => "anchor",
+                SeriesShape::Vertices => "vertices",
             };
             // Relative coordinates, so this marker can never widen the data
             // range and change the layout it is trying to measure.
@@ -432,6 +464,9 @@ fn read(doc: &PagedDocument) -> Raw {
                 ch.extend(channels);
                 (SeriesShape::Distributions(axis), vec![], None, ch)
             }
+            // Handles on the page, edited as arguments rather than as arrays.
+            "anchor" => (SeriesShape::Anchor, points(&x, &y), None, channels),
+            "vertices" => (SeriesShape::Vertices, points(&x, &y), None, channels),
             _ => (SeriesShape::Points, points(&x, &y), None, channels),
         };
         raw.series

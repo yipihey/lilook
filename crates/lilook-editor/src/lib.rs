@@ -807,14 +807,40 @@ impl Editor {
                     });
                 }
                 CanvasEvent::MovePoint { node, index, to } => {
-                    // x and y are separate array elements, so a point drag is
-                    // two intents with two coalesce keys -- and one undo step.
-                    for (arg, v) in [(0usize, to.0), (1, to.1)] {
-                        let intent = Intent::SetArrayElement {
-                            node,
-                            arg,
-                            element: index,
-                            value: lilook_core::gesture_num(v),
+                    // Where the coordinates *live* depends on the shape, and the
+                    // edit has to match: a plot keeps parallel arrays, an
+                    // annotation keeps two scalar arguments, a line keeps an
+                    // `(x, y)` array per vertex. All three are two intents with
+                    // two coalesce keys, and so one undo step.
+                    let shape = self
+                        .doc
+                        .call(node)
+                        .map(|c| c.series_shape())
+                        .unwrap_or(lilook_core::SeriesShape::Points);
+                    for (which, v) in [(0usize, to.0), (1, to.1)] {
+                        let value = lilook_core::gesture_num(v);
+                        let intent = match shape {
+                            // `place(x, y, ..)`: the coordinates are the arguments.
+                            lilook_core::SeriesShape::Anchor => Intent::SetPositionalArg {
+                                node,
+                                index: which,
+                                value,
+                            },
+                            // `line(start, end)`: vertex `index` is a slot, and the
+                            // coordinate is an element inside it.
+                            lilook_core::SeriesShape::Vertices => Intent::SetArrayElement {
+                                node,
+                                arg: index,
+                                element: which,
+                                value,
+                            },
+                            // Parallel arrays: slot `which`, element `index`.
+                            _ => Intent::SetArrayElement {
+                                node,
+                                arg: which,
+                                element: index,
+                                value,
+                            },
                         };
                         self.apply(intent);
                     }
@@ -1072,6 +1098,16 @@ impl Editor {
                 let rules = c.literal_rules();
                 if !rules.is_empty() {
                     return rules.len() == c.positional.len();
+                }
+                // An annotation is movable when its two coordinates are literal;
+                // a line or path when every vertex is a literal pair. Same rule
+                // throughout: what lilook cannot rewrite, it does not offer.
+                if c.has_literal_anchor() {
+                    return true;
+                }
+                let vertices = c.literal_vertices();
+                if !vertices.is_empty() {
+                    return vertices.len() == c.positional.len();
                 }
                 c.has_literal_points()
             })

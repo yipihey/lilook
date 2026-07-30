@@ -86,6 +86,20 @@ impl SeriesGeom {
     /// "0 pts" for a colormesh after the shape landed, because the edit that was
     /// supposed to change it never matched.
     pub fn summary(&self) -> String {
+        // A handle is not a data point: saying "1 pts" for an annotation both
+        // reads badly and implies there is a series here to embed.
+        if let SeriesShape::Anchor = self.shape {
+            return match self.points.first() {
+                Some((x, y)) => format!("at ({}, {})", crate::data_num(*x), crate::data_num(*y)),
+                None => "unplaced".to_string(),
+            };
+        }
+        if let SeriesShape::Vertices = self.shape {
+            return match self.points.len() {
+                1 => "1 vertex".to_string(),
+                n => format!("{n} vertices"),
+            };
+        }
         if let SeriesShape::Distributions(_) = self.shape {
             let n = self.distributions().len();
             return match n {

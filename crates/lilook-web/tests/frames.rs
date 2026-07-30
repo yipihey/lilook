@@ -880,3 +880,79 @@ fn nothing_offers_to_embed_data_it_does_not_have() {
         }
     }
 }
+
+/// Every annotation in the example is movable, and each by its own kind of edit.
+#[test]
+fn annotations_are_all_movable() {
+    use lilook_core::SeriesShape;
+
+    let Some(mut app) = app() else { return };
+    let index = EXAMPLES
+        .iter()
+        .position(|(name, _)| *name == "annotations")
+        .expect("the annotations example");
+    app.load(index);
+    run(&mut app, 3);
+    assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+
+    let editor = app.editor();
+    let figure = editor.doc.figures().into_iter().next().expect("a diagram");
+    let scene = &editor.scenes()[0];
+
+    for (name, shape, want_points, summary) in [
+        ("rect", SeriesShape::Anchor, 1, "at (1.2, 1.1)"),
+        ("place", SeriesShape::Anchor, 1, "at (1.4, 0.95)"),
+        ("ellipse", SeriesShape::Anchor, 1, "at (7.85, -1)"),
+        ("line", SeriesShape::Vertices, 2, "2 vertices"),
+    ] {
+        let call = editor
+            .doc
+            .calls()
+            .iter()
+            .find(|c| c.short_name() == name)
+            .unwrap_or_else(|| panic!("the {name}"));
+        assert_eq!(call.series_shape(), shape, "{name}");
+        assert!(
+            figure.series.contains(&call.id),
+            "{name} belongs to the figure"
+        );
+
+        let geom = scene
+            .series
+            .iter()
+            .find(|g| g.node == call.id)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{name} (#{}) recovered no geometry; scene has {:?}",
+                    call.id,
+                    scene.series.iter().map(|g| g.node).collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(geom.points.len(), want_points, "{name}");
+        // The shape survives the round trip through the probe, which is what stops
+        // the inspector offering to embed an anchor as an array.
+        assert_eq!(geom.shape, shape, "{name} geometry");
+        assert_eq!(geom.summary(), summary, "{name}");
+
+        // Every handle is where the source says it is, and pickable there.
+        for (i, p) in geom.points.iter().enumerate() {
+            let hit = scene
+                .hit(scene.transform.to_page(*p), 4.0)
+                .unwrap_or_else(|| panic!("{name} handle {i} is not pickable"));
+            assert_eq!(hit.node, call.id, "{name} handle {i}");
+        }
+
+        // And lilook will actually move it: literal coordinates throughout.
+        match shape {
+            SeriesShape::Anchor => assert!(call.has_literal_anchor(), "{name}"),
+            SeriesShape::Vertices => {
+                assert_eq!(
+                    call.literal_vertices().len(),
+                    call.positional.len(),
+                    "{name}"
+                )
+            }
+            _ => {}
+        }
+    }
+}

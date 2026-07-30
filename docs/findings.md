@@ -1557,3 +1557,48 @@ indexes positional slots. Adding one means a new `Intent` variant, which means t
 array to edit at all until the positions are materialised first. Recovery,
 selection and the readout are in; the drag is a separate piece of work and is not
 pretended at.
+
+## Annotations: the same handles, three different edits
+
+`place`, `rect` and `ellipse` keep their coordinates as two *scalar arguments*;
+`line(start, end)` and `path(..vertices)` keep each vertex as an `(x, y)` array.
+Both fill `points`, so `Scene::hit` finds their handles with no new case -- what
+differs is the **edit**:
+
+| shape | coordinates live in | drag writes |
+| --- | --- | --- |
+| `Points` | parallel arrays | `SetArrayElement { arg: 0/1, element: i }` |
+| `Anchor` | two arguments | `SetPositionalArg { index: 0/1 }` |
+| `Vertices` | an array per slot | `SetArrayElement { arg: i, element: 0/1 }` |
+
+All three are two intents under one coalesce pair, so a drag is one undo step. No
+new `Intent` variant was needed: the existing vocabulary already addressed all
+three places, which is a good sign about the vocabulary.
+
+### The bug, for the third time
+
+I made the probe report Anchor and Vertices as `"points"` to get hit-testing for
+free -- and that lost exactly the distinction the editor needed. The inspector
+then offered "materialise" on the ellipse's `x`, which would have written
+`(7.85,)` where a scalar belongs. Third outing for the same defect in one day:
+`xlim: ()`, then boxplot datasets, now an anchor.
+
+The shape travels with the geometry now, and `points` is still populated, so
+hit-testing stays free *and* the editor can tell what it is looking at. The
+lesson is not "add another filter" -- it is that a type which lies to make one
+thing easy will be believed by everything else.
+
+Caught by looking at the screen, again. Two of the three were.
+
+### `-1` is not a literal, which was true everywhere
+
+`lq.ellipse(7.85, -1, ..)` refused to be draggable, and the reason had nothing to
+do with annotations: `-1` parses as a *unary negation* of `1`, and `classify` had
+no arm for `Unary`, so it fell through to `Opaque`. **Every negative number
+argument in every lilaq call** was therefore treated as an expression lilook
+must not touch -- `margin: -2pt`, `aspect-ratio: -1`, any coordinate below zero
+-- and got a raw source editor instead of a number control.
+
+`split_numeric` had always read the sign. The classifier simply never let it.
+One arm, and a test over `-1`, `-2.5`, `+3`, `-1pt` and `-y` -- the last staying
+opaque, because a negated *expression* is still a program.

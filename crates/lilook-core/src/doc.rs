@@ -102,6 +102,8 @@ impl CallSite {
             n if MESH_SERIES.contains(&n) => SeriesShape::Mesh,
             "hlines" => SeriesShape::Rules(Axis::Y),
             "vlines" => SeriesShape::Rules(Axis::X),
+            "place" | "rect" | "ellipse" => SeriesShape::Anchor,
+            "line" | "path" => SeriesShape::Vertices,
             _ => SeriesShape::Points,
         }
     }
@@ -129,6 +131,31 @@ impl CallSite {
 /// Separate from `has_literal_points` because the edit is different -- a slot
 /// rather than an array element -- and so is the geometry.
 impl CallSite {
+    /// True when an anchored annotation's `(x, y)` are both literal numbers, so
+    /// the annotation can be dragged.
+    pub fn has_literal_anchor(&self) -> bool {
+        self.series_shape() == SeriesShape::Anchor
+            && (0..2).all(|i| {
+                self.positional
+                    .get(i)
+                    .is_some_and(|p| p.editability == Editability::Literal && p.elements.is_empty())
+            })
+    }
+
+    /// The slots holding a literal `(x, y)` vertex, so those vertices can be
+    /// dragged. Each is an array of exactly two literal numbers.
+    pub fn literal_vertices(&self) -> Vec<usize> {
+        if self.series_shape() != SeriesShape::Vertices {
+            return vec![];
+        }
+        self.positional
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.elements.len() == 2)
+            .map(|(i, _)| i)
+            .collect()
+    }
+
     pub fn literal_rules(&self) -> Vec<usize> {
         if !matches!(self.series_shape(), SeriesShape::Rules(_)) {
             return vec![];
@@ -163,6 +190,11 @@ pub const XY_SERIES: &[&str] = &[
     "violin",
     "hboxplot",
     "hviolin",
+    "place",
+    "rect",
+    "ellipse",
+    "line",
+    "path",
 ];
 
 /// What slots 0 and 1 *mean*, which is not the same for every series.
@@ -192,6 +224,13 @@ pub enum SeriesShape {
     /// compute the quartiles: it knows where each box sits and what values went
     /// into it, which is what selection and an honest readout need.
     Distributions(Axis),
+    /// Slots 0 and 1 are the *scalar* coordinates of one point: `place(x, y, ..)`,
+    /// `rect`, `ellipse`. Moving it rewrites those two arguments.
+    Anchor,
+    /// Each positional slot is one vertex, written as an `(x, y)` array:
+    /// `line(start, end)`, `path(..vertices)`. Moving a vertex rewrites two
+    /// elements *inside* that slot.
+    Vertices,
 }
 
 /// Which axis a value sits on.
@@ -1034,6 +1073,24 @@ fn classify(node: &SyntaxNode, text: &str, range: &Range<usize>) -> Editability 
             }
         }
         SyntaxKind::Array | SyntaxKind::Dict | SyntaxKind::ContentBlock => Editability::Literal,
+        // `-1` parses as a *unary negation* of `1`, not as a literal token, so
+        // without this every negative number in a lilaq call was opaque and got
+        // a raw source editor instead of a number control -- `place(1, -1)`,
+        // `margin: -2pt`, any coordinate below zero. `split_numeric` has always
+        // read the sign; the classifier simply never let it.
+        SyntaxKind::Unary => {
+            let numeric = node.children().any(|c| {
+                matches!(
+                    c.kind(),
+                    SyntaxKind::Int | SyntaxKind::Float | SyntaxKind::Numeric
+                )
+            });
+            if numeric {
+                Editability::Literal
+            } else {
+                Editability::Opaque
+            }
+        }
         // A call to a builtin constructor is a value literal in everything but
         // syntax: `rgb("#4c72b0")` and `luma(50%)` are colours a swatch can
         // edit. A call to anything else -- `calc.sin(x)`, `lq.linspace(..)` --

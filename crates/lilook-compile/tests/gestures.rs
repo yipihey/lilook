@@ -834,3 +834,104 @@ fn dragging_a_rule_rewrites_its_own_argument() {
     doc.undo();
     assert_eq!(doc.text(), src);
 }
+
+/// Annotations are geometry lilook can move, and each kind stores its coordinates
+/// somewhere different.
+///
+/// `place(x, y, ..)` keeps them as two arguments; `line(start, end)` keeps each
+/// vertex as an `(x, y)` array. Both look like points on the page -- so hit-testing
+/// needs no new case -- but the edit does not, and writing the wrong one would put
+/// an array element where an argument belongs.
+#[test]
+fn annotations_recover_as_points_and_edit_by_shape() {
+    use lilook_core::SeriesShape;
+
+    let src = r#"#import "@preview/lilaq:0.6.0" as lq
+#set page(width: auto, height: auto, margin: 6pt)
+#lq.diagram(
+  width: 7cm, height: 5cm,
+  xlim: (0, 10), ylim: (0, 10),
+  lq.plot((0, 5, 10), (1, 5, 9)),
+  lq.place(2, 8, [note]),
+  lq.line((1, 1), (9, 3)),
+)
+"#;
+    let mut b = Backend::new(std::env::temp_dir(), "");
+    let mut hints = Hints::new();
+    let mut doc = Document::new(src);
+    let (r, scenes) = b.render_scenes(&doc, 1.0, &mut hints);
+    if skip(&r) {
+        return;
+    }
+    assert!(!r.failed(), "{:?}", r.errors().collect::<Vec<_>>());
+
+    let find = |n: &str| {
+        doc.calls()
+            .iter()
+            .find(|c| c.short_name() == n)
+            .unwrap_or_else(|| panic!("the {n}"))
+            .clone()
+    };
+    let (place, line) = (find("place"), find("line"));
+    assert_eq!(place.series_shape(), SeriesShape::Anchor);
+    assert_eq!(line.series_shape(), SeriesShape::Vertices);
+    assert!(place.has_literal_anchor());
+    assert_eq!(line.literal_vertices(), vec![0, 1]);
+
+    // Both come back as ordinary points, so the canvas picks them with `hit`.
+    let scene = &scenes[0];
+    let geom = |id: usize| scene.series.iter().find(|g| g.node == id).unwrap();
+    assert_eq!(geom(place.id).points, vec![(2.0, 8.0)]);
+    assert_eq!(geom(line.id).points, vec![(1.0, 1.0), (9.0, 3.0)]);
+
+    let at = scene.transform.to_page((9.0, 3.0));
+    let hit = scene.hit(at, 4.0).expect("the line's second vertex");
+    assert_eq!(hit.node, line.id);
+    assert_eq!(hit.index, 1);
+
+    // Moving the annotation rewrites its two *arguments*.
+    doc.begin("move annotation");
+    for (index, v) in [(0usize, 3.5), (1, 6.25)] {
+        doc.apply(Intent::SetPositionalArg {
+            node: place.id,
+            index,
+            value: lilook_core::gesture_num(v),
+        })
+        .expect("a coordinate is a valid value");
+    }
+    doc.commit();
+    assert!(
+        doc.text().contains("lq.place(3.5, 6.25, [note])"),
+        "{}",
+        doc.text()
+    );
+
+    // Moving a vertex rewrites two *elements inside one slot*.
+    doc.begin("move vertex");
+    for (element, v) in [(0usize, 8.0), (1, 4.5)] {
+        doc.apply(Intent::SetArrayElement {
+            node: line.id,
+            arg: 1,
+            element,
+            value: lilook_core::gesture_num(v),
+        })
+        .expect("a vertex coordinate is a valid value");
+    }
+    doc.commit();
+    assert!(
+        doc.text().contains("lq.line((1, 1), (8, 4.5))"),
+        "{}",
+        doc.text()
+    );
+
+    // Both still compile, and both undo as one step each.
+    let (r, scenes) = b.render_scenes(&doc, 1.0, &mut hints);
+    assert!(!r.failed(), "{:?}", r.errors().collect::<Vec<_>>());
+    let moved = scenes[0].series.iter().find(|g| g.node == line.id).unwrap();
+    assert_eq!(moved.points, vec![(1.0, 1.0), (8.0, 4.5)]);
+
+    assert_eq!(doc.history_depth().0, 2);
+    doc.undo();
+    doc.undo();
+    assert_eq!(doc.text(), src);
+}
