@@ -16,6 +16,7 @@ const PACKAGES: &[(&str, &str)] = &[
     ("elembic", "1.1.1"),
     ("zero", "0.6.1"),
     ("tiptoe", "0.4.0"),
+    ("komet", "0.1.0"),
 ];
 
 fn bundle() -> Option<MemoryFiles> {

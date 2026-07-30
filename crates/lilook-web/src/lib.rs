@@ -38,6 +38,7 @@ pub const EXAMPLES: &[(&str, &str)] = &[
     ("bar chart", include_str!("../examples/04-bar.typ")),
     ("error bars", include_str!("../examples/05-errorbars.typ")),
     ("log scale", include_str!("../examples/06-log-scale.typ")),
+    ("plot grid", include_str!("../examples/07-plot-grid.typ")),
 ];
 
 /// Decode the bundle: `u32 key_len, key, u32 data_len, data`, repeated.

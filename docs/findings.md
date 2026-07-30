@@ -1369,3 +1369,57 @@ Worth stating plainly because it cuts the other way from the last several
 findings: those were cases where a passing test hid a real bug. This one is a
 failing test hiding nothing -- and the answer is not to relax the assertion but
 to fix the assumption it was making about ordering.
+
+## Plot grids worked; a series in a `#let` did not
+
+lilaq builds plot grids out of Typst's own `grid`, with `lq.layout` aligning the
+axes across cells. Measured before assuming anything, the complex example from
+lilaq's tutorial already worked: four diagrams recovered, each cell's frame
+correct including the `colspan: 3` and both `rowspan: 2` cells, per-cell
+hit-testing in each cell's own data space. Nesting inside `grid.cell(..)` costs
+nothing, because `figures()` finds diagrams by name and the probes are injected
+into the diagram's own argument list wherever that happens to sit.
+
+One thing was missing, and it was not a plot type. The tutorial writes
+
+```typst
+#let mesh = lq.contour(..)
+grid.cell(rowspan: 2, lq.diagram(.., mesh)),
+grid.cell(rowspan: 2, lq.colorbar(mesh)),
+```
+
+-- by necessity, since the diagram and the colorbar share one plot object.
+`figures()` found a diagram's series by *nesting*, so that diagram came out with
+`series: []`: nothing to select, nothing to inspect, no data recovered.
+
+`series_named_by` now resolves a diagram's positional arguments one hop through
+their bindings. One hop only: `#let a = b` chains and series built inside
+functions are not followed, because a wrong answer about which figure draws what
+is worse than no answer. The contour's data then recovers through the probe with
+no further change -- its `lq.linspace(0, 1)` arguments are self-contained, so
+re-evaluating them in the diagram's argument list gives the same arrays.
+
+### Two staleness checks earned their keep
+
+Adding the example failed twice before it passed, both times with a missing-file
+error naming the exact path:
+
+- **komet was not in the bundle.** lilaq imports it lazily for colour maps, so no
+  example had needed it until one used a contour. The package list in
+  `build.rs`, `bundle.rs` and `fetch-packages.sh` is kept honest exactly this way.
+- **komet computes its colour maps in a typst plugin**, and `build.rs`'s own
+  extension filter was `["typ", "toml"]`, so `src/komet.wasm` was left out. Now
+  `["typ", "toml", "wasm"]`. Bundle 752 KiB to 934 KiB.
+
+That second one is a nice confirmation of something recorded earlier for a
+different reason: `wasmi` is linked into the browser build unconditionally, so
+typst plugins run there at no marginal cost -- and now one demonstrably does.
+
+### Known artefact, for the mesh work
+
+A contour's x and y are grid *axes*, not a list of points, but `XY_SERIES` treats
+slots 0 and 1 as paired coordinates -- so the canvas draws 50 markers down the
+diagonal of the contour cell. Harmless (they cannot be dragged: `lq.linspace(..)`
+is not a literal array) but misleading, and it predates this change; the binding
+fix merely made it visible. The mesh-shaped series need a hit region that is the
+area they cover rather than a synthesised diagonal.

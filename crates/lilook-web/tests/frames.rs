@@ -483,3 +483,99 @@ fn unlocking_a_linked_series_embeds_its_values_and_ends_the_link() {
     run(&mut app, 3);
     assert_eq!(app.editor().text(), linked_text);
 }
+
+/// The plot-grid example, after lilaq's tutorial: four diagrams laid out by
+/// Typst's own `grid`, with `colspan` and `rowspan` cells and a contour shared
+/// between a diagram and a colorbar.
+///
+/// Two things are under test. Nested diagrams: a `lq.diagram` inside
+/// `grid.cell(..)` is still a figure with its own frame, so every cell can be
+/// clicked and resized independently. And a series reaching a diagram *by name*:
+/// the contour is `#let mesh = lq.contour(..)` because the colorbar needs the same
+/// object, so nesting alone finds nothing and that diagram used to come out empty.
+#[test]
+fn every_cell_of_a_plot_grid_is_a_figure_lilook_can_edit() {
+    let Some(mut app) = app() else { return };
+    let index = EXAMPLES
+        .iter()
+        .position(|(name, _)| *name == "plot grid")
+        .expect("the plot grid example");
+    app.load(index);
+    run(&mut app, 3);
+    assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+
+    let editor = app.editor();
+    let doc = &editor.doc;
+    assert_eq!(doc.figures().len(), 4, "one diagram per grid cell");
+    assert_eq!(editor.scenes().len(), 4, "and a scene for each");
+
+    // Every cell got its own frame, and no two are the same rectangle -- which is
+    // what proves the grid was laid out rather than the diagrams stacked.
+    let mut areas: Vec<(i64, i64, i64, i64)> = editor
+        .scenes()
+        .iter()
+        .map(|s| {
+            (
+                s.area.0 as i64,
+                s.area.1 as i64,
+                s.area.2 as i64,
+                s.area.3 as i64,
+            )
+        })
+        .collect();
+    areas.sort_unstable();
+    areas.dedup();
+    assert_eq!(areas.len(), 4, "each cell needs its own frame");
+
+    // The colspan cell spans the full width, so it is wider than any other.
+    let widths: Vec<f64> = editor
+        .scenes()
+        .iter()
+        .map(|s| s.area.2 - s.area.0)
+        .collect();
+    let widest = widths.iter().cloned().fold(f64::MIN, f64::max);
+    assert!(
+        widths.iter().filter(|w| **w == widest).count() == 1,
+        "the colspan: 3 cell should be the only full-width one: {widths:?}"
+    );
+
+    // The contour arrives by name. Its figure must own it, and its data must have
+    // been recovered -- the `lq.linspace` arguments re-evaluated where they were
+    // written, not where the diagram is.
+    let contour = doc
+        .calls()
+        .iter()
+        .find(|c| c.short_name() == "contour")
+        .expect("the contour");
+    let owner = doc
+        .figures()
+        .into_iter()
+        .find(|f| f.series.contains(&contour.id))
+        .expect("a series passed by name still belongs to the diagram that draws it");
+    let geom = editor
+        .scenes()
+        .iter()
+        .find(|s| s.figure == owner.node)
+        .and_then(|s| s.series.iter().find(|g| g.node == contour.id))
+        .expect("and its data comes back");
+    assert_eq!(geom.points.len(), 50, "lq.linspace's default resolution");
+
+    // It is inspect-only: the axes are `lq.linspace(..)` calls, not literal
+    // arrays, so there is no individual point to drag.
+    assert!(!contour.has_literal_points());
+
+    // The colorbar is not a series -- it renders another plot's scale -- and must
+    // not be mistaken for one.
+    let colorbar = doc
+        .calls()
+        .iter()
+        .find(|c| c.short_name() == "colorbar")
+        .expect("the colorbar");
+    assert!(!colorbar.is_xy_series());
+    assert!(
+        !doc.figures()
+            .iter()
+            .any(|f| f.series.contains(&colorbar.id)),
+        "a colorbar draws no data of its own"
+    );
+}

@@ -19,10 +19,19 @@ const PACKAGES: &[(&str, &str)] = &[
     ("elembic", "1.1.1"),
     ("zero", "0.6.1"),
     ("tiptoe", "0.4.0"),
+    // Colour maps. lilaq imports it lazily, so nothing needed it until an
+    // example used a colormesh, a contour or a colorbar.
+    ("komet", "0.1.0"),
 ];
 
 /// What a lilaq compile actually reads. Fonts come from typst-assets instead.
-const WANTED: &[&str] = &["typ", "toml"];
+///
+/// `wasm` is here because komet computes its colour maps in a **typst plugin**,
+/// so a colormesh, contour or colorbar needs `src/komet.wasm` in the bundle as
+/// much as it needs the `.typ` that calls it. Nothing noticed until an example
+/// used one: the failure is a missing-file error naming the exact path, which is
+/// the same way the package list itself is kept honest.
+const WANTED: &[&str] = &["typ", "toml", "wasm"];
 
 fn cache() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("TYPST_PACKAGE_CACHE_PATH") {

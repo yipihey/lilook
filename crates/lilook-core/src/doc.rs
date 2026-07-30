@@ -190,16 +190,58 @@ impl Document {
         self.calls
             .iter()
             .filter(|c| c.short_name() == "diagram")
-            .map(|d| Figure {
-                node: d.id,
-                series: self
+            .map(|d| {
+                let mut series: Vec<usize> = self
                     .calls
                     .iter()
                     .filter(|c| c.is_xy_series() && self.descends_from(c.id, d.id))
                     .map(|c| c.id)
-                    .collect(),
+                    .collect();
+                for id in self.series_named_by(d) {
+                    if !series.contains(&id) {
+                        series.push(id);
+                    }
+                }
+                // Document order, so the tree lists them the way they are written.
+                series.sort_unstable();
+                Figure { node: d.id, series }
             })
             .collect()
+    }
+
+    /// Series a diagram draws by *name* rather than by containing them.
+    ///
+    /// `#let mesh = lq.contour(..)` and then `lq.diagram(mesh)` is idiomatic
+    /// lilaq, and unavoidable when two things share one plot -- a contour and the
+    /// `lq.colorbar` beside it, which is exactly what the plot-grid tutorial
+    /// does. Nesting alone finds no series there, so the diagram came out empty:
+    /// nothing to select, nothing to inspect, no points recovered.
+    ///
+    /// One hop only, deliberately. `#let a = b` chains and series built inside
+    /// functions are not followed: a wrong answer about which figure draws what
+    /// is worse than no answer, and one hop is the shape lilaq documents.
+    fn series_named_by(&self, diagram: &CallSite) -> Vec<usize> {
+        let mut out = vec![];
+        for slot in &diagram.positional {
+            for name in self.free_identifiers(slot.range.clone()) {
+                let Some(binding) = self.binding_of(&name) else {
+                    continue;
+                };
+                // The series call inside that `#let`. A binding holding anything
+                // else -- `lq.linspace`, a number -- simply contributes nothing.
+                out.extend(
+                    self.calls
+                        .iter()
+                        .filter(|c| {
+                            c.is_xy_series()
+                                && c.range.start >= binding.start
+                                && c.range.end <= binding.end
+                        })
+                        .map(|c| c.id),
+                );
+            }
+        }
+        out
     }
 
     /// Identifiers a fragment of the document depends on from outside itself.
