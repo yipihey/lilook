@@ -40,6 +40,7 @@ pub const EXAMPLES: &[(&str, &str)] = &[
     ("log scale", include_str!("../examples/06-log-scale.typ")),
     ("plot grid", include_str!("../examples/07-plot-grid.typ")),
     ("colormesh", include_str!("../examples/08-colormesh.typ")),
+    ("thresholds", include_str!("../examples/09-rules.typ")),
 ];
 
 /// Decode the bundle: `u32 key_len, key, u32 data_len, data`, repeated.

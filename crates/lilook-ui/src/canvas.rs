@@ -52,6 +52,14 @@ pub enum CanvasEvent {
         index: usize,
         to: (f64, f64),
     },
+    /// A rule line was dragged. Its coordinate is a whole positional argument,
+    /// not an element of an array, so this is a different edit from a point move.
+    MoveRule {
+        node: usize,
+        /// Which positional argument -- `hlines(1, 2, 3)` has three.
+        slot: usize,
+        to: f64,
+    },
     /// The diagram was resized by its frame. Sizes are in typographic points --
     /// `width` and `height` on `lq.diagram` *are* the data area's dimensions,
     /// which is what makes dragging the axis frame mean what it looks like it
@@ -105,6 +113,14 @@ enum Gesture {
         /// The axes at the press, for the same reason as above: dragging a point
         /// on a log axis moves it by a ratio, not by an amount.
         axes: (AxisMap, AxisMap),
+    },
+    MoveRule {
+        node: usize,
+        slot: usize,
+        start: f64,
+        axis: lilook_core::Axis,
+        /// The one axis the line moves along.
+        map: AxisMap,
     },
     Resize {
         figure: usize,
@@ -262,6 +278,42 @@ impl Canvas {
                             });
                         }
 
+                        // A rule spans the frame, so it is grabbed anywhere along
+                        // its length -- checked after points, so a marker sitting on
+                        // one still wins. `editable` is the same gate the point drag
+                        // uses: the editor puts a rules call there only when every
+                        // one of its coordinates is a literal number it can rewrite.
+                        let rule = inside.and_then(|scene| {
+                            scene
+                                .hit_rule(pt, tolerance_pt)
+                                .filter(|h| editable.contains(&h.node))
+                                .and_then(|h| {
+                                    let axis =
+                                        scene.series.iter().find(|g| g.node == h.node).and_then(
+                                            |g| match g.shape {
+                                                lilook_core::SeriesShape::Rules(a) => Some(a),
+                                                _ => None,
+                                            },
+                                        )?;
+                                    Some(Gesture::MoveRule {
+                                        node: h.node,
+                                        slot: h.index,
+                                        start: match axis {
+                                            lilook_core::Axis::X => h.data.0,
+                                            lilook_core::Axis::Y => h.data.1,
+                                        },
+                                        axis,
+                                        map: match axis {
+                                            lilook_core::Axis::X => scene.transform.x,
+                                            lilook_core::Axis::Y => scene.transform.y,
+                                        },
+                                    })
+                                })
+                        });
+                        if let Some(g) = rule {
+                            return Some(g);
+                        }
+
                         if let Some((figure, grip)) = grip_at(scenes, page, pt, grip_tol) {
                             let scene = scenes.iter().find(|s| s.figure == figure)?;
                             return Some(Gesture::Resize {
@@ -314,6 +366,23 @@ impl Canvas {
                         figure: *figure,
                         width_pt: matches!(grip, Grip::Right | Grip::Corner).then_some(w),
                         height_pt: matches!(grip, Grip::Bottom | Grip::Corner).then_some(h),
+                    });
+                }
+                Some(Gesture::MoveRule {
+                    node,
+                    slot,
+                    start,
+                    axis,
+                    map,
+                }) => {
+                    let px = match axis {
+                        lilook_core::Axis::X => self.drag.x,
+                        lilook_core::Axis::Y => self.drag.y,
+                    };
+                    events.push(CanvasEvent::MoveRule {
+                        node: *node,
+                        slot: *slot,
+                        to: map.nudged(*start, px as f64 / viewport.zoom as f64),
                     });
                 }
                 Some(Gesture::MovePoint {

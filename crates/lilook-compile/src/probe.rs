@@ -118,9 +118,26 @@ pub fn inject(doc: &Document, hints: &HashMap<usize, Bounds>) -> (String, Inject
             if series.generated {
                 continue;
             }
-            let (Some(x), Some(y)) = (positional(doc, series, 0), positional(doc, series, 1))
-            else {
-                continue;
+            // A rules series has no pair to read: every positional argument is one
+            // line's coordinate, so they are gathered into one array and sent on
+            // the axis they belong to. The other axis stays empty -- the line
+            // spans the frame, so there is nothing to recover there.
+            let (x, y) = match series.series_shape() {
+                SeriesShape::Rules(axis) => {
+                    let coords = (0..series.positional.len())
+                        .filter_map(|i| positional(doc, series, i))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let list = format!("({coords},)");
+                    match axis {
+                        lilook_core::Axis::X => (list, "()".to_string()),
+                        lilook_core::Axis::Y => ("()".to_string(), list),
+                    }
+                }
+                _ => match (positional(doc, series, 0), positional(doc, series, 1)) {
+                    (Some(x), Some(y)) => (x, y),
+                    _ => continue,
+                },
             };
             // Data-bearing named arguments come back too, as a dictionary keyed
             // by argument name. `yerr` is why: a linked dataset can feed it, and
@@ -147,6 +164,7 @@ pub fn inject(doc: &Document, hints: &HashMap<usize, Bounds>) -> (String, Inject
             let shape = match series.series_shape() {
                 SeriesShape::Mesh => "mesh",
                 SeriesShape::Points => "points",
+                SeriesShape::Rules(_) => "rules",
             };
             // Relative coordinates, so this marker can never widen the data
             // range and change the layout it is trying to measure.
@@ -314,23 +332,45 @@ fn read(doc: &PagedDocument) -> Raw {
                 .collect(),
             _ => vec![],
         };
+        let sh = match field(&d, "sh") {
+            Some(Value::Str(s)) => s.to_string(),
+            _ => "points".to_string(),
+        };
         // A mesh keeps its axes apart: they have independent lengths, so there
-        // are no pairs and nothing to zip.
-        let mesh = matches!(field(&d, "sh"), Some(Value::Str(s)) if s.as_str() == "mesh");
-        let (points, grid, channels) = if mesh {
-            let (xs, ys) = (numbers(&x), numbers(&y));
-            let grid = Some((xs.len(), ys.len()));
-            let mut ch = vec![("x".to_string(), xs), ("y".to_string(), ys)];
-            ch.extend(channels);
-            (vec![], grid, ch)
-        } else {
-            (points(&x, &y), None, channels)
+        // are no pairs and nothing to zip. A rules series has coordinates on one
+        // axis only.
+        let (shape, points, grid, channels) = match sh.as_str() {
+            "mesh" => {
+                let (xs, ys) = (numbers(&x), numbers(&y));
+                let grid = Some((xs.len(), ys.len()));
+                let mut ch = vec![("x".to_string(), xs), ("y".to_string(), ys)];
+                ch.extend(channels);
+                (SeriesShape::Mesh, vec![], grid, ch)
+            }
+            "rules" => {
+                let (xs, ys) = (numbers(&x), numbers(&y));
+                let axis = if xs.is_empty() {
+                    lilook_core::Axis::Y
+                } else {
+                    lilook_core::Axis::X
+                };
+                let name = match axis {
+                    lilook_core::Axis::X => "x",
+                    lilook_core::Axis::Y => "y",
+                };
+                let coords = if xs.is_empty() { ys } else { xs };
+                let mut ch = vec![(name.to_string(), coords)];
+                ch.extend(channels);
+                (SeriesShape::Rules(axis), vec![], None, ch)
+            }
+            _ => (SeriesShape::Points, points(&x, &y), None, channels),
         };
         raw.series
             .entry(fig as usize)
             .or_default()
             .push(SeriesGeom {
                 node: node as usize,
+                shape,
                 channels,
                 grid,
                 points,

@@ -1475,3 +1475,34 @@ no-op fails a test instead of shipping.
   genuinely-broken deploy. Serving on a new port made it render immediately.
   Worth knowing before diagnosing the next blank page: check for a LinkError
   before suspecting the code.
+
+## Rules: one line per argument, so one argument per drag
+
+`hlines(1.5, 2.5)` is two lines in one call, and each coordinate is a whole
+*positional argument* rather than an element of an array. That makes the edit
+`SetPositionalArg`, not the `SetArrayElement` a point drag uses -- writing an
+array element into `hlines` would be rewriting an array that is not there.
+
+`SeriesShape::Rules(Axis)` carries which axis the coordinates live on. The probe
+gathers every positional slot into one array and sends it on that axis, leaving
+the other empty: a rule spans the frame, so its other coordinate does not exist.
+`Scene::hit_rule` therefore measures only the distance *across* the line, which is
+also why `hit` cannot find one -- there is no vertex to be near.
+
+Two details worth keeping:
+
+- **`hit_rule` returns the argument index**, not a point index, because that is
+  what the edit needs. The test asserts the *second* argument moves when the
+  second line is grabbed and the first stays put.
+- **`editable_series` requires every coordinate in the call to be literal.** The
+  canvas gets one flag per call, so a partly-computed `hlines(1, threshold)` would
+  otherwise offer a drag it could honour for one line and not the other.
+
+A rule is grabbable without being selected first, unlike a point. That is
+deliberate: a point drag needs the selection to disambiguate overlapping series,
+whereas a line spanning the frame is unambiguous about what was grabbed.
+
+`SeriesGeom` now carries its `shape` rather than having `grid` stand in for it.
+Three shapes was the point at which "mesh or not" stopped being enough, and a
+consumer holding only a `Scene` -- the canvas, a host frontend -- now reads the
+geometry the same way the probe wrote it.

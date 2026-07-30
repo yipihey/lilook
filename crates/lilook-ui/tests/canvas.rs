@@ -116,6 +116,7 @@ fn zooming_does_not_move_the_page_off_its_own_coordinates() {
 
 use lilook_core::compile::{AxisMap, Transform};
 use lilook_core::scene::{Scene, SeriesGeom};
+use lilook_core::SeriesShape;
 use lilook_ui::CanvasEvent;
 
 /// A 200x100 pt page with a diagram whose data area is inset 20 pt, showing
@@ -144,12 +145,14 @@ fn fixture() -> ([PageTexture; 1], Vec<Scene>) {
         series: vec![
             SeriesGeom {
                 node: 2,
+                shape: SeriesShape::Points,
                 channels: vec![],
                 grid: None,
                 points: vec![(0.0, 0.0), (5.0, 9.0), (10.0, 1.0)],
             },
             SeriesGeom {
                 node: 3,
+                shape: SeriesShape::Points,
                 channels: vec![],
                 grid: None,
                 points: vec![(0.0, 5.0), (10.0, 5.0)],

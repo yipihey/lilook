@@ -91,12 +91,14 @@ impl CallSite {
         XY_SERIES.contains(&self.short_name())
     }
 
-    /// How to read slots 0 and 1: as paired coordinates, or as grid axes.
+    /// How to read the positional arguments: paired coordinates, grid axes, or
+    /// one line each.
     pub fn series_shape(&self) -> SeriesShape {
-        if MESH_SERIES.contains(&self.short_name()) {
-            SeriesShape::Mesh
-        } else {
-            SeriesShape::Points
+        match self.short_name() {
+            n if MESH_SERIES.contains(&n) => SeriesShape::Mesh,
+            "hlines" => SeriesShape::Rules(Axis::Y),
+            "vlines" => SeriesShape::Rules(Axis::X),
+            _ => SeriesShape::Points,
         }
     }
 
@@ -107,13 +109,32 @@ impl CallSite {
     /// Never true for a mesh: its slots are axes of independent length, so there
     /// is no point to move even when both are literal.
     pub fn has_literal_points(&self) -> bool {
-        if self.series_shape() == SeriesShape::Mesh {
+        if self.series_shape() != SeriesShape::Points {
             return false;
         }
         match (self.positional.first(), self.positional.get(1)) {
             (Some(x), Some(y)) => !x.elements.is_empty() && x.elements.len() == y.elements.len(),
             _ => false,
         }
+    }
+}
+
+/// Every positional argument of a rules series is one coordinate, and each is
+/// draggable when it is a literal number: `hlines(1, 2, 3)` has three.
+///
+/// Separate from `has_literal_points` because the edit is different -- a slot
+/// rather than an array element -- and so is the geometry.
+impl CallSite {
+    pub fn literal_rules(&self) -> Vec<usize> {
+        if !matches!(self.series_shape(), SeriesShape::Rules(_)) {
+            return vec![];
+        }
+        self.positional
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.editability == Editability::Literal && p.elements.is_empty())
+            .map(|(i, _)| i)
+            .collect()
     }
 }
 
@@ -132,6 +153,8 @@ pub const XY_SERIES: &[&str] = &[
     "contour",
     "mesh",
     "fill-between",
+    "hlines",
+    "vlines",
 ];
 
 /// What slots 0 and 1 *mean*, which is not the same for every series.
@@ -148,6 +171,18 @@ pub enum SeriesShape {
     /// `mesh`: x has one value per column and y one per row, so there is no
     /// pairing between them and no single point to pick up.
     Mesh,
+    /// Every positional argument is *one line's* coordinate on a single axis:
+    /// `hlines(1, 2, 3)` draws three horizontal lines. There is no second
+    /// coordinate at all -- the line spans the frame -- so moving one rewrites
+    /// that argument rather than an element of an array.
+    Rules(Axis),
+}
+
+/// Which axis a value sits on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Axis {
+    X,
+    Y,
 }
 
 /// The mesh-shaped constructors. Their slots 0 and 1 are axes, not coordinates.

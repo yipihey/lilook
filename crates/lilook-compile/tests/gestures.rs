@@ -731,3 +731,106 @@ fn panning_a_log_log_figure_stays_positive_and_compiles() {
     while doc.undo() {}
     assert_eq!(doc.text(), src);
 }
+
+/// Dragging a threshold line moves *that* line, and nothing else.
+///
+/// `hlines(1.5, 2.5)` is two lines in one call, each its own positional argument
+/// -- so moving one is `SetPositionalArg`, not the `SetArrayElement` a point drag
+/// uses. Getting that wrong would rewrite an element of an array that is not
+/// there.
+#[test]
+fn dragging_a_rule_rewrites_its_own_argument() {
+    use lilook_core::{Axis, SeriesShape};
+
+    let src = r#"#import "@preview/lilaq:0.6.0" as lq
+#set page(width: auto, height: auto, margin: 6pt)
+#lq.diagram(
+  width: 6cm, height: 4cm,
+  lq.plot((0, 1, 2, 3), (0, 2, 1, 3)),
+  lq.hlines(1.5, 2.5, stroke: red),
+  lq.vlines(1, stroke: blue),
+)
+"#;
+    let mut b = Backend::new(std::env::temp_dir(), "");
+    let mut hints = Hints::new();
+    let mut doc = Document::new(src);
+    let (r, scenes) = b.render_scenes(&doc, 1.0, &mut hints);
+    if skip(&r) {
+        return;
+    }
+    assert!(!r.failed(), "{:?}", r.errors().collect::<Vec<_>>());
+
+    let hlines = doc
+        .calls()
+        .iter()
+        .find(|c| c.short_name() == "hlines")
+        .expect("the hlines");
+    let vlines = doc
+        .calls()
+        .iter()
+        .find(|c| c.short_name() == "vlines")
+        .expect("the vlines");
+    assert_eq!(hlines.series_shape(), SeriesShape::Rules(Axis::Y));
+    assert_eq!(vlines.series_shape(), SeriesShape::Rules(Axis::X));
+    // Each coordinate is its own slot, and each is a literal, so each is movable.
+    assert_eq!(hlines.literal_rules(), vec![0, 1]);
+    assert_eq!(vlines.literal_rules(), vec![0]);
+    // But not as points: there is no pair, so nothing to drag as one.
+    assert!(!hlines.has_literal_points());
+
+    let (h_id, v_id) = (hlines.id, vlines.id);
+    let scene = &scenes[0];
+    let geom = |id: usize| scene.series.iter().find(|g| g.node == id).unwrap();
+    assert_eq!(geom(h_id).rules(), vec![1.5, 2.5]);
+    assert_eq!(geom(v_id).rules(), vec![1.0]);
+    assert_eq!(geom(h_id).summary(), "2 horizontal lines");
+    assert_eq!(geom(v_id).summary(), "1 vertical line");
+    assert!(geom(h_id).points.is_empty(), "a rule has no points");
+
+    // Grab the second horizontal line anywhere along its length -- the middle of
+    // the frame horizontally, at its own height.
+    let y_page = scene.transform.y.to_page(2.5);
+    let mid_x = (scene.area.0 + scene.area.2) / 2.0;
+    let hit = scene
+        .hit_rule((mid_x, y_page), 4.0)
+        .expect("a rule is grabbable along its whole length");
+    assert_eq!(hit.node, h_id);
+    assert_eq!(hit.index, 1, "the second argument, not the first");
+
+    // And nowhere near it, nothing is grabbed.
+    assert!(scene
+        .hit_rule((mid_x, scene.transform.y.to_page(0.25)), 4.0)
+        .is_none());
+
+    // The edit: that slot, and only that slot.
+    doc.begin("drag rule");
+    doc.apply(Intent::SetPositionalArg {
+        node: h_id,
+        index: hit.index,
+        value: lilook_core::gesture_num(2.75),
+    })
+    .expect("a rule coordinate is a valid value");
+    doc.commit();
+
+    assert!(
+        doc.text().contains("lq.hlines(1.5, 2.75, stroke: red)"),
+        "{}",
+        doc.text()
+    );
+    let (r, scenes) = b.render_scenes(&doc, 1.0, &mut hints);
+    assert!(!r.failed(), "{:?}", r.errors().collect::<Vec<_>>());
+    assert_eq!(
+        scenes[0]
+            .series
+            .iter()
+            .find(|g| g.node == h_id)
+            .unwrap()
+            .rules(),
+        vec![1.5, 2.75],
+        "the first line must not have moved"
+    );
+
+    assert_eq!(doc.history_depth().0, 1, "one drag, one undo step");
+    doc.undo();
+    assert_eq!(doc.text(), src);
+}

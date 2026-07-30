@@ -698,3 +698,72 @@ fn a_colormesh_is_a_grid_not_a_diagonal_of_points() {
         .hit_mesh((scene.area.0 - 20.0, scene.area.1 - 20.0))
         .is_none());
 }
+
+/// Threshold lines, each draggable on its own.
+///
+/// `hlines(4, 6.5)` is two lines in one call, and each coordinate is a separate
+/// positional argument -- so the canvas has to offer each one independently and
+/// the edit is a slot rewrite, not an array-element one.
+#[test]
+fn threshold_lines_are_grabbable_along_their_length() {
+    let Some(mut app) = app() else { return };
+    let index = EXAMPLES
+        .iter()
+        .position(|(name, _)| *name == "thresholds")
+        .expect("the thresholds example");
+    app.load(index);
+    run(&mut app, 3);
+    assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+
+    let editor = app.editor();
+    let scene = &editor.scenes()[0];
+    let by_name = |n: &str| {
+        editor
+            .doc
+            .calls()
+            .iter()
+            .find(|c| c.short_name() == n)
+            .unwrap_or_else(|| panic!("the {n}"))
+            .clone()
+    };
+    let (h, v) = (by_name("hlines"), by_name("vlines"));
+
+    // Both belong to the figure, and are described as lines rather than points.
+    let figure = editor.doc.figures().into_iter().next().expect("a diagram");
+    assert!(figure.series.contains(&h.id) && figure.series.contains(&v.id));
+    let geom = |id: usize| scene.series.iter().find(|g| g.node == id).unwrap();
+    assert_eq!(geom(h.id).summary(), "2 horizontal lines");
+    assert_eq!(geom(v.id).summary(), "1 vertical line");
+    assert_eq!(geom(h.id).rules(), vec![4.0, 6.5]);
+    assert_eq!(geom(v.id).rules(), vec![8.0]);
+
+    // Each line is grabbable anywhere along its length, and reports which
+    // argument it came from.
+    for (id, coord, want_slot) in [(h.id, 4.0, 0), (h.id, 6.5, 1), (v.id, 8.0, 0)] {
+        let is_horizontal = id == h.id;
+        let at = if is_horizontal {
+            (
+                (scene.area.0 + scene.area.2) / 2.0,
+                scene.transform.y.to_page(coord),
+            )
+        } else {
+            (
+                scene.transform.x.to_page(coord),
+                (scene.area.1 + scene.area.3) / 2.0,
+            )
+        };
+        let hit = scene
+            .hit_rule(at, 4.0)
+            .unwrap_or_else(|| panic!("no rule at {coord}"));
+        assert_eq!(hit.node, id);
+        assert_eq!(
+            hit.index, want_slot,
+            "wrong argument for the line at {coord}"
+        );
+    }
+
+    // And the editor offers both calls for dragging, since every coordinate in
+    // each is a literal number it can rewrite.
+    assert_eq!(h.literal_rules(), vec![0, 1]);
+    assert_eq!(v.literal_rules(), vec![0]);
+}

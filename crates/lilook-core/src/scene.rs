@@ -12,12 +12,17 @@
 #[cfg(test)]
 use crate::compile::AxisScale;
 use crate::compile::Transform;
+use crate::doc::{Axis, SeriesShape};
 
 /// One series' evaluated data, in data units.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SeriesGeom {
     /// The call site that drew it.
     pub node: usize,
+    /// How to read what follows. Carried rather than re-derived so that a
+    /// consumer holding only a `Scene` -- the canvas, a host frontend -- reads it
+    /// the same way the probe wrote it.
+    pub shape: SeriesShape,
     /// The positions the series drew, which are the only values that can be
     /// hit-tested or dragged. Kept as pairs rather than folded into `channels`
     /// because that is a real distinction: `x` and `y` are geometry, and an error
@@ -81,6 +86,17 @@ impl SeriesGeom {
     /// "0 pts" for a colormesh after the shape landed, because the edit that was
     /// supposed to change it never matched.
     pub fn summary(&self) -> String {
+        if let SeriesShape::Rules(axis) = self.shape {
+            let n = self.rules().len();
+            let which = match axis {
+                Axis::X => "vertical",
+                Axis::Y => "horizontal",
+            };
+            return match n {
+                1 => format!("1 {which} line"),
+                n => format!("{n} {which} lines"),
+            };
+        }
         match self.grid {
             Some((cols, rows)) => format!("{cols}×{rows} grid"),
             None => {
@@ -91,6 +107,15 @@ impl SeriesGeom {
                     .collect();
                 format!("{} pts{extra}", self.points.len())
             }
+        }
+    }
+
+    /// The coordinates of a rules series, one per line.
+    pub fn rules(&self) -> Vec<f64> {
+        match self.shape {
+            SeriesShape::Rules(Axis::X) => self.channel("x").unwrap_or_default(),
+            SeriesShape::Rules(Axis::Y) => self.channel("y").unwrap_or_default(),
+            _ => vec![],
         }
     }
 
@@ -230,6 +255,45 @@ impl Scene {
         best
     }
 
+    /// The rule line under this point, if any.
+    ///
+    /// A rule spans the whole frame, so only the distance across it matters --
+    /// which is also why it cannot be found by `hit`: there is no vertex, and its
+    /// other coordinate does not exist.
+    ///
+    /// `index` is the positional argument the line came from, because that is what
+    /// an edit has to rewrite.
+    pub fn hit_rule(&self, page_pt: (f64, f64), tolerance_pt: f64) -> Option<SceneHit> {
+        let mut best: Option<SceneHit> = None;
+        for s in &self.series {
+            let SeriesShape::Rules(axis) = s.shape else {
+                continue;
+            };
+            for (index, &coord) in s.rules().iter().enumerate() {
+                let (at, across) = match axis {
+                    Axis::X => (self.transform.x.to_page(coord), page_pt.0),
+                    Axis::Y => (self.transform.y.to_page(coord), page_pt.1),
+                };
+                let d = (at - across).abs();
+                if d <= tolerance_pt && best.as_ref().is_none_or(|b| d < b.distance_pt) {
+                    let along = self.transform.to_data(page_pt);
+                    best = Some(SceneHit {
+                        node: s.node,
+                        index,
+                        // The grabbed coordinate on its own axis; the other one
+                        // follows the pointer, since the line has none.
+                        data: match axis {
+                            Axis::X => (coord, along.1),
+                            Axis::Y => (along.0, coord),
+                        },
+                        distance_pt: d,
+                    });
+                }
+            }
+        }
+        best
+    }
+
     /// The mesh under this point, if any.
     ///
     /// A mesh is picked by the area it covers rather than by a marker, because
@@ -352,12 +416,14 @@ mod tests {
             series: vec![
                 SeriesGeom {
                     node: 7,
+                    shape: SeriesShape::Points,
                     channels: vec![],
                     grid: None,
                     points: vec![(0.0, 0.0), (5.0, 5.0), (10.0, 0.0)],
                 },
                 SeriesGeom {
                     node: 9,
+                    shape: SeriesShape::Points,
                     channels: vec![],
                     grid: None,
                     points: vec![(0.0, 9.0), (10.0, 9.0)],

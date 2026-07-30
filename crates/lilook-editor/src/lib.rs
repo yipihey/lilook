@@ -787,6 +787,15 @@ impl Editor {
                         self.set_length(figure, param, pt);
                     }
                 }
+                CanvasEvent::MoveRule { node, slot, to } => {
+                    // One whole positional argument, not an array element: a rule
+                    // *is* its coordinate.
+                    self.apply(Intent::SetPositionalArg {
+                        node,
+                        index: slot,
+                        value: lilook_core::gesture_num(to),
+                    });
+                }
                 CanvasEvent::MovePoint { node, index, to } => {
                     // x and y are separate array elements, so a point drag is
                     // two intents with two coalesce keys -- and one undo step.
@@ -1042,7 +1051,20 @@ impl Editor {
         self.doc
             .calls()
             .iter()
-            .filter(|c| !c.generated && c.has_literal_points())
+            .filter(|c| {
+                if c.generated {
+                    return false;
+                }
+                // A rules series is movable when *every* coordinate is a literal
+                // number, because the canvas gets one flag per call and a partly
+                // computed `hlines(1, threshold)` would offer a drag it cannot
+                // honour for one of the two lines.
+                let rules = c.literal_rules();
+                if !rules.is_empty() {
+                    return rules.len() == c.positional.len();
+                }
+                c.has_literal_points()
+            })
             .map(|c| c.id)
             .collect()
     }
