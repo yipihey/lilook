@@ -586,8 +586,13 @@ impl Editor {
                                 // A mesh's field is the whole point of hovering
                                 // one: the position is already on the axes, the
                                 // value is not written anywhere.
+                                // `gesture_num`, not `data_num`: this is a
+                                // readout, not a value going into the document,
+                                // and the shortest *round-tripping* form of a
+                                // field value is seventeen digits of noise under
+                                // a moving cursor.
                                 let z = match s.field_at(hit) {
-                                    Some(z) => format!("   z {}", lilook_core::data_num(z)),
+                                    Some(z) => format!("   z {}", lilook_core::gesture_num(z)),
                                     None => String::new(),
                                 };
                                 format!("{:.4}, {:.4}{z}   [#{}]", hit.data.0, hit.data.1, hit.node)
