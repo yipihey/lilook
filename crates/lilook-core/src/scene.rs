@@ -31,30 +31,80 @@ pub struct SeriesGeom {
     /// would be linkable but invisible: no length to check, no staleness, no
     /// unlock.
     pub channels: Vec<(String, Vec<f64>)>,
+    /// Set for a mesh-shaped series -- `colormesh`, `contour`, `mesh` -- as
+    /// `(columns, rows)`: the lengths of the x and y *axes*.
+    ///
+    /// Those axes are independent, so there are no paired points and `points` is
+    /// empty. A mesh is picked by the area it covers rather than by a marker,
+    /// which is also what it looks like on the page.
+    pub grid: Option<(usize, usize)>,
 }
 
 impl SeriesGeom {
     /// A channel by name, `x` and `y` included.
+    ///
+    /// For a mesh, `x` and `y` come from the stored axes rather than from paired
+    /// points -- they have different lengths, which is the whole point.
     pub fn channel(&self, name: &str) -> Option<Vec<f64>> {
+        if let Some((_, v)) = self.channels.iter().find(|(n, _)| n == name) {
+            return Some(v.clone());
+        }
         match name {
             "x" => Some(self.points.iter().map(|p| p.0).collect()),
             "y" => Some(self.points.iter().map(|p| p.1).collect()),
-            _ => self
-                .channels
-                .iter()
-                .find(|(n, _)| n == name)
-                .map(|(_, v)| v.clone()),
+            _ => None,
         }
     }
 
     /// Every channel's name and length, for a UI that wants to list them.
     pub fn channel_lengths(&self) -> Vec<(String, usize)> {
+        if self.grid.is_some() {
+            return self
+                .channels
+                .iter()
+                .map(|(n, v)| (n.clone(), v.len()))
+                .collect();
+        }
         let mut out = vec![
             ("x".to_string(), self.points.len()),
             ("y".to_string(), self.points.len()),
         ];
         out.extend(self.channels.iter().map(|(n, v)| (n.clone(), v.len())));
         out
+    }
+
+    /// How a UI should describe this series' data in one short phrase.
+    ///
+    /// Here rather than in the editor so that a mesh cannot be described as
+    /// "0 pts" by one frontend and as a grid by another -- and so a test can
+    /// assert it without driving a UI. The tree label silently kept saying
+    /// "0 pts" for a colormesh after the shape landed, because the edit that was
+    /// supposed to change it never matched.
+    pub fn summary(&self) -> String {
+        match self.grid {
+            Some((cols, rows)) => format!("{cols}×{rows} grid"),
+            None => {
+                let extra: String = self
+                    .channels
+                    .iter()
+                    .map(|(n, v)| format!(" · {n} {}", v.len()))
+                    .collect();
+                format!("{} pts{extra}", self.points.len())
+            }
+        }
+    }
+
+    /// The rectangle a mesh covers, in data units, from its axes.
+    pub fn extent(&self) -> Option<((f64, f64), (f64, f64))> {
+        self.grid?;
+        let x = self.channel("x")?;
+        let y = self.channel("y")?;
+        let span = |v: &[f64]| {
+            let mut it = v.iter().copied().filter(|f| f.is_finite());
+            let first = it.next()?;
+            Some(it.fold((first, first), |(lo, hi), f| (lo.min(f), hi.max(f))))
+        };
+        Some((span(&x)?, span(&y)?))
     }
 }
 
@@ -180,6 +230,51 @@ impl Scene {
         best
     }
 
+    /// The mesh under this point, if any.
+    ///
+    /// A mesh is picked by the area it covers rather than by a marker, because
+    /// that is what it is: a field over a grid, with no vertex to aim at. Without
+    /// this a click on a colormesh fell through to the diagram, so the series
+    /// itself could only be reached from the tree.
+    ///
+    /// The nearest grid indices come back too, so a UI can say which cell.
+    pub fn hit_mesh(&self, page_pt: (f64, f64)) -> Option<SceneHit> {
+        let data = self.transform.to_data(page_pt);
+        for s in &self.series {
+            let Some(((x0, x1), (y0, y1))) = s.extent() else {
+                continue;
+            };
+            if data.0 < x0 || data.0 > x1 || data.1 < y0 || data.1 > y1 {
+                continue;
+            }
+            // Index of the nearest node on each axis, so the caller can read the
+            // field at the cursor.
+            let nearest = |v: &[f64], at: f64| {
+                v.iter()
+                    .enumerate()
+                    .min_by(|a, b| {
+                        (a.1 - at)
+                            .abs()
+                            .partial_cmp(&(b.1 - at).abs())
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .map(|(i, _)| i)
+                    .unwrap_or(0)
+            };
+            let (xs, ys) = (s.channel("x")?, s.channel("y")?);
+            let (col, row) = (nearest(&xs, data.0), nearest(&ys, data.1));
+            let cols = s.grid.map(|(c, _)| c).unwrap_or(1).max(1);
+            return Some(SceneHit {
+                node: s.node,
+                // Row-major, so one index still names one cell.
+                index: row * cols + col,
+                data,
+                distance_pt: 0.0,
+            });
+        }
+        None
+    }
+
     /// Nearest point *on a segment* rather than at a vertex, so a line drawn
     /// through few points is still clickable between them.
     pub fn hit_segment(&self, page_pt: (f64, f64), tolerance_pt: f64) -> Option<SceneHit> {
@@ -258,11 +353,13 @@ mod tests {
                 SeriesGeom {
                     node: 7,
                     channels: vec![],
+                    grid: None,
                     points: vec![(0.0, 0.0), (5.0, 5.0), (10.0, 0.0)],
                 },
                 SeriesGeom {
                     node: 9,
                     channels: vec![],
+                    grid: None,
                     points: vec![(0.0, 9.0), (10.0, 9.0)],
                 },
             ],

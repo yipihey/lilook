@@ -85,16 +85,31 @@ impl CallSite {
         self.callee.rsplit_once('.').map(|(m, _)| m)
     }
 
-    /// True when positional arguments 0 and 1 are the x and y data arrays, so
-    /// the compile backend can recover the plotted points from them.
+    /// True when positional arguments 0 and 1 carry the geometry, so the compile
+    /// backend can recover what was drawn from them.
     pub fn is_xy_series(&self) -> bool {
         XY_SERIES.contains(&self.short_name())
+    }
+
+    /// How to read slots 0 and 1: as paired coordinates, or as grid axes.
+    pub fn series_shape(&self) -> SeriesShape {
+        if MESH_SERIES.contains(&self.short_name()) {
+            SeriesShape::Mesh
+        } else {
+            SeriesShape::Points
+        }
     }
 
     /// True when both data slots are literal arrays of the same length, which
     /// is what makes an individual point draggable. Computed data is shown and
     /// hit-tested but not moved: the edit would have to rewrite an expression.
+    ///
+    /// Never true for a mesh: its slots are axes of independent length, so there
+    /// is no point to move even when both are literal.
     pub fn has_literal_points(&self) -> bool {
+        if self.series_shape() == SeriesShape::Mesh {
+            return false;
+        }
         match (self.positional.first(), self.positional.get(1)) {
             (Some(x), Some(y)) => !x.elements.is_empty() && x.elements.len() == y.elements.len(),
             _ => false,
@@ -102,9 +117,9 @@ impl CallSite {
     }
 }
 
-/// lilaq constructors whose first two positional arguments are x and y. Checked
-/// against the generated schema by a test, so a lilaq release that reorders a
-/// signature fails loudly rather than silently mis-plotting a hit test.
+/// lilaq constructors whose first two positional arguments carry the geometry.
+/// Checked against the generated schema by a test, so a lilaq release that
+/// reorders a signature fails loudly rather than silently mis-plotting a hit test.
 pub const XY_SERIES: &[&str] = &[
     "plot",
     "scatter",
@@ -115,7 +130,28 @@ pub const XY_SERIES: &[&str] = &[
     "quiver",
     "colormesh",
     "contour",
+    "mesh",
+    "fill-between",
 ];
+
+/// What slots 0 and 1 *mean*, which is not the same for every series.
+///
+/// The distinction is load-bearing and its absence was a real defect: a
+/// `colormesh(xs, ys, z)` on a 5x4 grid was read as four paired points down the
+/// diagonal -- zipped, so truncated to the shorter axis -- and drawn as four
+/// draggable markers that corresponded to nothing in the figure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeriesShape {
+    /// Parallel arrays: one point per index. `plot`, `scatter`, `bar`, ...
+    Points,
+    /// Grid axes, with a field over them in slot 2. `colormesh`, `contour`,
+    /// `mesh`: x has one value per column and y one per row, so there is no
+    /// pairing between them and no single point to pick up.
+    Mesh,
+}
+
+/// The mesh-shaped constructors. Their slots 0 and 1 are axes, not coordinates.
+const MESH_SERIES: &[&str] = &["colormesh", "contour", "mesh"];
 
 /// A `#show: lq.set-tick(..)` and the region of the document it governs.
 ///

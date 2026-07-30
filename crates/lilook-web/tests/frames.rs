@@ -558,11 +558,37 @@ fn every_cell_of_a_plot_grid_is_a_figure_lilook_can_edit() {
         .find(|s| s.figure == owner.node)
         .and_then(|s| s.series.iter().find(|g| g.node == contour.id))
         .expect("and its data comes back");
-    assert_eq!(geom.points.len(), 50, "lq.linspace's default resolution");
 
-    // It is inspect-only: the axes are `lq.linspace(..)` calls, not literal
-    // arrays, so there is no individual point to drag.
+    // A contour is a *grid*, not a list of points: its two axes are independent,
+    // so there is nothing to pair and no marker to draw. Reading them as pairs
+    // zipped them into a truncated diagonal of markers corresponding to nothing.
+    assert_eq!(
+        geom.grid,
+        Some((50, 50)),
+        "lq.linspace's default resolution"
+    );
+    assert!(geom.points.is_empty(), "a mesh has no paired points");
+    assert_eq!(geom.channel("x").map(|v| v.len()), Some(50));
+    assert_eq!(geom.channel("y").map(|v| v.len()), Some(50));
+
+    // And nothing to drag, whatever the axes were written as.
     assert!(!contour.has_literal_points());
+
+    // It is still selectable, though -- by the area it covers, which is what it
+    // looks like on the page.
+    let scene = editor
+        .scenes()
+        .iter()
+        .find(|s| s.figure == owner.node)
+        .unwrap();
+    let middle = (
+        (scene.area.0 + scene.area.2) / 2.0,
+        (scene.area.1 + scene.area.3) / 2.0,
+    );
+    let hit = scene
+        .hit_mesh(middle)
+        .expect("clicking a contour should select the contour, not the diagram");
+    assert_eq!(hit.node, contour.id);
 
     // The colorbar is not a series -- it renders another plot's scale -- and must
     // not be mistaken for one.
@@ -578,4 +604,97 @@ fn every_cell_of_a_plot_grid_is_a_figure_lilook_can_edit() {
             .any(|f| f.series.contains(&colorbar.id)),
         "a colorbar draws no data of its own"
     );
+}
+
+/// A colormesh is a grid, and lilook has to say so.
+///
+/// This is the shape that was read wrongest: `colormesh(xs, ys, z)` over 60x40
+/// was reported as *40 paired points down the diagonal* -- zipped, so truncated
+/// to the shorter axis -- drawn as draggable markers that corresponded to nothing
+/// in the figure, with both axes claiming the wrong length.
+#[test]
+fn a_colormesh_is_a_grid_not_a_diagonal_of_points() {
+    let Some(mut app) = app() else { return };
+    let index = EXAMPLES
+        .iter()
+        .position(|(name, _)| *name == "colormesh")
+        .expect("the colormesh example");
+    app.load(index);
+    run(&mut app, 3);
+    assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+
+    let editor = app.editor();
+    let mesh_call = editor
+        .doc
+        .calls()
+        .iter()
+        .find(|c| c.short_name() == "colormesh")
+        .expect("the colormesh");
+    assert!(mesh_call.is_xy_series());
+    assert_eq!(mesh_call.series_shape(), lilook_core::SeriesShape::Mesh);
+
+    // It reaches its diagram by name, since the colorbar shares it.
+    let owner = editor
+        .doc
+        .figures()
+        .into_iter()
+        .find(|f| f.series.contains(&mesh_call.id))
+        .expect("the diagram that draws it");
+    let scene = editor
+        .scenes()
+        .iter()
+        .find(|s| s.figure == owner.node)
+        .expect("its scene");
+    let geom = scene
+        .series
+        .iter()
+        .find(|g| g.node == mesh_call.id)
+        .expect("its data");
+
+    // The axes keep their own lengths, and neither is truncated to the other.
+    assert_eq!(geom.grid, Some((60, 40)));
+    assert_eq!(geom.channel("x").map(|v| v.len()), Some(60));
+    assert_eq!(geom.channel("y").map(|v| v.len()), Some(40));
+    assert!(geom.points.is_empty(), "a grid has no paired points");
+    assert_eq!(
+        geom.channel_lengths(),
+        vec![("x".to_string(), 60), ("y".to_string(), 40)]
+    );
+    assert!(!mesh_call.has_literal_points(), "nothing to drag on a grid");
+
+    // What the tree actually says. Asserted here because the first attempt at
+    // this wording never took effect -- the edit silently failed to match after a
+    // reformat, and the tree went on reporting "0 pts" for a 60x40 field while
+    // every other test passed.
+    assert_eq!(geom.summary(), "60×40 grid");
+
+    // The extent covers what the axes span, and picking works anywhere inside it
+    // -- a field has no vertex to aim at.
+    let ((x0, x1), (y0, y1)) = geom.extent().expect("a mesh has an extent");
+    assert!(
+        (x0 - -3.0).abs() < 1e-9 && (x1 - 3.0).abs() < 1e-9,
+        "{x0} {x1}"
+    );
+    assert!(
+        (y0 - -2.0).abs() < 1e-9 && (y1 - 2.0).abs() < 1e-9,
+        "{y0} {y1}"
+    );
+
+    for (fx, fy) in [(0.5, 0.5), (0.1, 0.9), (0.9, 0.1)] {
+        let at = (
+            scene.area.0 + fx * (scene.area.2 - scene.area.0),
+            scene.area.1 + fy * (scene.area.3 - scene.area.1),
+        );
+        let hit = scene
+            .hit_mesh(at)
+            .unwrap_or_else(|| panic!("no hit at {fx},{fy} inside the field"));
+        assert_eq!(hit.node, mesh_call.id);
+        // The index names one grid cell, row-major over 60 columns.
+        assert!(hit.index < 60 * 40, "{} out of range", hit.index);
+    }
+
+    // Outside the axes there is no mesh to hit.
+    assert!(scene
+        .hit_mesh((scene.area.0 - 20.0, scene.area.1 - 20.0))
+        .is_none());
 }

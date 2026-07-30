@@ -442,6 +442,10 @@ impl Editor {
                                             .iter()
                                             .flat_map(|s| &s.series)
                                             .find(|s| s.node == call.id)
+                                            // A mesh has axes rather than points,
+                                            // so there is nothing to embed as a
+                                            // flat array: offer nothing.
+                                            .filter(|s| s.grid.is_none())
                                             .map(|s| s.points.len()),
                                         slot_sources: &sources,
                                     };
@@ -1086,21 +1090,13 @@ impl Editor {
                             .iter()
                             .flat_map(|sc| &sc.series)
                             .find(|g| g.node == s);
-                        // Extra channels get named, because a length that does
-                        // not match the file is the thing worth noticing about
-                        // an error column.
-                        let extra = geom
-                            .map(|g| {
-                                g.channels
-                                    .iter()
-                                    .map(|(n, v)| format!(" · {n} {}", v.len()))
-                                    .collect::<String>()
-                            })
-                            .unwrap_or_default();
+                        // `SeriesGeom::summary` decides the wording, so a mesh
+                        // cannot be described one way here and another way
+                        // elsewhere -- and so a test can check it without a UI.
                         let label = match (call.generated, geom) {
                             (true, _) => format!("      {}  (generated)", call.callee),
                             (false, Some(g)) => {
-                                format!("      {}  · {} pts{extra}", call.callee, g.points.len())
+                                format!("      {}  · {}", call.callee, g.summary())
                             }
                             (false, None) => format!("      {}", call.callee),
                         };

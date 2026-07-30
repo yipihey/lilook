@@ -566,7 +566,13 @@ fn pick(
     scenes
         .iter()
         .filter(|s| s.page == page)
-        .filter_map(|s| s.hit_segment(pt, tolerance_pt).map(|h| (page, h)))
+        // Vertices and line segments first: an explicit marker beats an area, so
+        // a scatter drawn on top of a colormesh is still pickable.
+        .filter_map(|s| {
+            s.hit_segment(pt, tolerance_pt)
+                .or_else(|| s.hit_mesh(pt))
+                .map(|h| (page, h))
+        })
         .min_by(|a, b| {
             a.1.distance_pt
                 .partial_cmp(&b.1.distance_pt)

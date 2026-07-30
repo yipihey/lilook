@@ -30,7 +30,11 @@ if [ -z "${TYPST_PACKAGE_CACHE_PATH:-}" ] && [ -d .packages ]; then
   export TYPST_PACKAGE_CACHE_PATH="$PWD/.packages"
 fi
 
-cargo build --target wasm32-unknown-unknown -p lilook-web "${FLAGS[@]}"
+# `${FLAGS[@]+..}` rather than `"${FLAGS[@]}"`: under `set -u`, bash 3.2 -- which
+# is what macOS ships -- treats an empty array expansion as an unbound variable,
+# so a debug build died with "FLAGS[@]: unbound variable" before compiling
+# anything.
+cargo build --target wasm32-unknown-unknown -p lilook-web ${FLAGS[@]+"${FLAGS[@]}"}
 
 rm -rf site
 mkdir -p site

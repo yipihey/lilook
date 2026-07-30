@@ -23,8 +23,8 @@ pub use data::{
     MAX_EMBEDDED_VALUES,
 };
 pub use doc::{
-    check_expr, CallSite, Document, Editability, Figure, NamedArg, PositionalArg, SetRule,
-    XY_SERIES,
+    check_expr, CallSite, Document, Editability, Figure, NamedArg, PositionalArg, SeriesShape,
+    SetRule, XY_SERIES,
 };
 pub use edit::{minimal_replacement, Anchor, AppliedEdit, CoalesceKey, History, Transaction};
 pub use intent::Intent;

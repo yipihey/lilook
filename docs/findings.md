@@ -1423,3 +1423,55 @@ diagonal of the contour cell. Harmless (they cannot be dragged: `lq.linspace(..)
 is not a literal array) but misleading, and it predates this change; the binding
 fix merely made it visible. The mesh-shaped series need a hit region that is the
 area they cover rather than a synthesised diagonal.
+
+## A colormesh is a grid, and lilook was reading it as a diagonal
+
+`XY_SERIES` meant one thing -- "slots 0 and 1 are x and y" -- and that is simply
+false for a third of its members. `colormesh(xs, ys, z)` over 60x40 was read as
+**40 paired points down the diagonal**: zipped, so truncated to the shorter axis,
+drawn as draggable markers corresponding to nothing in the figure, with both axes
+reporting the wrong length and `z` never recovered at all.
+
+`SeriesShape` now distinguishes them, and the shape travels with the data in the
+probe's metadata, because how to read `x` and `y` depends on it:
+
+- **`Points`** -- `plot`, `scatter`, `bar`, `stem`, `quiver`, and now
+  `fill-between`, whose second surface arrives as the `y2` channel. Parallel
+  arrays, one point per index.
+- **`Mesh`** -- `colormesh`, `contour`, `mesh`. Axes of independent length, so
+  `points` is empty, `grid` carries `(columns, rows)`, and the axes are stored
+  whole as channels rather than zipped against each other.
+
+A mesh is then picked by **the area it covers** (`Scene::hit_mesh`), which is what
+it is on the page: a field with no vertex to aim at. Vertices and segments are
+tried first, so a scatter drawn over a colormesh is still pickable. `hit_mesh`
+also returns the nearest grid cell, row-major, which is what a value readout will
+need.
+
+`has_literal_points` is false for a mesh whatever its axes were written as: there
+is no point to move even when both are literal arrays.
+
+### The wording belongs in the core
+
+The tree kept saying "0 pts" for a 60x40 field after all of the above landed,
+because the edit meant to change it silently failed to match -- a `str.replace`
+with no assertion, after `cargo fmt` had reflowed the lines. Every test still
+passed, since none of them looked at the label.
+
+So `SeriesGeom::summary()` decides the wording now, in the core, where a test can
+assert it without driving a UI: `assert_eq!(geom.summary(), "60×40 grid")`. Two
+frontends cannot describe the same series differently, and the next silent
+no-op fails a test instead of shipping.
+
+### Two drive-by fixes
+
+- **`scripts/web.sh` could not do a debug build on macOS.** `set -u` plus
+  `"${FLAGS[@]}"` on an empty array is an unbound-variable error in bash 3.2,
+  which is what macOS ships, so `scripts/web.sh` with no arguments died before
+  compiling anything. Only the `release` path had ever been used.
+- **A blank page that was not a bug.** Rebuilding under the same filenames left
+  the browser holding a cached `lilook_web.js` against a fresh `.wasm`, which is a
+  `LinkError` and a blank canvas -- and it read exactly like the earlier
+  genuinely-broken deploy. Serving on a new port made it render immediately.
+  Worth knowing before diagnosing the next blank page: check for a LinkError
+  before suspecting the code.

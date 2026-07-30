@@ -22,7 +22,7 @@ use std::collections::HashMap;
 
 use lilook_core::compile::{AxisMap, AxisScale, Transform};
 use lilook_core::scene::{Bounds, Scene, SeriesGeom};
-use lilook_core::{CallSite, Document};
+use lilook_core::{CallSite, Document, SeriesShape};
 use typst::foundations::{Label, Selector, Value};
 use typst::utils::PicoStr;
 use typst_layout::PagedDocument;
@@ -33,10 +33,13 @@ pub const SERIES_LABEL: &str = "lilook-series";
 /// Named arguments that carry data rather than style, and so are worth
 /// recovering as channels alongside x and y.
 ///
+/// `y2` is `fill-between`'s second surface: `fill-between(x, y1, y2: ..)` fits the
+/// paired-point contract for slots 0 and 1, and its upper edge arrives this way.
+///
 /// A list rather than a schema lookup: the schema says a parameter's *type*, and
 /// several style parameters also take arrays. What matters here is whether the
 /// values are measurements, and that is a fact about lilaq's vocabulary.
-pub const DATA_ARGS: [&str; 4] = ["yerr", "xerr", "z", "size"];
+pub const DATA_ARGS: [&str; 5] = ["yerr", "xerr", "y2", "z", "size"];
 
 /// Where the scale probes sit inside the data range. Not 0 and 1: a probe on
 /// the very edge of the axis limits is the case most likely to fall outside
@@ -136,11 +139,20 @@ pub fn inject(doc: &Document, hints: &HashMap<usize, Bounds>) -> (String, Inject
             } else {
                 format!("({})", extra.join(", "))
             };
+            // The shape travels with the data, because how to read `x` and `y`
+            // depends on it: paired coordinates for a plot, independent grid axes
+            // for a colormesh. Reading a mesh as pairs zipped two axes of
+            // different length into a truncated diagonal of points that
+            // corresponded to nothing in the figure.
+            let shape = match series.series_shape() {
+                SeriesShape::Mesh => "mesh",
+                SeriesShape::Points => "points",
+            };
             // Relative coordinates, so this marker can never widen the data
             // range and change the layout it is trying to measure.
             args.push_str(&format!(
-                ", {lq}.place(0%, 0%, [#metadata((fig: {}, node: {node}, x: {x}, y: {y}, \
-                 ch: {channels}))<{SERIES_LABEL}>])",
+                ", {lq}.place(0%, 0%, [#metadata((fig: {}, node: {node}, sh: \"{shape}\", \
+                 x: {x}, y: {y}, ch: {channels}))<{SERIES_LABEL}>])",
                 fig.node
             ));
         }
@@ -221,6 +233,15 @@ fn as_pt(v: &Value) -> Option<f64> {
     }
 }
 
+/// A numeric array, or nothing. Used for a mesh's axes, which are read whole
+/// rather than zipped against each other.
+fn numbers(v: &Value) -> Vec<f64> {
+    match v {
+        Value::Array(a) => a.iter().filter_map(as_f64).collect(),
+        _ => vec![],
+    }
+}
+
 fn points(x: &Value, y: &Value) -> Vec<(f64, f64)> {
     let (Value::Array(x), Value::Array(y)) = (x, y) else {
         return vec![];
@@ -293,13 +314,26 @@ fn read(doc: &PagedDocument) -> Raw {
                 .collect(),
             _ => vec![],
         };
+        // A mesh keeps its axes apart: they have independent lengths, so there
+        // are no pairs and nothing to zip.
+        let mesh = matches!(field(&d, "sh"), Some(Value::Str(s)) if s.as_str() == "mesh");
+        let (points, grid, channels) = if mesh {
+            let (xs, ys) = (numbers(&x), numbers(&y));
+            let grid = Some((xs.len(), ys.len()));
+            let mut ch = vec![("x".to_string(), xs), ("y".to_string(), ys)];
+            ch.extend(channels);
+            (vec![], grid, ch)
+        } else {
+            (points(&x, &y), None, channels)
+        };
         raw.series
             .entry(fig as usize)
             .or_default()
             .push(SeriesGeom {
                 node: node as usize,
                 channels,
-                points: points(&x, &y),
+                grid,
+                points,
             });
     }
 
