@@ -12,8 +12,9 @@ use lilook_core::schema::{FunctionSchema, ParamSchema};
 use lilook_core::{CallSite, Editability, NamedArg};
 
 use crate::value::{
-    alignment_source, color_source, num, parse_alignment, parse_color, parse_content, parse_stroke,
-    split_numeric, stroke_source, Stroke, DASH_NAMES, H_ALIGN, MARK_NAMES, SCALE_NAMES, V_ALIGN,
+    alignment_source, color_source, num, parse_alignment, parse_color, parse_stroke, parse_text,
+    split_numeric, stroke_source, text_source, Stroke, TextShape, DASH_NAMES, H_ALIGN, MARK_NAMES,
+    SCALE_NAMES, V_ALIGN,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -59,9 +60,16 @@ pub enum Control {
     Mark,
     Scale,
     Alignment,
-    Content,
+    /// Words: content `[..]` or a string `".."`, edited as plain text and
+    /// written back in whichever shape it came in.
+    Text,
     /// A number or an array of them; which one is decided by the current value.
     NumberOrArray,
+    /// The value is a sentinel (`none`/`auto`) and this kind of control has no way
+    /// to *show* that -- a slider at zero would claim a value the document does
+    /// not have. So it says "not set" and offers one press to start from the
+    /// documented default.
+    Unset,
     /// Editable as raw Typst source, validated before it is applied.
     Source,
     /// Not editable here: bound, computed, or generated.
@@ -83,13 +91,139 @@ pub fn widget_control(widget: &str) -> Option<Control> {
         "mark" => Control::Mark,
         "scale" => Control::Scale,
         "alignment" => Control::Alignment,
-        "content" => Control::Content,
+        "content" => Control::Text,
         "number-or-array" => Control::NumberOrArray,
         // Deliberately the source editor: unions too wide to map, or structures
         // with no small form.
         "array" | "data" | "dictionary" | "structured" | "variant" | "opaque" => Control::Source,
         _ => return None,
     })
+}
+
+/// Is this value one of typst's ways of saying "not set"?
+///
+/// `none` and `auto`, and only where the schema says the parameter accepts them
+/// -- 140 of lilaq's 409 parameters do, and their documented default is usually
+/// one of the two. Returns the sentinel as written, for showing in the UI.
+///
+/// This is what keeps an unset parameter out of the raw source editor. Every
+/// typed control used to fall back to that when its parser did not recognise the
+/// value, and no parser recognises `none` -- so adding any of those 140 dropped
+/// the user into a text box to type syntax lilook already knew the shape of.
+pub fn sentinel_of<'a>(text: &str, param: Option<&'a ParamSchema>) -> Option<&'a str> {
+    let text = text.trim();
+    param?
+        .sentinels
+        .iter()
+        .find(|s| s.as_str() == text)
+        .map(String::as_str)
+}
+
+/// What to write when the user presses `set` on an unset parameter, if lilook can
+/// name a value it is sure of.
+///
+/// `None` means it cannot, and the row offers a source editor instead. That
+/// distinction is the point: the value has to **compile**, not merely reparse. An
+/// empty array `()` parses fine and lilaq rejects it -- "Limit arrays must contain
+/// exactly two items" -- so `xlim` gets no seed, because nothing here knows which
+/// two numbers the user wants. That one shipped to a browser before it was caught.
+///
+/// The documented default comes first where it is a real value, because then
+/// pressing `set` changes nothing about how the figure looks and simply makes the
+/// control editable.
+fn seed(param: Option<&ParamSchema>, control: Control) -> Option<String> {
+    let default = param
+        .and_then(|p| p.default.as_deref())
+        .filter(|d| sentinel_of(d, param).is_none() && lilook_core::check_expr(d).is_ok());
+    if let Some(d) = default {
+        return Some(d.to_string());
+    }
+    match control {
+        // `1`, not `0`: zero is only neutral for an offset, and it is invalid for
+        // everything else a bare number means here. `aspect-ratio: 0` compiled to
+        // "cannot divide by zero". One is valid wherever a positive number is
+        // wanted and harmless where an offset is.
+        Control::Number | Control::NumberOrArray => Some("1".into()),
+        Control::Length => Some("1cm".into()),
+        Control::Toggle => Some("true".into()),
+        Control::Color => Some("red".into()),
+        Control::Stroke => Some("1pt".into()),
+        Control::Alignment => Some("center".into()),
+        Control::Text => Some("[]".into()),
+        Control::Enum | Control::Mark | Control::Scale => param
+            .and_then(|p| p.choices.first().cloned())
+            .map(|c| format!("\"{c}\"")),
+        // An array, a dictionary, a structure: lilook knows the shape but not the
+        // contents, and a wrong guess is a broken figure. The source editor takes
+        // it, with the shape shown as a hint.
+        Control::Source | Control::ReadOnly | Control::Unset => None,
+    }
+}
+
+/// The shape a parameter wants, as placeholder text, so an unset structure is a
+/// prompt rather than a puzzle.
+fn shape_hint(param: Option<&ParamSchema>) -> &'static str {
+    match param.map(|p| p.widget.as_str()) {
+        Some("array") | Some("data") | Some("number-or-array") => "(0, 10)",
+        Some("dictionary") | Some("structured") => "(key: value)",
+        _ => "",
+    }
+}
+
+/// A name from a menu, written the way typst wants it: a sentinel is a keyword,
+/// everything else is a string.
+fn quoted_choice(choice: &str, sentinels: &[String]) -> String {
+    if sentinels.iter().any(|s| s == choice) {
+        choice.to_string()
+    } else {
+        format!("\"{choice}\"")
+    }
+}
+
+/// `seed`, for the test that checks every parameter's seed value reparses.
+pub fn seed_for_test(param: Option<&ParamSchema>, control: Control) -> Option<String> {
+    seed(param, control)
+}
+
+/// The sentinel to write when a control is cleared, if the parameter has one.
+fn first_sentinel(param: Option<&ParamSchema>) -> Option<&str> {
+    param?.sentinels.first().map(String::as_str)
+}
+
+/// Does this parameter take words the user writes?
+///
+/// `content` is the test, deliberately -- **not** `str`. In lilaq's schema a `str`
+/// without a `content` alongside it is always a *named variant*: `xscale: "log"`,
+/// `mark: "o"`, which the scale and mark menus already offer by name. Treating
+/// those as free text seeded `xscale` with `[]` and lilaq rejected it: "expected
+/// auto, string or dictionary, found content". A string a user types is still
+/// edited as words -- `refine` reaches `Text` for one that is already written --
+/// but an unset parameter only gets a text field when content is a type it takes.
+fn takes_text(param: Option<&ParamSchema>) -> bool {
+    param.is_some_and(|p| p.widget == "content" || p.types.iter().any(|t| t == "content"))
+}
+
+/// The control for a parameter, given what is currently written there.
+///
+/// Prefer this to `control_for` + `refine`: it is the one place that sees both
+/// the schema and the value, which is what an unset parameter needs.
+pub fn control_of(param: Option<&ParamSchema>, editability: Editability, text: &str) -> Control {
+    let control = refine(control_for(param), editability, text);
+    if sentinel_of(text, param).is_none() || control == Control::ReadOnly {
+        return control;
+    }
+    // An unset value carries nothing to lose, so the *schema* decides rather than
+    // the text. `title: none` where the schema admits words is a text field, not a
+    // box to type `[..]` into.
+    if takes_text(param) {
+        return Control::Text;
+    }
+    match control {
+        // These show the sentinel in their own list, so they can say "not set"
+        // and go back to it without help.
+        Control::Enum | Control::Mark | Control::Scale => control,
+        _ => Control::Unset,
+    }
 }
 
 /// Adapt a control to the value actually written there.
@@ -111,12 +245,12 @@ pub fn refine(control: Control, editability: Editability, text: &str) -> Control
             Control::Stroke if parse_stroke(text).is_some() => Control::Stroke,
             Control::Color if parse_color(text).is_some() => Control::Color,
             Control::Alignment if parse_alignment(text).is_some() => Control::Alignment,
-            Control::Content if parse_content(text).is_some() => Control::Content,
+            Control::Text if parse_text(text).is_some() => Control::Text,
             _ => Control::ReadOnly,
         };
     }
     match control {
-        Control::Source if parse_content(text).is_some() => Control::Content,
+        Control::Source if parse_text(text).is_some() => Control::Text,
         Control::Source if parse_color(text).is_some() => Control::Color,
         Control::NumberOrArray if split_numeric(text).is_some() => Control::Number,
         Control::NumberOrArray => Control::Source,
@@ -313,7 +447,7 @@ impl<'a> Inspector<'a> {
 
     fn argument(&mut self, ui: &mut egui::Ui, call: &CallSite, arg: &NamedArg) {
         let schema = self.param(&arg.name);
-        let control = refine(control_for(schema), arg.editability, &arg.text);
+        let control = control_of(schema, arg.editability, &arg.text);
         let choices: Vec<String> = schema.map(|p| p.choices.clone()).unwrap_or_default();
         let sentinels: Vec<String> = schema.map(|p| p.sentinels.clone()).unwrap_or_default();
         let tooltip = schema.map(|p| {
@@ -336,6 +470,28 @@ impl<'a> Inspector<'a> {
             }
 
             match control {
+                Control::Unset => {
+                    ui.weak(arg.text.trim())
+                        .on_hover_text("Not set, so lilaq decides.");
+                    // The control this *would* be if it held a value, so the seed
+                    // is of the right type.
+                    let typed = refine(control_for(schema), arg.editability, "");
+                    match seed(schema, typed) {
+                        Some(value) => {
+                            if ui
+                                .small_button("set")
+                                .on_hover_text(format!("start from {value} and edit it here"))
+                                .clicked()
+                            {
+                                ev.push(set(node, &name, value));
+                            }
+                        }
+                        // lilook knows the shape but not the contents, so it shows
+                        // the shape and lets the user supply them. Nothing invalid
+                        // is written either way: `check_expr` still guards.
+                        None => source_row_hinted(ui, node, &name, "", shape_hint(schema), &mut ev),
+                    }
+                }
                 Control::Number | Control::Length | Control::NumberOrArray => {
                     match split_numeric(&arg.text) {
                         Some((mut v, unit)) => {
@@ -368,9 +524,13 @@ impl<'a> Inspector<'a> {
                     }
                 }
                 Control::Enum => {
+                    // Sentinels first, so "auto" is a menu entry rather than
+                    // something to remember the spelling of.
+                    let options: Vec<String> =
+                        sentinels.iter().cloned().chain(choices.clone()).collect();
                     let current = arg.text.trim().trim_matches('"').to_string();
-                    if let Some(c) = combo(ui, (node, &name), &current, &choices) {
-                        ev.push(set(node, &name, format!("\"{c}\"")));
+                    if let Some(c) = combo(ui, (node, &name), &current, &options) {
+                        ev.push(set(node, &name, quoted_choice(&c, &sentinels)));
                     }
                 }
                 Control::Mark | Control::Scale => {
@@ -384,10 +544,11 @@ impl<'a> Inspector<'a> {
                     } else {
                         choices.clone()
                     };
+                    let options: Vec<String> = sentinels.iter().cloned().chain(options).collect();
                     let current = arg.text.trim().trim_matches('"').to_string();
                     if options.contains(&current) {
                         if let Some(c) = combo(ui, (node, &name), &current, &options) {
-                            ev.push(set(node, &name, format!("\"{c}\"")));
+                            ev.push(set(node, &name, quoted_choice(&c, &sentinels)));
                         }
                     } else {
                         // `lq.marks.x`, a custom scale object: editable, but not
@@ -441,15 +602,47 @@ impl<'a> Inspector<'a> {
                     }
                     None => source_row(ui, node, &name, &arg.text, &mut ev),
                 },
-                Control::Content => match parse_content(&arg.text) {
-                    Some(inner) => {
-                        let mut buf = inner;
-                        if ui.text_edit_singleline(&mut buf).changed() {
-                            ev.push(set(node, &name, format!("[{buf}]")));
+                Control::Text => {
+                    let sentinel = sentinel_of(&arg.text, schema);
+                    // An unset parameter shows an empty field; anything else shows
+                    // its words, without the `[..]` or `".."` around them.
+                    let parsed = parse_text(&arg.text);
+                    if sentinel.is_none() && parsed.is_none() {
+                        source_row(ui, node, &name, &arg.text, &mut ev);
+                    } else {
+                        // Keep the shape the user wrote. Where there is none yet,
+                        // prefer content: it is the typst idiom, and it is the only
+                        // one of the two that can hold markup.
+                        let shape = parsed.as_ref().map_or_else(
+                            || {
+                                if schema.is_some_and(|p| p.types.iter().any(|t| t == "content"))
+                                    || schema.is_some_and(|p| p.widget == "content")
+                                {
+                                    TextShape::Content
+                                } else {
+                                    TextShape::Str
+                                }
+                            },
+                            |(s, _)| *s,
+                        );
+                        let mut buf = parsed.map(|(_, t)| t).unwrap_or_default();
+                        let r = ui.add(
+                            egui::TextEdit::singleline(&mut buf)
+                                .hint_text(sentinel.unwrap_or(""))
+                                .desired_width(150.0),
+                        );
+                        if r.changed() {
+                            // Emptying the field means "unset" again where the
+                            // parameter has a sentinel -- otherwise there would be
+                            // no way back to `none` without the source editor.
+                            let value = match (buf.trim().is_empty(), first_sentinel(schema)) {
+                                (true, Some(s)) => s.to_string(),
+                                _ => text_source(shape, &buf),
+                            };
+                            ev.push(set(node, &name, value));
                         }
                     }
-                    None => source_row(ui, node, &name, &arg.text, &mut ev),
-                },
+                }
                 Control::Source => source_row(ui, node, &name, &arg.text, &mut ev),
                 Control::ReadOnly => {
                     ui.weak(ellipsis(&arg.text, 22)).on_hover_text(&arg.text);
@@ -620,7 +813,7 @@ fn placeholder(widget: &str) -> String {
         Some(Control::Length) => "0pt".into(),
         Some(Control::Toggle) => "false".into(),
         Some(Control::Color) | Some(Control::Stroke) => "black".into(),
-        Some(Control::Content) => "[]".into(),
+        Some(Control::Text) => "[]".into(),
         _ => "none".into(),
     }
 }
@@ -647,6 +840,19 @@ fn combo(
 /// The fallback: raw source, refused if it would not reparse. The refusal is
 /// shown rather than swallowed, so "why did nothing happen" never comes up.
 fn source_row(ui: &mut egui::Ui, node: usize, name: &str, text: &str, ev: &mut Vec<UiEvent>) {
+    source_row_hinted(ui, node, name, text, "", ev)
+}
+
+/// The source editor, with placeholder text saying what shape is expected. Used
+/// where a parameter is unset and lilook knows the shape but not the contents.
+fn source_row_hinted(
+    ui: &mut egui::Ui,
+    node: usize,
+    name: &str,
+    text: &str,
+    hint: &str,
+    ev: &mut Vec<UiEvent>,
+) {
     let id = ui.id().with((node, name, "src"));
     let editing = ui.memory(|m| m.has_focus(id));
     // Adopt the document's text whenever this box is not being typed in, so
@@ -661,6 +867,7 @@ fn source_row(ui: &mut egui::Ui, node: usize, name: &str, text: &str, ev: &mut V
     let r = ui.add(
         egui::TextEdit::singleline(&mut buf)
             .id(id)
+            .hint_text(hint)
             .desired_width(150.0),
     );
     let valid = lilook_core::check_expr(&buf);

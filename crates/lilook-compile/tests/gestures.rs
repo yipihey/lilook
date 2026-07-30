@@ -554,3 +554,79 @@ fn a_single_point_series_plots_and_is_recovered() {
         "{x} {y}"
     );
 }
+
+/// Every value the inspector's `set` button would write has to **compile**.
+///
+/// Reparsing is not enough, and this test exists because of a case that proved
+/// it: `set` on `xlim` wrote `()`, an empty array, which `check_expr` accepts and
+/// lilaq refuses -- "Limit arrays must contain exactly two items". It reached a
+/// browser. The lesson is the one `scripts/check.sh` was built on, applied to a
+/// new surface: the round trip is not the gate, the compiler is.
+#[test]
+fn seeded_arguments_compile() {
+    const SCHEMA: &str = include_str!("../../../assets/lilaq-0.6.0.schema.json");
+    let schema = lilook_core::Schema::from_json(SCHEMA).expect("bundled schema");
+    let mut b = Backend::new(std::env::temp_dir(), "");
+
+    // The two calls that carry most of lilaq's surface, and every named parameter
+    // of theirs that starts out unset -- which is what `set` is for.
+    let mut checked = 0;
+    for (callee, extra) in [("lq.diagram", ""), ("lq.plot", "(0, 1, 2), (0, 1, 4),")] {
+        let f = schema
+            .function_for_callee(callee)
+            .unwrap_or_else(|| panic!("{callee} in the schema"));
+        for p in &f.params {
+            if p.kind == "positional" || p.sentinels.is_empty() {
+                continue;
+            }
+            use lilook_core::Editability::Literal;
+            let control = lilook_ui::inspector::control_of(Some(p), Literal, &p.sentinels[0]);
+            // Mirror the `Unset` arm exactly: it seeds the control the parameter
+            // *would* be if it held a value, which is what makes the value the
+            // right type. Getting this wrong here checked six parameters instead
+            // of thirty and would have hidden the next `()`.
+            let typed = match control {
+                lilook_ui::Control::Unset => {
+                    lilook_ui::refine(lilook_ui::control_for(Some(p)), Literal, "")
+                }
+                other => other,
+            };
+            // Only the values `set` would actually write.
+            let Some(value) = lilook_ui::inspector::seed_for_test(Some(p), typed) else {
+                continue;
+            };
+            // No width/height in the template: they are themselves parameters
+            // under test, and passing one twice is a duplicate-argument error
+            // rather than anything to do with the value.
+            let src = format!(
+                r#"#import "@preview/lilaq:0.6.0" as lq
+#set page(width: auto, height: auto, margin: 5pt)
+#lq.diagram(
+  {}
+)
+"#,
+                if callee == "lq.diagram" {
+                    format!("{}: {value},\n  lq.plot((0, 1, 2), (0, 1, 4))", p.name)
+                } else {
+                    format!("lq.plot({extra} {}: {value})", p.name)
+                }
+            );
+            let r = b.render(&src, 1.0);
+            if skip(&r) {
+                return;
+            }
+            assert!(
+                !r.failed(),
+                "`set` on {callee}.{} writes `{value}`, which does not compile: {:?}",
+                p.name,
+                r.errors().map(|d| d.message.clone()).collect::<Vec<_>>()
+            );
+            checked += 1;
+        }
+    }
+    eprintln!("{checked} seeded arguments compiled");
+    // Twelve, at the time of writing: most sentinel parameters are arrays or
+    // dictionaries, and `set` deliberately declines those. The floor is here so
+    // that a change which quietly stops offering `set` at all fails.
+    assert!(checked >= 10, "only {checked} seeds were checked");
+}

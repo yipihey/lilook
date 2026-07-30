@@ -260,6 +260,76 @@ pub fn parse_content(s: &str) -> Option<String> {
         .then(|| inner.to_string())
 }
 
+/// Which of typst's two spellings of "some words" a value is written in.
+///
+/// lilaq takes either almost everywhere -- `title: [Flux]` and `title: "Flux"`
+/// are both fine -- and the difference matters when writing back: a value the
+/// user wrote as a string has to stay a string, or lilook has silently changed
+/// the shape of their source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextShape {
+    /// `[some words]` -- typst content, which can hold markup.
+    Content,
+    /// `"some words"` -- a plain string.
+    Str,
+}
+
+/// Read a value that is words: content, a string, or nothing at all.
+///
+/// `None` means this is not a textual value (an expression, a function call), so
+/// the caller must leave it to the source editor. `Some((shape, text))` gives the
+/// words with the quoting removed, ready for a plain text field -- which is the
+/// whole point: the schema already says this parameter takes words, so nobody
+/// should have to type `[..]` or `".."` to say so again.
+pub fn parse_text(s: &str) -> Option<(TextShape, String)> {
+    let s = s.trim();
+    if let Some(inner) = parse_content(s) {
+        return Some((TextShape::Content, inner));
+    }
+    let inner = s.strip_prefix('"')?.strip_suffix('"')?;
+    // An escaped quote is fine; a bare one means this is not one string literal.
+    let mut chars = inner.chars().peekable();
+    let mut out = String::new();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some(e) => out.push(e),
+                None => return None,
+            },
+            '"' => return None,
+            _ => out.push(c),
+        }
+    }
+    Some((TextShape::Str, out))
+}
+
+/// Write words back in the shape they came in.
+pub fn text_source(shape: TextShape, text: &str) -> String {
+    match shape {
+        TextShape::Str => {
+            let mut out = String::with_capacity(text.len() + 2);
+            out.push('"');
+            for c in text.chars() {
+                match c {
+                    '"' => out.push_str("\\\""),
+                    '\\' => out.push_str("\\\\"),
+                    '\n' => out.push_str("\\n"),
+                    '\t' => out.push_str("\\t"),
+                    _ => out.push(c),
+                }
+            }
+            out.push('"');
+            out
+        }
+        // Content is markup, so `]` has to be escaped or it ends the block early.
+        // Everything else the user types is markup on purpose -- `*bold*` should
+        // stay bold, which is why anyone picks content over a string.
+        TextShape::Content => format!("[{}]", text.replace('\\', "\\\\").replace(']', "\\]")),
+    }
+}
+
 /// `left + top` -> ("left", "top"), in either order.
 pub fn parse_alignment(s: &str) -> Option<(Option<String>, Option<String>)> {
     let parts = split_top_level(s.trim(), '+');

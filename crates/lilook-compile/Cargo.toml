@@ -34,3 +34,6 @@ web-time = "1"
 
 [dev-dependencies]
 lilook-data = { path = "../lilook-data" }
+# Test-only: the inspector decides what `set` writes, and only a compiler can say
+# whether those values are valid. `check_expr` accepting them is not enough.
+lilook-ui = { path = "../lilook-ui" }

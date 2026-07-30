@@ -1236,3 +1236,54 @@ records are private, and a test that fakes its way to a position is a test that
 will drift. The click path was verified in a browser instead -- pick `title`, the
 "add" button appears, pressing it writes `title: none,` into the call, one undo
 step, recompiled in 20 ms, and the combo clears so it cannot fire twice.
+
+## The type is in the schema, so the user should never type the syntax
+
+Adding `title` landed in a raw source box holding `none`, so a title had to be
+written `"Flux"` or `[Flux]` by hand -- while `xlabel` needed neither, *purely*
+because its current value happened to be `[day]`. `refine` decided the control
+from the text alone, and no parser recognises `none`, so every typed control fell
+through to the source editor. That is 140 of lilaq's 409 parameters: they accept
+`none`/`auto` and most default to one.
+
+The schema already knew better. It records `types` and, per parameter, the
+`sentinels` it accepts -- 64 with `auto`, 50 with `none`, 26 with both. So the
+control is now chosen by `control_of(param, editability, text)`, the one place that
+sees both the schema and the value, and an unset value lets the *schema* decide:
+
+- **words** (`content` in the types) → a plain text field, `none` as its hint. One
+  `Control::Text` replaced `Control::Content` and covers strings too, so
+  `title: "Flux"` reopens as text and is written back **as a string**: the shape the
+  user wrote survives, which is the same-shape-back rule the inspector already had.
+- **named variants** (`enum`, `mark`, `scale`) → the sentinels join the menu, so
+  `auto`, `log` and `o` are entries to pick rather than spellings to remember.
+- **everything else** → a new `Control::Unset`, which shows the sentinel and offers
+  `set` to start from a value of the right type. Not a control seeded at zero: a
+  slider showing `0` for `auto` would claim a value the document does not have.
+
+### Three bugs, and only the compiler found them
+
+The interesting part. A schema-wide test asserts all 409 parameters avoid the raw
+editor at each of their sentinels, and it passed while the feature was still broken
+in three places -- because it checked `check_expr`, and reparsing is not compiling:
+
+- `set` on `xlim` wrote `()`. Parses; lilaq refuses it: "Limit arrays must contain
+  exactly two items". **This one reached a live page before it was caught.**
+- `xscale` got `[]`, because `takes_text` counted `str` as free text. In this schema
+  a `str` *without* a `content` beside it is always a named variant -- `"log"`,
+  `"o"` -- and an earlier scan of the schema had said exactly that, which I then
+  did not act on. lilaq: "expected auto, string or dictionary, found content".
+- `aspect-ratio` got `0`, the "neutral" number. "cannot divide by zero". Zero is
+  neutral only for an offset; `1` is valid wherever a positive number is wanted.
+
+So `seed` returns `Option` now: `None` where lilook knows the *shape* but not the
+*contents*, and then the row shows a source editor with the shape as placeholder
+text -- `(0, 10)` for a limit pair. Nothing invalid is ever written, and the user is
+prompted rather than left to guess.
+
+The test that catches this class lives in `lilook-compile`, where there is a
+compiler: `seeded_arguments_compile` builds a document per seeded argument and
+compiles it. This is the lesson `scripts/check.sh` was built on -- "the
+trailing-comma insertion bug passed the round-trip test and was caught only by
+recompiling the output" -- rediscovered on a new surface. A round trip is not the
+gate. The compiler is.

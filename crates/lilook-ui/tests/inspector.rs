@@ -2,7 +2,7 @@
 //! no window, which is exactly the property that made egui the right choice for
 //! the first frontend: an agent can drive and assert on it without a display.
 
-use lilook_core::{Document, Schema};
+use lilook_core::{Document, Editability, Schema};
 use lilook_ui::{control_for, refine, widget_control, Control, Inspector, UiEvent};
 use std::cell::RefCell;
 
@@ -70,7 +70,7 @@ fn controls_follow_schema_and_editability() {
     assert_eq!(pick("lq.diagram", 0, "width"), Control::Length);
     // `xlabel` is a `variant` -- lq.label or content -- and the user wrote
     // content, so it gets the content editor rather than a source box.
-    assert_eq!(pick("lq.diagram", 0, "xlabel"), Control::Content);
+    assert_eq!(pick("lq.diagram", 0, "xlabel"), Control::Text);
     assert_eq!(pick("lq.plot", 0, "smooth"), Control::Toggle);
     assert_eq!(pick("lq.plot", 0, "mark"), Control::Mark);
     // `red` is a builtin -> a real stroke control...
@@ -323,4 +323,123 @@ fn the_add_argument_choice_outlives_the_inspector_that_made_it() {
     // not from the enclosing `Ui`, whose hash moves as the panel above it grows.
     assert_eq!(id, lilook_ui::add_argument_choice_id(call.id));
     assert_ne!(id, lilook_ui::add_argument_choice_id(call.id + 1));
+}
+
+/// The promise, over every parameter in the schema: **you never type the syntax
+/// for a type lilook already knows.**
+///
+/// Adding `title` used to land in a raw source box showing `none`, so a title had
+/// to be typed as `"Flux"` or `[Flux]` by hand -- while `xlabel` needed nothing,
+/// purely because its *current value* happened to be `[day]`. Every typed control
+/// fell back to that box when its parser did not recognise the value, and no
+/// parser recognised `none`: 140 of lilaq's 409 parameters accept `none`/`auto`
+/// and most of them default to one.
+///
+/// So this walks the whole schema and asserts, for each parameter at each of its
+/// sentinels, that the control is *not* the raw source editor -- either a typed
+/// control with an empty state, or the "set" affordance. And that merely rendering
+/// any of them emits nothing.
+#[test]
+fn no_parameter_makes_the_user_type_syntax_lilook_knows() {
+    let schema = schema();
+    let mut checked = 0;
+    let mut with_sentinels = 0;
+
+    for (fname, f) in schema.functions.iter() {
+        for p in &f.params {
+            if p.kind == "positional" {
+                continue;
+            }
+            checked += 1;
+            if p.sentinels.is_empty() {
+                continue;
+            }
+            with_sentinels += 1;
+            for s in &p.sentinels {
+                let control = lilook_ui::inspector::control_of(Some(p), Editability::Literal, s);
+                assert_ne!(
+                    control,
+                    Control::Source,
+                    "{fname}.{} at `{s}` would make the user type raw source",
+                    p.name
+                );
+                // Either a typed control that can show "empty", or the explicit
+                // "not set" row -- never a box to type syntax into.
+                assert!(
+                    matches!(
+                        control,
+                        Control::Unset
+                            | Control::Text
+                            | Control::Enum
+                            | Control::Mark
+                            | Control::Scale
+                    ),
+                    "{fname}.{} at `{s}` gave {control:?}, which cannot show an \
+                     unset value honestly",
+                    p.name
+                );
+                // Whatever `set` would write has to reparse. Reparsing is not
+                // enough on its own -- `()` parses and lilaq rejects it -- so
+                // `lilook-compile`'s `seeded_arguments_compile` compiles every one
+                // of these for real. This is the cheap half of that check.
+                if let Some(seeded) = lilook_ui::inspector::seed_for_test(Some(p), control) {
+                    assert!(
+                        lilook_core::check_expr(&seeded).is_ok(),
+                        "{fname}.{} seeds `{seeded}`, which does not reparse",
+                        p.name
+                    );
+                }
+            }
+        }
+    }
+    assert!(checked > 300, "only checked {checked} parameters");
+    assert!(
+        with_sentinels > 100,
+        "only {with_sentinels} parameters had sentinels; has the schema changed?"
+    );
+    eprintln!("{checked} parameters, {with_sentinels} of them with sentinels");
+}
+
+/// A value written as a string stays a string, and one written as content stays
+/// content. Reopening `title: "Flux"` as a text field is the fix for having to
+/// keep the quotes by hand -- but writing it back as `[Flux]` would silently
+/// change the shape of the user's source.
+#[test]
+fn words_are_written_back_in_the_shape_they_came_in() {
+    use lilook_ui::value::{parse_text, text_source, TextShape};
+
+    assert_eq!(
+        parse_text("[Flux]"),
+        Some((TextShape::Content, "Flux".into()))
+    );
+    assert_eq!(
+        parse_text("\"Flux\""),
+        Some((TextShape::Str, "Flux".into()))
+    );
+    assert_eq!(parse_text("[]"), Some((TextShape::Content, String::new())));
+    assert_eq!(parse_text("\"\""), Some((TextShape::Str, String::new())));
+    // Not words: leave these to the source editor.
+    assert_eq!(parse_text("none"), None);
+    assert_eq!(parse_text("lq.title[x]"), None);
+    assert_eq!(parse_text("\"a\" + \"b\""), None);
+
+    // Round trip, both shapes, including what needs escaping.
+    for (shape, text) in [
+        (TextShape::Content, "Flux"),
+        (TextShape::Content, "*bold* and $x^2$"),
+        (TextShape::Str, "Flux"),
+        (TextShape::Str, "he said \"no\""),
+        (TextShape::Str, "a\\b"),
+    ] {
+        let src = text_source(shape, text);
+        assert!(
+            lilook_core::check_expr(&src).is_ok(),
+            "{src:?} does not reparse"
+        );
+        assert_eq!(
+            parse_text(&src),
+            Some((shape, text.to_string())),
+            "{src:?} did not round trip"
+        );
+    }
 }

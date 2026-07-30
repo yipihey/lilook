@@ -2131,6 +2131,7 @@ dependencies = [
  "comemo",
  "lilook-core",
  "lilook-data",
+ "lilook-ui",
  "typst",
  "typst-kit",
  "typst-layout",
