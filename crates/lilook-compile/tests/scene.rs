@@ -413,3 +413,65 @@ fn a_meshs_field_is_recovered_row_major_over_y() {
     // Past the last cell there is no value, rather than a wrapped one.
     assert_eq!(scenes[0].series[0].field_at(15), None);
 }
+
+/// `lq.mesh` is a data helper, not a plot, whatever its name suggests.
+///
+/// It lives in lilaq's `math.typ`, evaluates a function over a grid and returns
+/// the field; it puts no ink on the page. Listing it among the mesh-shaped
+/// *series* made it a phantom: the idiomatic `#let z = lq.mesh(xs, ys, f)` fed
+/// to a colormesh showed **two** entries under one diagram, and the extra one
+/// reported a plausible "6x4 grid" because the probe read its first two slots --
+/// which happen to be the same axes. Plausible is the dangerous part; clicking it
+/// selected a call that draws nothing.
+#[test]
+fn the_mesh_helper_is_not_a_series() {
+    const SRC: &str = r#"#import "@preview/lilaq:0.6.0" as lq
+#set page(width: auto, height: auto, margin: 5pt)
+#let xs = lq.linspace(-2, 2, num: 6)
+#let ys = lq.linspace(-1, 1, num: 4)
+#let zs = lq.mesh(xs, ys, (x, y) => x * y)
+#lq.diagram(width: 6cm, height: 4cm, lq.colormesh(xs, ys, zs))
+"#;
+    let mut b = Backend::new(std::env::temp_dir(), "");
+    let doc = Document::new(SRC);
+    let mut hints = Hints::new();
+    let (render, scenes) = b.render_scenes(&doc, 1.0, &mut hints);
+    if skip(&render) {
+        return;
+    }
+    assert!(!render.failed(), "{:?}", render.diagnostics);
+
+    let mesh = doc
+        .calls()
+        .iter()
+        .find(|c| c.short_name() == "mesh")
+        .expect("the helper is still in the document");
+    assert!(!mesh.is_xy_series(), "a helper is not a series");
+
+    // One diagram, one thing drawn in it.
+    let figure = &doc.figures()[0];
+    assert_eq!(figure.series.len(), 1, "only the colormesh draws");
+    let drawn = doc
+        .calls()
+        .iter()
+        .find(|c| c.id == figure.series[0])
+        .unwrap();
+    assert_eq!(drawn.short_name(), "colormesh");
+
+    // And the field still arrives, since `lq.mesh` builds it the same way the
+    // probe reads it -- rows over y, columns over x.
+    let g = &scenes[0].series[0];
+    assert_eq!(g.grid, Some((6, 4)));
+    let z = g.channel("z").expect("the field");
+    let (xs, ys) = (g.channel("x").unwrap(), g.channel("y").unwrap());
+    for row in 0..4 {
+        for col in 0..6 {
+            let want = xs[col] * ys[row];
+            assert!(
+                (z[row * 6 + col] - want).abs() < 1e-12,
+                "({col},{row}): {} vs {want}",
+                z[row * 6 + col]
+            );
+        }
+    }
+}

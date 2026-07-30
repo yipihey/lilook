@@ -182,7 +182,6 @@ pub const XY_SERIES: &[&str] = &[
     "quiver",
     "colormesh",
     "contour",
-    "mesh",
     "fill-between",
     "hlines",
     "vlines",
@@ -207,9 +206,9 @@ pub const XY_SERIES: &[&str] = &[
 pub enum SeriesShape {
     /// Parallel arrays: one point per index. `plot`, `scatter`, `bar`, ...
     Points,
-    /// Grid axes, with a field over them in slot 2. `colormesh`, `contour`,
-    /// `mesh`: x has one value per column and y one per row, so there is no
-    /// pairing between them and no single point to pick up.
+    /// Grid axes, with a field over them in slot 2. `colormesh` and `contour`:
+    /// x has one value per column and y one per row, so there is no pairing
+    /// between them and no single point to pick up.
     Mesh,
     /// Every positional argument is *one line's* coordinate on a single axis:
     /// `hlines(1, 2, 3)` draws three horizontal lines. There is no second
@@ -241,7 +240,14 @@ pub enum Axis {
 }
 
 /// The mesh-shaped constructors. Their slots 0 and 1 are axes, not coordinates.
-const MESH_SERIES: &[&str] = &["colormesh", "contour", "mesh"];
+///
+/// Deliberately *not* `lq.mesh`, despite the name. That is a data helper in
+/// lilaq's `math.typ` -- it evaluates a function over a grid and returns the
+/// field, drawing nothing -- and listing it here made it a phantom series: a
+/// document doing the idiomatic `#let z = lq.mesh(xs, ys, f)` showed two entries
+/// under one diagram, the second reporting a plausible "6x4 grid" for a call
+/// that puts no ink on the page.
+const MESH_SERIES: &[&str] = &["colormesh", "contour"];
 
 /// The distribution constructors, and which axis carries their *position*.
 const DISTRIBUTION_SERIES: &[(&str, Axis)] = &[
