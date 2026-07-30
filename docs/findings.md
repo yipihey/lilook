@@ -1693,3 +1693,37 @@ array is passed through unchanged in that same shape. The array test uses a
 deliberately non-square grid -- 5 columns by 3 rows -- because a transposed
 convention there does not read the wrong number, it fails to compile, which is a
 much better failure than a plausible one.
+
+## A random walk of gestures found two defects on its first run
+
+2026-07-30. `random_intents_fully_undo` verifies, without a compiler, that any
+sequence of *intents* fully undone returns the buffer byte-for-byte. What it
+cannot check is whether the result was a document typst accepts -- and "it parses"
+has been mistaken for "it compiles" here repeatedly.
+
+`crates/lilook-web/tests/walk.rs` is the same idea one level up: random
+**gestures**, over every example in the gallery, recompiled after each one. Two
+properties, both previously violated by real code -- every intermediate state
+compiles, and undoing the walk restores the source byte-for-byte.
+
+It found two things immediately, neither of which any existing test could have:
+
+**A resized figure could exceed the GPU's maximum texture side.** Six resizes and
+a gallery example was 2196 px across, against a limit of 2048; `egui` panics on
+that rather than returning an error. The limit is real and low on mobile GPUs, and
+dragging a diagram bigger is an ordinary thing to do. The raster scale is now
+capped to what this machine's textures hold, recomputed from every render so it
+relaxes again when the figure shrinks, and an over-large render keeps the last
+good pixels instead of uploading.
+
+**`SetLimits` could write a negative bound onto a log axis** -- the very failure
+the log-pan work fixed a week earlier. That fix was correct but in the *caller*:
+the canvas pans through `AxisMap::shifted`, which cannot leave a log axis. A
+gesture is the editor's public vocabulary and arrives from three shells, so the
+guard belonged where the document is written. It does now, and a log axis keeps
+the limits it had rather than being handed an invented positive number.
+
+The methodological point is the second one. The obvious repair after the first
+failure was to teach the generator to pan through `shifted` like the canvas does
+-- which would have made the test pass and hidden the defect completely. A
+property test that only produces already-safe inputs is testing its own generator.

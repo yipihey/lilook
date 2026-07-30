@@ -9,7 +9,12 @@
 use lilook_core::render::{Diagnostic, Render, Severity};
 use lilook_core::scene::Scene;
 use lilook_core::{DataFile, Document, Intent, Schema};
-use lilook_ui::{Canvas, CanvasEvent, CanvasInput, Inspector, PageTexture, UiEvent};
+use lilook_ui::{Canvas, CanvasInput, Inspector, PageTexture, UiEvent};
+
+/// A gesture, as the canvas reports it. Re-exported because `handle_canvas` is
+/// the editor's public entry for one, and a shell should not have to depend on
+/// `lilook-ui` to name what it is passing.
+pub use lilook_ui::CanvasEvent;
 
 /// Re-rasterise when the view zoom has drifted this far from the resolution the
 /// current textures were produced at. Rendering is under a millisecond, but a
@@ -96,6 +101,10 @@ pub struct Editor {
     /// Held only to keep the textures alive; the canvas draws by id.
     textures: Vec<egui::TextureHandle>,
     pages: Vec<PageTexture>,
+    /// The finest scale this machine's textures can hold for the current page
+    /// size. Recomputed from every render, so it relaxes again when the figure
+    /// shrinks.
+    max_pixel_per_pt: f32,
     scenes: Vec<Scene>,
     /// Files the last compile read. Not derived from the source text: a path
     /// built by an expression, or one read only on some branch, is invisible to
@@ -179,6 +188,7 @@ impl Editor {
             canvas: Canvas::new(),
             textures: vec![],
             pages: vec![],
+            max_pixel_per_pt: MAX_PIXEL_PER_PT,
             scenes: vec![],
             data_files: vec![],
             diagnostics: vec![],
@@ -316,6 +326,28 @@ impl Editor {
         if render.failed() {
             return;
         }
+        // egui uploads a page as a single texture, and a texture wider than the
+        // GPU allows is a *panic inside egui*, not an error anyone can handle.
+        // Limits are real and low -- 2048 on some mobile GPUs -- and resizing a
+        // diagram past one is an ordinary thing to do with the frame handles.
+        //
+        // Found by the random gesture walk on its first run: six resizes and a
+        // gallery example was 2196 px across.
+        let widest = render
+            .pages
+            .iter()
+            .map(|p| p.size_pt.0.max(p.size_pt.1))
+            .fold(0.0f64, f64::max);
+        self.max_pixel_per_pt = match widest > 1.0 {
+            true => (ctx.input(|i| i.max_texture_side) as f64 / widest) as f32,
+            false => MAX_PIXEL_PER_PT,
+        };
+        if render.pixel_per_pt > self.max_pixel_per_pt {
+            // Keep the last good pixels, exactly as a failed compile does, and
+            // let `want_compile` ask again at a scale that fits -- `rendered_at`
+            // is deliberately left alone so it sees the difference.
+            return;
+        }
         self.scenes = scenes;
         self.rendered_at = render.pixel_per_pt;
         self.textures.clear();
@@ -341,7 +373,9 @@ impl Editor {
     /// Ask for a compile when the source changed, or when the view has zoomed
     /// far enough that the current pixels would show it.
     fn want_compile(&mut self, ctx: &egui::Context) {
-        let want = (ctx.pixels_per_point() * self.canvas.zoom()).min(MAX_PIXEL_PER_PT);
+        let want = (ctx.pixels_per_point() * self.canvas.zoom())
+            .min(MAX_PIXEL_PER_PT)
+            .min(self.max_pixel_per_pt);
         let stale_pixels = want > self.rendered_at * RESOLUTION_SLACK
             || want < self.rendered_at / RESOLUTION_SLACK;
         if self.dirty || (stale_pixels && !self.busy) {
@@ -771,7 +805,13 @@ impl Editor {
             })
     }
 
-    fn handle_canvas(&mut self, events: Vec<CanvasEvent>) {
+    /// Apply what the canvas reported: a gesture, in the editor's own vocabulary.
+    ///
+    /// Public because a gesture is the editor's interface and not an internal
+    /// step -- the same events reach it from the desktop window, the browser, and
+    /// a test driving a random walk over a corpus of figures without an `egui`
+    /// context in sight.
+    pub fn handle_canvas(&mut self, events: Vec<CanvasEvent>) {
         for e in events {
             match e {
                 CanvasEvent::Select(node) => self.selected = node,
@@ -789,7 +829,29 @@ impl Editor {
                     // and six decimal places writes `3e-9` as `0`. On a log axis
                     // that is a limit a pan reaches legitimately, and lilaq then
                     // refuses the figure -- "value must be strictly positive".
-                    for (param, (lo, hi)) in [("xlim", x), ("ylim", y)] {
+                    //
+                    // And the axis's own scale decides what is writable at all.
+                    // The canvas pans through `AxisMap::shifted`, which cannot
+                    // leave a log axis, but `SetLimits` is the editor's public
+                    // vocabulary and reaches it from three shells -- so the
+                    // check belongs here, where the document is written, not in
+                    // one of the callers. A log axis simply keeps the limits it
+                    // had rather than being given a made-up positive number: the
+                    // gesture overshot, and inventing a bound the user did not
+                    // ask for is worse than declining the one they did.
+                    let scales = self
+                        .scenes
+                        .iter()
+                        .find(|s| s.figure == figure)
+                        .map(|s| (s.transform.x.kind, s.transform.y.kind));
+                    for (param, (lo, hi), scale) in [
+                        ("xlim", x, scales.map(|s| s.0)),
+                        ("ylim", y, scales.map(|s| s.1)),
+                    ] {
+                        let logarithmic = scale == Some(lilook_core::AxisScale::Log);
+                        if logarithmic && (lo <= 0.0 || hi <= 0.0) {
+                            continue;
+                        }
                         let value = format!(
                             "({}, {})",
                             lilook_core::gesture_num(lo),
