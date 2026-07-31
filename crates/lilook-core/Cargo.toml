@@ -6,6 +6,7 @@ description = "Document model, intents and history for editing lilaq figures in 
 license = "MIT"
 
 [dependencies]
+typstyle-core = { workspace = true }
 typst-syntax = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

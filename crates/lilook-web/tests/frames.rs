@@ -1981,3 +1981,56 @@ fn a_title_and_a_label_can_be_nudged_and_keep_their_text() {
     app.editor_mut().doc.undo();
     assert_eq!(app.editor().text(), original);
 }
+
+/// Tidy: typst's own pretty-printer, as one undoable edit.
+///
+/// A figure edited by pointing at it drifts — a gesture appends an argument
+/// wherever the call happens to end. `typstyle-core` is what tinymist uses,
+/// linked as a library rather than run as a process, so this works in a browser
+/// tab too.
+#[test]
+fn tidying_reshapes_the_source_without_changing_the_figure() {
+    let Some(mut app) = app() else { return };
+    app.load(1);
+    run(&mut app, 3);
+    assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+    let before = app.editor().scenes()[0].clone();
+
+    // A figure written the way one looks after a long edit: valid, and unreadable.
+    let squashed = "#import \"@preview/lilaq:0.6.0\" as lq\n#set page(width: auto, height: auto, margin: 6pt)\n#lq.diagram(width:9cm,height:5cm,xlabel:[dose (mg)],ylabel:[response],lq.plot((0,1,2,3,4,5),(0.2,1.1,2.4,2.9,3.6,3.8),stroke:1pt+red),lq.plot((0,1,2,3,4,5),(0.1,0.6,1.4,2.6,3.9,4.4),stroke:1pt+blue))\n"
+        .to_string();
+    app.editor_mut().open(squashed.clone());
+    app.editor_mut().mark_dirty();
+    run(&mut app, 3);
+    assert!(errors(&app).is_empty(), "the squashed form still compiles");
+
+    app.editor_mut().tidy();
+    app.editor_mut().mark_dirty();
+    run(&mut app, 3);
+    assert!(errors(&app).is_empty(), "after tidying: {:?}", errors(&app));
+
+    let after = app.editor().text().to_string();
+    assert!(after.lines().count() > 5, "it got its shape back: {after}");
+    assert_ne!(after, squashed);
+
+    // The figure is the same figure: same series, same axes.
+    let scene = app.editor().scenes()[0].clone();
+    assert_eq!(scene.series.len(), before.series.len());
+    assert!((scene.transform.x.min - before.transform.x.min).abs() < 1e-9);
+
+    // One undo step.
+    app.editor_mut().doc.undo();
+    assert_eq!(app.editor().text(), squashed);
+}
+
+/// A buffer that does not parse is left alone rather than mangled.
+#[test]
+fn tidying_declines_what_it_cannot_parse() {
+    let Some(mut app) = app() else { return };
+    app.load(1);
+    run(&mut app, 3);
+    app.editor_mut().open("#lq.diagram(lq.plot((1, 2), (1, 2)");
+    let before = app.editor().text().to_string();
+    app.editor_mut().tidy();
+    assert_eq!(app.editor().text(), before, "left alone");
+}

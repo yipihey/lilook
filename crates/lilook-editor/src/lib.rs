@@ -587,6 +587,17 @@ impl Editor {
                 }
             });
             if ui
+                .button("⇥")
+                .on_hover_text(
+                    "Tidy the source. A gesture appends an argument wherever the \
+                     call happens to end, so a figure edited by pointing at it \
+                     drifts out of shape.",
+                )
+                .clicked()
+            {
+                self.tidy();
+            }
+            if ui
                 .button("⧉")
                 .on_hover_text("copy the Typst source to the clipboard")
                 .clicked()

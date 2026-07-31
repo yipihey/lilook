@@ -1809,6 +1809,39 @@ impl Session {
         out
     }
 
+    /// Tidy the source: typst's own pretty-printer, as one undoable edit.
+    ///
+    /// A figure written by hand drifts -- and one written by *lilook* drifts
+    /// faster, because a gesture appends an argument wherever the call happens to
+    /// end. `typstyle-core` is the formatter tinymist uses, linked as a library
+    /// rather than run as a process, so this works in a browser tab too.
+    ///
+    /// A no-op when the formatter declines. It parses what it is given, and a
+    /// buffer mid-edit is often not valid typst; refusing to touch it is right.
+    pub fn tidy(&mut self) {
+        let text = self.doc.text().to_string();
+        let styler = typstyle_core::Typstyle::default();
+        let formatted = styler.format_text(&text).render();
+        let Ok(out) = formatted else {
+            self.status = "cannot tidy this yet -- it does not parse".into();
+            return;
+        };
+        if out == text {
+            self.status = "already tidy".into();
+            return;
+        }
+        // As a minimal replacement, so an anchor into the document survives and
+        // the undo step is the difference rather than the whole file.
+        let Some((range, value)) = crate::minimal_replacement(&text, &out) else {
+            return;
+        };
+        self.doc.begin("tidy");
+        self.apply(Intent::ReplaceRange { range, value });
+        self.doc.commit();
+        self.status = "tidied".into();
+        self.dirty = true;
+    }
+
     /// Offset a title or an axis label, in points.
     ///
     /// These have no named places the way a legend does, so the drag becomes
