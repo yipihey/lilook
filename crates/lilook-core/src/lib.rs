@@ -10,16 +10,18 @@ pub mod compile;
 pub mod data;
 pub mod doc;
 pub mod edit;
+pub mod events;
 pub mod intent;
 pub mod render;
 pub mod scene;
 pub mod schema;
+pub mod session;
 
 pub use compile::{AxisMap, AxisScale, CliCompiler, Compiler, Hit, Transform};
 pub use data::{
     binding_name_for, binding_source, column_source, columns_of, csv_binding_source,
     csv_column_source, data_array_source, data_num, gesture_num, is_plain_identifier,
-    string_literal, Answer, Columns, DataFile, FileRoot, SourceKind, TooManyValues,
+    split_numeric, string_literal, Answer, Columns, DataFile, FileRoot, SourceKind, TooManyValues,
     MAX_EMBEDDED_VALUES,
 };
 pub use doc::{
@@ -27,7 +29,9 @@ pub use doc::{
     SeriesShape, SetRule, Theme, XY_SERIES,
 };
 pub use edit::{minimal_replacement, Anchor, AppliedEdit, CoalesceKey, History, Transaction};
+pub use events::{CanvasEvent, UiEvent};
 pub use intent::Intent;
 pub use render::{Diagnostic, Image, Page, Render, Severity};
 pub use scene::{Bounds, Scene, SceneHit, SeriesGeom};
 pub use schema::{ElementSchema, FunctionSchema, ParamSchema, Schema};
+pub use session::{Clip, Dropped, Link, Requests, Session, SlotSource, IDLE_COMMIT_SECONDS};

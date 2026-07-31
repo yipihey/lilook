@@ -1094,3 +1094,89 @@ fn a_signed_number_is_editable_as_a_number() {
         "place(x, -y) is not literal"
     );
 }
+
+/// A frontend with no toolkit at all can drive the whole editing vocabulary.
+///
+/// This is the assertion the Session extraction exists for, and it is in
+/// `lilook-core`'s own test suite deliberately: this crate cannot depend on
+/// egui, so if any of it compiles here, none of it needed a GUI. Swift through
+/// the FFI and the MCP server reach exactly this surface.
+#[test]
+fn a_session_is_driveable_without_a_gui() {
+    use lilook_core::{CanvasEvent, Session};
+
+    const SRC: &str = r#"#import "@preview/lilaq:0.6.0" as lq
+#set page(width: auto, height: auto, margin: 5pt)
+// a comment that must survive every operation below
+#lq.diagram(width: 6cm, height: 4cm, lq.plot((0, 1, 2), (0, 1, 4)))
+"#;
+    let schema = Schema::from_json(include_str!("../../../assets/lilaq-0.6.0.schema.json"))
+        .expect("bundled schema");
+    let mut s = Session::new(SRC, schema);
+    let series = s
+        .doc
+        .calls()
+        .iter()
+        .find(|c| c.is_xy_series())
+        .map(|c| c.id)
+        .expect("a series");
+    let figure = s
+        .doc
+        .calls()
+        .iter()
+        .find(|c| c.short_name() == "diagram")
+        .map(|c| c.id)
+        .expect("the diagram");
+
+    // A gesture, in the same vocabulary the canvas speaks.
+    s.handle_canvas(vec![
+        CanvasEvent::Begin,
+        CanvasEvent::MovePoint {
+            node: series,
+            index: 1,
+            to: (1.5, 2.5),
+        },
+        CanvasEvent::Commit,
+    ]);
+    assert!(s.doc.text().contains("1.5"), "{}", s.doc.text());
+
+    // A resize.
+    s.handle_canvas(vec![
+        CanvasEvent::Begin,
+        CanvasEvent::SetSize {
+            figure,
+            width_pt: Some(200.0),
+            height_pt: None,
+        },
+        CanvasEvent::Commit,
+    ]);
+
+    // Themes: apply, fork, rename -- none of which existed outside the GUI crate
+    // before the split.
+    s.set_theme(Some("ocean"));
+    assert_eq!(s.active_theme().map(|t| t.name), Some("ocean".into()));
+    assert!(s.fork_theme("house"));
+    assert!(s.doc.text().contains("show: lq.theme.ocean"));
+    assert!(s.rename_theme("press"));
+    assert!(s.doc.text().contains("#show: press"));
+
+    // Selecting and duplicating a series.
+    s.selected = series;
+    s.duplicate_selection();
+    assert_eq!(
+        s.doc.calls().iter().filter(|c| c.is_xy_series()).count(),
+        2,
+        "duplicate did not add a series"
+    );
+
+    // Starting a link is a *request* the frontend fulfils -- the session never
+    // reads a file itself, which is what keeps it portable.
+    s.begin_link("run.csv");
+    assert!(s.queued_query.is_some(), "a link asks for a query");
+
+    // And every step undoes byte-for-byte.
+    while s.doc.history_depth().0 > 0 {
+        s.doc.undo();
+    }
+    assert_eq!(s.doc.text(), SRC, "the session did not fully undo");
+}

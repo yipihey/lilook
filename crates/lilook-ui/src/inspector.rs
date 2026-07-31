@@ -8,6 +8,8 @@
 //! form of "not specialised yet": the value is still editable, and one that
 //! would not reparse is refused before it reaches the buffer.
 
+pub use lilook_core::{SlotSource, UiEvent};
+
 use lilook_core::schema::{FunctionSchema, ParamSchema};
 use lilook_core::{CallSite, Editability, NamedArg};
 
@@ -16,36 +18,6 @@ use crate::value::{
     split_numeric, stroke_source, text_source, Stroke, TextShape, DASH_NAMES, H_ALIGN, MARK_NAMES,
     SCALE_NAMES, V_ALIGN,
 };
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum UiEvent {
-    /// Pointer went down on a continuous control: open a coalescing transaction.
-    Begin { node: usize, param: String },
-    Set {
-        node: usize,
-        param: String,
-        value: String,
-    },
-    /// Pointer released: commit, making the whole drag one undo step.
-    Commit,
-    /// Add an argument the call does not have yet.
-    Insert {
-        node: usize,
-        param: String,
-        value: String,
-    },
-    /// Remove an argument, returning the parameter to its default.
-    Remove { node: usize, param: String },
-    /// Write the evaluated data of a computed slot into the source, so its
-    /// points become editable.
-    Materialize { node: usize, index: usize },
-    /// User asked to jump to the `#let` a value is bound to.
-    GoToBinding {
-        node: usize,
-        param: String,
-        name: String,
-    },
-}
 
 /// Which control a parameter got, and why. Surfaced in the UI so the long tail
 /// is visibly the long tail rather than silently broken.
@@ -288,23 +260,6 @@ pub struct Context<'a> {
     /// rather than per call because x and y link independently: x can come from
     /// one file's column and y from another's.
     pub slot_sources: &'a [SlotSource],
-}
-
-/// What a data slot reads, as far as the document says.
-///
-/// Read out of the source rather than recorded anywhere: the slot expression
-/// names a binding, and the binding says `csv("run.csv")`. So provenance cannot
-/// go stale, cannot lie after a copy into another document, and needs no format
-/// of lilook's own -- the compiler remains the only thing that decides what a
-/// document means.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SlotSource {
-    /// The file this slot's data is read from, if it is read from one.
-    pub file: Option<String>,
-    /// The file is named but was not there at the last compile.
-    pub missing: bool,
-    /// The file changed since the last compile and has not been reread.
-    pub stale: bool,
 }
 
 pub struct Inspector<'a> {

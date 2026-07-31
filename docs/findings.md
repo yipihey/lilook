@@ -1772,5 +1772,23 @@ core beside the schema. Then Swift and MCP get the vocabulary the GUI already
 has, and "the editor never touches the compiler" gains a sibling: "the panels
 never touch the document."
 
-Not started. Recorded because the measurement is the part that would otherwise
-have to be redone.
+**Done**, the same day. `lilook-editor` went from 4,560 lines and 62 methods to
+1,974 and 18; `Session` in `lilook-core` holds 48 methods of which **none**
+mention egui. The GUI-free share of the codebase went from 58% to 69%.
+
+Three things the move turned up that the audit had not predicted:
+
+- **`CanvasEvent` and `UiEvent` had to move too.** They are the gesture
+  vocabulary -- plain data about call sites and data coordinates -- and they were
+  sitting in the egui crate purely because that is where the widgets that emit
+  them live. A drag is a drag whether a mouse or an agent asked for it.
+- **`SlotSource` and `split_numeric` were likewise misfiled**: provenance and
+  value parsing, neither of them a widget.
+- **`Deref` earns its keep here.** `Editor` derefs to `Session`, so every shell
+  and every test kept working unchanged. The one place it does not work is
+  `self.canvas.ui(.., &self.scenes)`, where the deref borrows the whole editor
+  and collides with the mutable canvas borrow; naming `self.session.scenes`
+  keeps the two disjoint. That is the only site in the codebase.
+
+The receipt was the compiler's: after the move, `lilook-editor` no longer needed
+to import `Document` at all.

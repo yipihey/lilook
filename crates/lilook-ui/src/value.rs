@@ -7,6 +7,8 @@
 //! `stroke: 1pt + red.darken(20%)` both fall through to the source editor, and
 //! that is correct behaviour rather than a gap.
 
+pub use lilook_core::split_numeric;
+
 use egui::Color32;
 
 /// Typst's named colours, with the values typst actually uses. `red` is not
@@ -59,33 +61,6 @@ pub const DASH_NAMES: &[&str] = &[
 
 pub const H_ALIGN: &[&str] = &["left", "center", "right", "start", "end"];
 pub const V_ALIGN: &[&str] = &["top", "horizon", "bottom"];
-
-/// Split `8cm` into (8.0, "cm"); returns None when the value is not a bare
-/// numeric literal (`calc.pi * 2`, a binding, ...).
-pub fn split_numeric(s: &str) -> Option<(f64, String)> {
-    let s = s.trim();
-    // An exponent must not be read as the start of a unit: `1e-4` is a number,
-    // `1em` is a length.
-    let bytes = s.as_bytes();
-    let mut cut = s.len();
-    for (i, c) in s.char_indices() {
-        if c.is_ascii_alphabetic() || c == '%' {
-            let is_exponent = (c == 'e' || c == 'E')
-                && i + 1 < s.len()
-                && matches!(bytes[i + 1], b'0'..=b'9' | b'+' | b'-')
-                && s[..i].parse::<f64>().is_ok();
-            if !is_exponent {
-                cut = i;
-                break;
-            }
-        }
-    }
-    let (num, unit) = s.split_at(cut);
-    num.trim()
-        .parse::<f64>()
-        .ok()
-        .map(|v| (v, unit.to_string()))
-}
 
 /// Format a number back into source: no trailing zeros, no exponent soup.
 pub fn num(v: f64) -> String {

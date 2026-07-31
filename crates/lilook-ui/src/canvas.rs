@@ -15,6 +15,8 @@
 //! another thread a compile behind the pointer, so integrating against it would
 //! feed the lag back into the gesture and make a drag stutter or run away.
 
+pub use lilook_core::CanvasEvent;
+
 use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use lilook_core::compile::AxisMap;
 use lilook_core::scene::{Scene, SceneHit};
@@ -28,47 +30,6 @@ pub struct PageTexture {
     /// Page size in typographic points, *not* pixels: the canvas works in pt so
     /// that a re-render at a different resolution changes nothing here.
     pub size_pt: (f64, f64),
-}
-
-/// What the canvas asks the shell to do. Mapping these onto intents and
-/// transactions is the shell's job, exactly as with `UiEvent`.
-#[derive(Debug, Clone, PartialEq)]
-pub enum CanvasEvent {
-    /// A call site was clicked: a series, or a diagram's background.
-    Select(usize),
-    /// A gesture started: open a transaction.
-    Begin,
-    /// It finished: commit, so the whole gesture is one undo step.
-    Commit,
-    /// New axis limits for a diagram, from a pan or a zoom.
-    SetLimits {
-        figure: usize,
-        x: (f64, f64),
-        y: (f64, f64),
-    },
-    /// A data point was dragged to a new position.
-    MovePoint {
-        node: usize,
-        index: usize,
-        to: (f64, f64),
-    },
-    /// A rule line was dragged. Its coordinate is a whole positional argument,
-    /// not an element of an array, so this is a different edit from a point move.
-    MoveRule {
-        node: usize,
-        /// Which positional argument -- `hlines(1, 2, 3)` has three.
-        slot: usize,
-        to: f64,
-    },
-    /// The diagram was resized by its frame. Sizes are in typographic points --
-    /// `width` and `height` on `lq.diagram` *are* the data area's dimensions,
-    /// which is what makes dragging the axis frame mean what it looks like it
-    /// means. `None` is an axis the gesture did not touch.
-    SetSize {
-        figure: usize,
-        width_pt: Option<f64>,
-        height_pt: Option<f64>,
-    },
 }
 
 /// Which edge of the frame is being dragged.
