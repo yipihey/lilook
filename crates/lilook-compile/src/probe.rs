@@ -616,6 +616,21 @@ fn axis(
         return None;
     }
     let origin = p0 - f(v0) * scale;
+
+    // The fit came from two probes; the third tests it.
+    //
+    // Without this the choice is a coin flip between the only two scales lilook
+    // knows, and lilaq ships more than two. A **symlog** axis bends and is
+    // positive, so it fitted "log" and the transform was quietly wrong -- pans
+    // and drags wrote incorrect limits with no error anywhere. Declining is the
+    // honest answer: `Scene::numeric` then reports the axis as unusable in data
+    // space and the gestures fall back to moving the view, exactly as they do for
+    // a datetime axis.
+    let predicted = origin + f(vm) * scale;
+    if (predicted - pm).abs() > (p1 - p0).abs() * 0.02 {
+        return None;
+    }
+
     let mut map = AxisMap {
         origin,
         scale,
@@ -641,7 +656,12 @@ pub fn scenes(doc: &PagedDocument, injection: &Injection) -> Vec<Scene> {
         // still give the frame -- so the diagram can be drawn, selected and
         // resized. `numeric: (false, false)` is what stops anything asking an
         // identity transform for a data coordinate it cannot supply.
-        if let (Some(r0), Some(r1), None) = (get("r0"), get("r1"), get("d0")) {
+        // A frame with no usable data transform: the diagram can still be drawn,
+        // selected and resized, and `numeric: (false, false)` stops anything
+        // asking an identity transform for a data coordinate it cannot supply.
+        // Reached two ways -- no scale probes at all, and probes whose fit no
+        // scale lilook knows reproduces (a symlog or a custom `lq.scale`).
+        let frame_only = |raw: &mut Raw, r0: (usize, f64, f64), r1: (usize, f64, f64)| {
             let flat = AxisMap {
                 origin: 0.0,
                 scale: 1.0,
@@ -650,7 +670,7 @@ pub fn scenes(doc: &PagedDocument, injection: &Injection) -> Vec<Scene> {
                 kind: AxisScale::Linear,
             };
             let series = raw.series.remove(&figure).unwrap_or_default();
-            out.push(Scene {
+            Scene {
                 figure,
                 page: r0.0,
                 area: (
@@ -662,7 +682,10 @@ pub fn scenes(doc: &PagedDocument, injection: &Injection) -> Vec<Scene> {
                 transform: Transform { x: flat, y: flat },
                 numeric: (false, false),
                 series,
-            });
+            }
+        };
+        if let (Some(r0), Some(r1), None) = (get("r0"), get("r1"), get("d0")) {
+            out.push(frame_only(&mut raw, r0, r1));
             continue;
         }
         let (Some(r0), Some(r1), Some(d0), Some(d1), Some(dm)) =
@@ -676,6 +699,7 @@ pub fn scenes(doc: &PagedDocument, injection: &Injection) -> Vec<Scene> {
             (dm.1, dm.2),
             data,
         ) else {
+            out.push(frame_only(&mut raw, r0, r1));
             continue;
         };
         let mut series = raw.series.get(&figure).cloned().unwrap_or_default();
