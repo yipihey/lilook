@@ -1914,3 +1914,39 @@ which diagram pairs a log scale with a non-positive limit. That is more robust
 than span-following -- it survives lilaq moving its assertions -- and it uses the
 thing lilook has that a text-only language server does not: a parsed document and
 a recovered scene beside the error.
+
+## An error with no location can be found by removing things: ~4 ms a variant
+
+2026-07-31. The obvious consequence of the previous finding was that lilook would
+have to guess where a spanless error came from, by matching its message. It does
+not have to guess. It can ask the compiler.
+
+Remove one argument from a scratch copy, compile, and see whether the error
+survives; the removal that clears it names the culprit. Delta debugging, on
+documents small enough that it is simply affordable:
+
+| | |
+| --- | --- |
+| first compile (failing) | 66 ms |
+| one variant, warm | **4.0 ms** |
+| 9 variants | 36 ms |
+
+Cheaper than the first compile, because a failing compile stops early and comemo
+has already cached everything that did not change.
+
+Two properties make this better than matching on message text:
+
+- **It produces the byte range the diagnostic was missing**, in the user's own
+  buffer. `value must be strictly positive` -- which arrives with no span at all
+  -- comes back as ``caused by `yscale: "log"` (bytes 119..124)`` and ``caused by
+  `ylim: (-1, 100)` (bytes 132..141)``.
+- **It is evidence, not a guess.** The claim is falsifiable and was falsified: the
+  document without this argument does not have this error. It survives lilaq
+  rewording anything, because it never reads the message except to compare it
+  with itself.
+
+Two things the tests caught rather than review. An error that needs *two* causes
+-- a log scale and a negative limit -- is cleared by removing either, so both are
+reported; naming one would be arbitrary. And `locate` must first confirm the
+error is present at all, or an error nobody had is "cleared" by every removal and
+the whole document is indicted.

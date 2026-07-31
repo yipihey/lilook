@@ -285,6 +285,45 @@ pub struct SetRule {
     pub document_level: bool,
 }
 
+/// What a range of source *is*, for a frontend to colour.
+///
+/// Deliberately about meaning rather than syntax: `Series(i)` is not a token
+/// kind any parser reports, but it is the one that lets a source pane show a
+/// curve's own colour beside the line that drew it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Token {
+    Comment,
+    Str,
+    Number,
+    /// `#import`, `#let`, `#show`, `#set` and the rest.
+    Keyword,
+    /// A call that draws a series, and which one it is in its diagram.
+    Series(usize),
+    /// Any other function call.
+    Call,
+    /// A name bound by `#let`.
+    Binding,
+}
+
+/// What sits at a byte offset in the source.
+///
+/// Deliberately small and plain: a frontend asks where the caret is and gets
+/// back enough to know what to offer, without a parse of its own.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Cursor {
+    /// The innermost call containing the offset.
+    pub call: Option<usize>,
+    /// The named argument it is inside, if any.
+    pub argument: Option<String>,
+    /// True when the caret is on the *name* rather than the value -- so a
+    /// completion offers parameters, not values.
+    pub on_name: bool,
+    /// The positional slot it is inside, if any.
+    pub slot: Option<usize>,
+    /// Inside a string literal, where nothing should be offered.
+    pub in_string: bool,
+}
+
 /// A theme applied to the document: `#show: lq.theme.ocean`.
 ///
 /// lilaq's themes are *show rules*, not objects, which is why lilook needs no
@@ -540,6 +579,93 @@ impl Document {
                 let head = rhs.split("=>").next().unwrap_or("");
                 rhs.contains("=>") && !head.contains(',') && head.len() < 40
             })
+    }
+
+    /// The document, as coloured spans.
+    ///
+    /// Data, not colours: the core says *what* each range is and a frontend
+    /// decides how it looks, which is what lets egui, SwiftUI and a terminal
+    /// agree about a document without agreeing about a palette.
+    ///
+    /// Spans are non-overlapping and in order, so a renderer can walk them
+    /// straight into a layout without sorting or nesting.
+    pub fn spans(&self) -> Vec<(Range<usize>, Token)> {
+        let mut out: Vec<(Range<usize>, Token)> = vec![];
+        collect_tokens(&LinkedNode::new(&self.root), &mut out);
+
+        // A series call is tinted by the colour it draws, so its *ordinal within
+        // its diagram* has to travel with it -- that is what indexes the cycle.
+        for fig in self.figures() {
+            for (i, id) in fig.series.iter().enumerate() {
+                let Some(call) = self.call(*id) else { continue };
+                // The callee, not the whole call: colouring the arguments too
+                // would drown out the literals inside them.
+                let head =
+                    call.range.start..call.range.start + call.callee.len().min(call.range.len());
+                out.retain(|(r, _)| r.start < head.start || r.start >= head.end);
+                out.push((head, Token::Series(i)));
+            }
+        }
+        out.sort_by_key(|(r, _)| r.start);
+        out.dedup_by_key(|(r, _)| r.start);
+        out
+    }
+
+    /// What is at this byte offset.
+    ///
+    /// The second addressing axis. Everything lilook does today is *node*
+    /// addressed -- an operation takes a call-site id -- but every question a
+    /// source pane asks is *position* addressed: what may I write here, what is
+    /// this, what did it resolve to. Both have to exist.
+    ///
+    /// The innermost call wins, so a cursor inside `lq.diagram(lq.plot(..))`
+    /// names the plot, which is what a human pointing at it would say.
+    pub fn at(&self, offset: usize) -> Cursor {
+        let call = self
+            .calls
+            .iter()
+            .filter(|c| c.range.contains(&offset))
+            // Innermost: the shortest containing range.
+            .min_by_key(|c| c.range.end - c.range.start);
+        let Some(call) = call else {
+            return Cursor::default();
+        };
+        let mut cursor = Cursor {
+            call: Some(call.id),
+            ..Cursor::default()
+        };
+        // Inside a string literal nothing may be offered: the user is writing
+        // words, and a parameter list dropped into the middle of them is noise.
+        cursor.in_string = self.in_string_literal(offset);
+        for arg in &call.named {
+            if arg.value.contains(&offset) {
+                cursor.argument = Some(arg.name.clone());
+                return cursor;
+            }
+        }
+        for (i, slot) in call.positional.iter().enumerate() {
+            if slot.range.contains(&offset) {
+                cursor.slot = Some(i);
+                return cursor;
+            }
+        }
+        // Inside the call but inside none of its arguments: between them, or in
+        // the whitespace after a comma. That is where a *name* goes, so this is
+        // where a completion offers parameters.
+        cursor.on_name = true;
+        cursor
+    }
+
+    /// Is this offset inside a string literal?
+    fn in_string_literal(&self, offset: usize) -> bool {
+        let mut node = LinkedNode::new(&self.root).leaf_at(offset, typst_syntax::Side::Before);
+        while let Some(n) = node {
+            if n.kind() == SyntaxKind::Str {
+                return true;
+            }
+            node = n.parent().cloned();
+        }
+        false
     }
 
     /// Is this call drawn against an axis of its own rather than the diagram's?
@@ -1385,5 +1511,60 @@ fn collect(
     }
     for child in node.children() {
         collect(&child, text, out, id, generator, parent);
+    }
+}
+
+/// Walk the tree once, emitting a span for anything worth colouring.
+fn collect_tokens(node: &LinkedNode, out: &mut Vec<(Range<usize>, Token)>) {
+    let token = match node.kind() {
+        SyntaxKind::LineComment | SyntaxKind::BlockComment => Some(Token::Comment),
+        SyntaxKind::Str => Some(Token::Str),
+        SyntaxKind::Int | SyntaxKind::Float | SyntaxKind::Numeric => Some(Token::Number),
+        // The hash belongs with the keyword it introduces: `#let` reads as one
+        // word, and colouring only the `let` looks like a mistake.
+        SyntaxKind::Hash
+        | SyntaxKind::Let
+        | SyntaxKind::Show
+        | SyntaxKind::Set
+        | SyntaxKind::Import
+        | SyntaxKind::Include
+        | SyntaxKind::If
+        | SyntaxKind::Else
+        | SyntaxKind::For
+        | SyntaxKind::While
+        | SyntaxKind::Return => Some(Token::Keyword),
+        _ => None,
+    };
+    if let Some(t) = token {
+        out.push((node.range(), t));
+        // A comment or a string has nothing inside it worth colouring
+        // separately, and descending would split it.
+        if matches!(t, Token::Comment | Token::Str) {
+            return;
+        }
+    }
+    // The name a `#let` binds, so it reads as a definition rather than as any
+    // other identifier.
+    if node.kind() == SyntaxKind::LetBinding {
+        if let Some(name) = node
+            .children()
+            .find(|c| matches!(c.kind(), SyntaxKind::Ident | SyntaxKind::Closure))
+        {
+            let ident = match name.kind() {
+                SyntaxKind::Closure => name.children().find(|c| c.kind() == SyntaxKind::Ident),
+                _ => Some(name),
+            };
+            if let Some(i) = ident {
+                out.push((i.range(), Token::Binding));
+            }
+        }
+    }
+    if node.kind() == SyntaxKind::FuncCall {
+        if let Some(callee) = node.children().next() {
+            out.push((callee.range(), Token::Call));
+        }
+    }
+    for child in node.children() {
+        collect_tokens(&child, out);
     }
 }

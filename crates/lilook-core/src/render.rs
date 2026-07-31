@@ -64,3 +64,25 @@ impl Render {
             .filter(|d| d.severity == Severity::Error)
     }
 }
+
+/// What in the document is responsible for a diagnostic that names no location.
+///
+/// lilaq validates inside its own package, so four of the six commonest failures
+/// arrive with no span at all -- see `docs/findings.md`. The compiler can still
+/// answer the question, just not by being asked directly: remove one thing, see
+/// whether the error survives, and the removal that clears it names the culprit.
+///
+/// At ~4 ms a variant that is affordable on demand, and it produces the byte
+/// range the diagnostic was missing. Blame is *evidence*, not a guess: the
+/// document without this argument does not have this error.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Blame {
+    /// The call site involved.
+    pub node: usize,
+    /// The named argument, when removing one argument was enough.
+    pub argument: Option<String>,
+    /// Where to point in the user's own buffer.
+    pub range: std::ops::Range<usize>,
+    /// What the user would call it.
+    pub label: String,
+}

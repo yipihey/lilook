@@ -1180,3 +1180,61 @@ fn a_session_is_driveable_without_a_gui() {
     }
     assert_eq!(s.doc.text(), SRC, "the session did not fully undo");
 }
+
+/// Every byte offset resolves to the call a human would name.
+///
+/// The second addressing axis. Everything else lilook does takes a call-site id;
+/// every question a source pane asks is at a caret. The innermost call wins, so
+/// a cursor inside `lq.diagram(lq.plot(..))` names the plot.
+#[test]
+fn a_byte_offset_resolves_to_the_call_around_it() {
+    const SRC: &str = r#"#import "@preview/lilaq:0.6.0" as lq
+#lq.diagram(width: 6cm, title: "a plot", lq.plot((1, 2), (3, 4)))
+"#;
+    let doc = Document::new(SRC);
+    let id = |name: &str| {
+        doc.calls()
+            .iter()
+            .find(|c| c.short_name() == name)
+            .map(|c| c.id)
+            .unwrap_or_else(|| panic!("no {name}"))
+    };
+    let (diagram, plot) = (id("diagram"), id("plot"));
+    let at = |needle: &str| SRC.find(needle).unwrap_or_else(|| panic!("no {needle:?}"));
+
+    // Outside any call.
+    assert_eq!(doc.at(0).call, None, "the import line is not a call");
+
+    // Inside the diagram, on a named argument's value.
+    let c = doc.at(at("6cm") + 1);
+    assert_eq!(c.call, Some(diagram));
+    assert_eq!(c.argument.as_deref(), Some("width"));
+    assert!(!c.on_name && c.slot.is_none());
+
+    // Between arguments is where a *name* goes.
+    let c = doc.at(at("title") - 1);
+    assert_eq!(c.call, Some(diagram));
+    assert!(
+        c.on_name,
+        "between arguments, a completion offers parameters"
+    );
+
+    // Inside a string literal nothing should be offered.
+    let c = doc.at(at("a plot") + 2);
+    assert!(c.in_string, "inside a string, offer nothing");
+
+    // The innermost call wins, and its positional slots are addressable.
+    let c = doc.at(at("(1, 2)") + 2);
+    assert_eq!(c.call, Some(plot), "the plot, not the diagram around it");
+    assert_eq!(c.slot, Some(0));
+    let c = doc.at(at("(3, 4)") + 2);
+    assert_eq!(c.call, Some(plot));
+    assert_eq!(c.slot, Some(1));
+
+    // And it never panics, at any offset in the file or one past the end.
+    for i in 0..=SRC.len() {
+        if SRC.is_char_boundary(i) {
+            let _ = doc.at(i);
+        }
+    }
+}

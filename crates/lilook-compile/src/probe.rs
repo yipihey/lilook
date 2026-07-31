@@ -62,6 +62,48 @@ const FALLBACK_BOUNDS: Bounds = Bounds {
 pub struct Injection {
     /// diagram call site -> the data coordinates its scale probes were given.
     pub scale_probes: HashMap<usize, (f64, f64, f64, f64)>,
+    /// Every splice, as `(offset in the *user's* buffer, bytes inserted)`.
+    ///
+    /// Kept so a diagnostic's byte range can be carried back. typst reports
+    /// spans against the buffer it compiled, which is the derived one, so an
+    /// error after the first diagram is shifted by however much was injected
+    /// before it -- a 200-byte file reporting an error at byte 781.
+    pub splices: Vec<(usize, usize)>,
+}
+
+impl Injection {
+    /// Carry an offset in the derived buffer back to the user's buffer.
+    ///
+    /// `None` when it lands *inside* injected text, which has no counterpart in
+    /// what the user wrote. Declining is the right answer there: no range at all
+    /// is honest, and a wrong one is worse than none.
+    pub fn to_original(&self, derived: usize) -> Option<usize> {
+        let mut splices = self.splices.clone();
+        splices.sort_unstable();
+        let mut shift = 0usize;
+        for (at, len) in splices {
+            if derived < at + shift {
+                break;
+            }
+            if derived < at + shift + len {
+                return None;
+            }
+            shift += len;
+        }
+        derived.checked_sub(shift)
+    }
+
+    /// Carry a whole range back, keeping it only if both ends survive and it
+    /// still fits the buffer it claims to describe.
+    pub fn range_to_original(
+        &self,
+        derived: &std::ops::Range<usize>,
+        original_len: usize,
+    ) -> Option<std::ops::Range<usize>> {
+        let start = self.to_original(derived.start)?;
+        let end = self.to_original(derived.end)?;
+        (start <= end && end <= original_len).then_some(start..end)
+    }
 }
 
 /// Build the derived source. `hints` carries the data bounds recovered for each
@@ -85,6 +127,7 @@ pub fn inject_with(
 ) -> (String, Injection) {
     let mut out = doc.text().to_string();
     let mut scale_probes = HashMap::new();
+    let mut splices: Vec<(usize, usize)> = vec![];
 
     // Back to front, so byte offsets stay valid as we splice.
     let mut figures = doc.figures();
@@ -292,11 +335,18 @@ pub fn inject_with(
         }
 
         if let Some(at) = insertion_point(diagram, &out) {
+            splices.push((at, args.len()));
             out.insert_str(at, &args);
         }
     }
 
-    (out, Injection { scale_probes })
+    (
+        out,
+        Injection {
+            scale_probes,
+            splices,
+        },
+    )
 }
 
 /// A probe's data coordinate, exactly.

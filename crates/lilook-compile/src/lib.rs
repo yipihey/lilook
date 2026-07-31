@@ -12,6 +12,7 @@
 
 // Not gated on `system`: exporting is pure encoding, and the browser needs it
 // most -- there is no `typst compile` to fall back on in a tab.
+pub mod blame;
 pub mod export;
 
 #[cfg(feature = "system")]

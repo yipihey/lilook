@@ -522,8 +522,24 @@ impl Server {
             .render_scenes(&doc, (ppi / 72.0) as f32, &mut hints);
         self.session.scenes = scenes;
         let mut out = String::new();
-        for d in render.errors() {
+        let failures: Vec<lilook_core::Diagnostic> = render.errors().cloned().collect();
+        for d in &failures {
             out.push_str(&format!("ERROR: {}\n", d.message));
+            match &d.range {
+                Some(r) => out.push_str(&format!("  at bytes {}..{}\n", r.start, r.end)),
+                // lilaq raises most of its errors inside its own package, so
+                // there is no span to report. Ask the compiler instead: remove
+                // one thing, see if the error survives. ~4 ms a variant, and it
+                // is evidence rather than a guess.
+                None => {
+                    for b in lilook_compile::blame::locate(&mut self.backend, &doc, &d.message) {
+                        out.push_str(&format!(
+                            "  caused by `{}` on #{} (bytes {}..{})\n",
+                            b.label, b.node, b.range.start, b.range.end
+                        ));
+                    }
+                }
+            }
         }
         if render.failed() {
             return out;

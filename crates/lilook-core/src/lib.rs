@@ -26,8 +26,8 @@ pub use data::{
     TooManyValues, MAX_EMBEDDED_VALUES,
 };
 pub use doc::{
-    check_expr, series_shape_of, Axis, CallSite, Document, Editability, Figure, NamedArg,
-    PositionalArg, SeriesShape, SetRule, Theme, XY_SERIES,
+    check_expr, series_shape_of, Axis, CallSite, Cursor, Document, Editability, Figure, NamedArg,
+    PositionalArg, SeriesShape, SetRule, Theme, Token, XY_SERIES,
 };
 pub use edit::{minimal_replacement, Anchor, AppliedEdit, CoalesceKey, History, Transaction};
 pub use events::{CanvasEvent, UiEvent};
@@ -36,7 +36,7 @@ pub use policy::{
     seed_for_test, sentinel_of, widget_control, Control, COLORMAPS, CYCLES, FIGURE_TEXT_SIZES,
     FIGURE_WIDTHS,
 };
-pub use render::{Diagnostic, Image, Page, Render, Severity};
+pub use render::{Blame, Diagnostic, Image, Page, Render, Severity};
 pub use scene::{Bounds, Scene, SceneHit, SeriesGeom};
 pub use schema::{ElementSchema, FunctionSchema, ParamSchema, Schema};
 pub use session::{Clip, Dropped, Link, Requests, Session, SlotSource, IDLE_COMMIT_SECONDS};

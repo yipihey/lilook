@@ -136,6 +136,7 @@ impl<L: typst_kit::files::FileLoader + Send + Sync> Backend<L> {
     ) -> (Render, Vec<Scene>) {
         let (source, injection) = probe::inject(doc, hints);
         let mut render = self.render(&source, pixel_per_pt);
+        remap(&mut render, &injection, doc.text().len());
 
         // A page too large to rasterise means the *probes* blew the layout up,
         // not the user's figure: placing a number like `0.1` on a `datetime` axis
@@ -144,7 +145,8 @@ impl<L: typst_kit::files::FileLoader + Send + Sync> Backend<L> {
         // is a data<->page transform that was never recoverable for that axis.
         if render.pages.iter().any(|p| p.image.width == 0) {
             let (plain, plain_injection) = probe::inject_with(doc, hints, false);
-            let retry = self.render(&plain, pixel_per_pt);
+            let mut retry = self.render(&plain, pixel_per_pt);
+            remap(&mut retry, &plain_injection, doc.text().len());
             if retry.pages.iter().all(|p| p.image.width > 0) {
                 let scenes = self
                     .document()
@@ -244,4 +246,21 @@ fn rasterize(doc: &PagedDocument, pixel_per_pt: f32) -> Vec<Page> {
             }
         })
         .collect()
+}
+
+/// Carry every diagnostic's byte range back to the user's buffer.
+///
+/// typst reports spans against the buffer it compiled, and that is the *derived*
+/// one with probes spliced into each diagram's argument list. Without this a
+/// 200-byte file reports an error at byte 781 -- harmless while the message is
+/// only printed, and a slice out of bounds the moment anything highlights it.
+///
+/// A range that lands inside injected text is dropped rather than approximated.
+/// lilook did not write those bytes and cannot point at them honestly.
+fn remap(render: &mut Render, injection: &probe::Injection, original_len: usize) {
+    for d in &mut render.diagnostics {
+        if let Some(range) = d.range.clone() {
+            d.range = injection.range_to_original(&range, original_len);
+        }
+    }
 }
