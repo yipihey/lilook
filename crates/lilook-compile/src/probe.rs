@@ -566,7 +566,9 @@ fn read(doc: &PagedDocument) -> Raw {
             for (key, kind) in [
                 ("legend", Decoration::Legend),
                 ("title", Decoration::Title),
-                ("label", Decoration::Label),
+                // Which label is which is decided when it is assigned to a
+                // frame, from where it sits: under it, or beside it.
+                ("label", Decoration::XLabel),
             ] {
                 let Some(Value::Array(list)) = field(&d, key) else {
                     continue;
@@ -1000,7 +1002,16 @@ pub fn scenes(doc: &PagedDocument, injection: &Injection) -> Vec<Scene> {
         else {
             continue;
         };
-        scene.decorations.push((*kind, (spot.1, spot.2)));
+        // An axis label's identity is its position: below the frame is the x
+        // label, left of it the y. lilaq reports both under one element type, and
+        // guessing from the order they come back in would be a coin flip.
+        let kind = match kind {
+            lilook_core::scene::Decoration::XLabel if spot.1 < scene.area.0 => {
+                lilook_core::scene::Decoration::YLabel
+            }
+            other => *other,
+        };
+        scene.decorations.push((kind, (spot.1, spot.2)));
     }
     out.sort_by_key(|s| s.figure);
     out

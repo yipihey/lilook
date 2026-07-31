@@ -1874,7 +1874,7 @@ fn a_figures_other_parts_are_located_as_well() {
     let kinds: Vec<Decoration> = scene.decorations.iter().map(|(k, _)| *k).collect();
     assert!(kinds.contains(&Decoration::Legend), "{kinds:?}");
     assert!(
-        kinds.iter().filter(|k| **k == Decoration::Label).count() >= 2,
+        kinds.contains(&Decoration::XLabel) && kinds.contains(&Decoration::YLabel),
         "an x and a y label: {kinds:?}"
     );
 
@@ -1890,4 +1890,94 @@ fn a_figures_other_parts_are_located_as_well() {
             scene.area
         );
     }
+}
+
+/// A title and an axis label can be nudged, and keep what they say.
+///
+/// Unlike a legend these have no named places, so a drag becomes `dx`/`dy`. The
+/// text has to survive: `title: [A title]` becomes
+/// `title: lq.title([A title], dx: .., dy: ..)`, and a second drag rewrites the
+/// offsets rather than nesting another wrapper.
+#[test]
+fn a_title_and_a_label_can_be_nudged_and_keep_their_text() {
+    use lilook_core::scene::Decoration;
+    let Some(mut app) = app() else { return };
+    app.load(1);
+    run(&mut app, 3);
+    assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+    let original = app.editor().text().to_string();
+    let figure = app.editor().doc.figures()[0].node;
+
+    // The example labels both axes; the two are told apart by where they sit.
+    let scene = app.editor().scenes()[0].clone();
+    let kinds: Vec<Decoration> = scene.decorations.iter().map(|(k, _)| *k).collect();
+    assert!(kinds.contains(&Decoration::XLabel), "{kinds:?}");
+    assert!(
+        kinds.contains(&Decoration::YLabel),
+        "an x and a y: {kinds:?}"
+    );
+    let x_at = scene
+        .decorations
+        .iter()
+        .find(|(k, _)| *k == Decoration::XLabel)
+        .map(|(_, p)| *p)
+        .unwrap();
+    let y_at = scene
+        .decorations
+        .iter()
+        .find(|(k, _)| *k == Decoration::YLabel)
+        .map(|(_, p)| *p)
+        .unwrap();
+    assert!(y_at.0 < scene.area.0, "the y label is left of the frame");
+    assert!(x_at.1 > scene.area.1, "the x label is below its top");
+
+    // Nudge the x label.
+    app.editor_mut().handle_canvas(vec![
+        lilook_editor::CanvasEvent::Begin,
+        lilook_editor::CanvasEvent::MoveDecoration {
+            figure,
+            kind: Decoration::XLabel,
+            dx: 4.0,
+            dy: 6.0,
+        },
+        lilook_editor::CanvasEvent::Commit,
+    ]);
+    app.editor_mut().mark_dirty();
+    run(&mut app, 3);
+    assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+    let text = app.editor().text().to_string();
+    assert!(text.contains("lq.label("), "wrapped: {text}");
+    assert!(
+        text.contains("dx: 4pt") && text.contains("dy: 6pt"),
+        "{text}"
+    );
+    // The words survived the wrapping.
+    assert!(
+        text.contains("dose (mg)"),
+        "the label still says what it said: {text}"
+    );
+
+    // A second drag rewrites the offsets rather than nesting another wrapper.
+    app.editor_mut().handle_canvas(vec![
+        lilook_editor::CanvasEvent::Begin,
+        lilook_editor::CanvasEvent::MoveDecoration {
+            figure,
+            kind: Decoration::XLabel,
+            dx: 1.0,
+            dy: 1.0,
+        },
+        lilook_editor::CanvasEvent::Commit,
+    ]);
+    app.editor_mut().mark_dirty();
+    run(&mut app, 3);
+    assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+    let text = app.editor().text().to_string();
+    assert_eq!(text.matches("lq.label(").count(), 1, "not nested: {text}");
+    // And it continued from where it was rather than snapping back to zero.
+    assert!(text.contains("dx: 5pt"), "5 = 4 + 1: {text}");
+
+    // Both steps undo.
+    app.editor_mut().doc.undo();
+    app.editor_mut().doc.undo();
+    assert_eq!(app.editor().text(), original);
 }

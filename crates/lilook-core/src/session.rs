@@ -260,6 +260,8 @@ pub struct Session {
     pub link_path: String,
     /// What the shell last found to be responsible for an error.
     pub blames: Vec<crate::Blame>,
+    /// Where a dragged decoration started, for the length of one gesture.
+    drag_origin: Option<(f64, f64)>,
 }
 
 impl Session {
@@ -295,6 +297,7 @@ impl Session {
             follow_files: false,
             link_path: String::new(),
             blames: vec![],
+            drag_origin: None,
         }
     }
 
@@ -1806,6 +1809,89 @@ impl Session {
         out
     }
 
+    /// Offset a title or an axis label, in points.
+    ///
+    /// These have no named places the way a legend does, so the drag becomes
+    /// `dx`/`dy`. The value they carry -- `[Time]` -- has to be preserved, so an
+    /// argument that is bare content is wrapped in the element that takes the
+    /// offsets, and one already wrapped has its offsets rewritten.
+    pub fn nudge_decoration(
+        &mut self,
+        figure: usize,
+        kind: crate::scene::Decoration,
+        dx: f64,
+        dy: f64,
+    ) {
+        // Where it was when the drag began. Captured once, because the canvas
+        // sends the offset *since* the drag started and only the session can read
+        // what the title already carried -- without this the first pixel of a
+        // drag throws away whatever was already set.
+        let base = *self
+            .drag_origin
+            .get_or_insert_with(|| Session::offsets_of(&self.doc, figure, kind));
+        let (dx, dy) = (base.0 + dx, base.1 + dy);
+        let Some(call) = self.doc.call(figure).cloned() else {
+            return;
+        };
+        let param = kind.param();
+        let Some(arg) = call.named.iter().find(|a| a.name == param) else {
+            self.status = format!("this diagram has no {param} to move");
+            return;
+        };
+        let lq = self.doc.lilaq_alias();
+        let element = kind.element();
+        let head = format!("{lq}.{element}(");
+        let text = arg.text.trim().to_string();
+
+        let value = match text.strip_prefix(&head).and_then(|r| r.strip_suffix(')')) {
+            // Already wrapped: keep its body and whatever else was set on it,
+            // replacing only the offsets.
+            Some(inner) => {
+                let kept: Vec<&str> = inner
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|p| !p.starts_with("dx:") && !p.starts_with("dy:") && !p.is_empty())
+                    .collect();
+                format!(
+                    "{head}{}, dx: {}pt, dy: {}pt)",
+                    kept.join(", "),
+                    crate::gesture_num(dx),
+                    crate::gesture_num(dy)
+                )
+            }
+            None => format!(
+                "{head}{text}, dx: {}pt, dy: {}pt)",
+                crate::gesture_num(dx),
+                crate::gesture_num(dy)
+            ),
+        };
+        self.apply(Intent::SetNamedArg {
+            node: figure,
+            param: param.to_string(),
+            value,
+        });
+    }
+
+    /// The `dx`/`dy` a decoration already carries.
+    fn offsets_of(doc: &Document, figure: usize, kind: crate::scene::Decoration) -> (f64, f64) {
+        let Some(call) = doc.call(figure) else {
+            return (0.0, 0.0);
+        };
+        let Some(arg) = call.named.iter().find(|a| a.name == kind.param()) else {
+            return (0.0, 0.0);
+        };
+        let read = |key: &str| -> f64 {
+            arg.text
+                .split(',')
+                .map(str::trim)
+                .find_map(|p| p.strip_prefix(key))
+                .and_then(|v| crate::split_numeric(v.trim()))
+                .map(|(n, _)| n)
+                .unwrap_or(0.0)
+        };
+        (read("dx:"), read("dy:"))
+    }
+
     /// Move a figure into its own file, leaving an import behind.
     ///
     /// A `.lil` is **a typst file**. The extension exists so an operating system
@@ -1995,6 +2081,7 @@ impl Session {
                 CanvasEvent::Commit => {
                     self.doc.commit();
                     self.explicit_tx = false;
+                    self.drag_origin = None;
                 }
                 CanvasEvent::SetLimits { figure, x, y } => {
                     // `gesture_num`, not `num`: a limit is a value on a data axis,
@@ -2038,6 +2125,14 @@ impl Session {
                     // rewriting a field inside it would mean parsing what the
                     // user wrote there.
                     self.set_or_insert(figure, "legend", format!("(position: {position})"));
+                }
+                CanvasEvent::MoveDecoration {
+                    figure,
+                    kind,
+                    dx,
+                    dy,
+                } => {
+                    self.nudge_decoration(figure, kind, dx, dy);
                 }
                 CanvasEvent::SetSize {
                     figure,

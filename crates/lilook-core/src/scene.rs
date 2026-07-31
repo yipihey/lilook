@@ -10,12 +10,23 @@
 //! consume it without depending on a typesetter.
 
 impl Decoration {
+    /// The lilaq element that carries its offsets, for the wrapper an offset
+    /// edit has to write.
+    pub fn element(self) -> &'static str {
+        match self {
+            Decoration::Legend => "legend",
+            Decoration::Title => "title",
+            Decoration::XLabel | Decoration::YLabel => "label",
+        }
+    }
+
     /// The diagram argument that controls it.
     pub fn param(self) -> &'static str {
         match self {
             Decoration::Legend => "legend",
             Decoration::Title => "title",
-            Decoration::Label => "xlabel",
+            Decoration::XLabel => "xlabel",
+            Decoration::YLabel => "ylabel",
         }
     }
 }
@@ -739,5 +750,8 @@ use crate::doc::{Axis, SeriesShape};
 pub enum Decoration {
     Legend,
     Title,
-    Label,
+    /// The label under the frame.
+    XLabel,
+    /// The label beside it.
+    YLabel,
 }

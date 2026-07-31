@@ -64,6 +64,11 @@ const DECORATION_TOL: f64 = 28.0;
 enum Gesture {
     /// Dragging a legend to another of the nine places lilaq names for it.
     MoveLegend { figure: usize },
+    /// Nudging a title or an axis label, which have offsets rather than places.
+    MoveDecoration {
+        figure: usize,
+        kind: lilook_core::scene::Decoration,
+    },
     /// Move the view. Changes nothing in the document.
     ViewPan,
     /// Pan the data: rewrites the diagram's limits.
@@ -286,15 +291,22 @@ impl Canvas {
                         // A legend is grabbed before the frame's grips: it can
                         // sit in a corner, and the resize handle would otherwise
                         // take a drag meant for it.
-                        let legend = inside.and_then(|scene| {
-                            scene
-                                .hit_decoration(pt, DECORATION_TOL)
-                                .filter(|d| *d == lilook_core::scene::Decoration::Legend)
-                                .map(|_| Gesture::MoveLegend {
+                        let decoration = inside.and_then(|scene| {
+                            let kind = scene.hit_decoration(pt, DECORATION_TOL)?;
+                            Some(match kind {
+                                // A legend has nine named places, so it snaps.
+                                lilook_core::scene::Decoration::Legend => Gesture::MoveLegend {
                                     figure: scene.figure,
-                                })
+                                },
+                                // A title and a label have offsets, so they follow
+                                // the pointer from where they already were.
+                                kind => Gesture::MoveDecoration {
+                                    figure: scene.figure,
+                                    kind,
+                                },
+                            })
                         });
-                        if let Some(g) = legend {
+                        if let Some(g) = decoration {
                             return Some(g);
                         }
 
@@ -351,6 +363,18 @@ impl Canvas {
                             to: pt,
                         });
                     }
+                }
+                Some(Gesture::MoveDecoration { figure, kind }) => {
+                    // The offset *since the drag began*. What it is relative to
+                    // -- whatever the title already carried -- is the session's
+                    // business, because only it can read the document.
+                    let d = self.drag / viewport.zoom;
+                    events.push(CanvasEvent::MoveDecoration {
+                        figure: *figure,
+                        kind: *kind,
+                        dx: d.x as f64,
+                        dy: d.y as f64,
+                    });
                 }
                 Some(Gesture::Resize {
                     figure,

@@ -43,6 +43,14 @@ pub enum CanvasEvent {
     /// drag snaps to the nearest rather than inventing an offset -- a legend half
     /// a millimetre off a corner reads as a mistake.
     MoveLegend { figure: usize, to: (f64, f64) },
+    /// A title or an axis label was nudged. Unlike a legend these have no named
+    /// places, so the drag becomes `dx`/`dy` in points.
+    MoveDecoration {
+        figure: usize,
+        kind: crate::scene::Decoration,
+        dx: f64,
+        dy: f64,
+    },
     /// The diagram was resized by its frame. Sizes are in typographic points --
     /// `width` and `height` on `lq.diagram` *are* the data area's dimensions,
     /// which is what makes dragging the axis frame mean what it looks like it
