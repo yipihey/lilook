@@ -106,6 +106,14 @@ pub fn control_of(param: Option<&ParamSchema>, editability: Editability, text: &
 
 pub struct Inspector<'a> {
     pub schema: Option<&'a FunctionSchema>,
+    /// The call's parameters *including the ones it forwards*.
+    ///
+    /// `lq.colorbar` takes `..args` "to pass to @diagram", so `width` and
+    /// `height` are as settable there as on the diagram -- and were invisible,
+    /// because the schema lists the sink rather than what it forwards to. The
+    /// editor supplies this because it holds the whole schema; the inspector
+    /// holds one function.
+    pub effective: Vec<ParamSchema>,
     pub events: Vec<UiEvent>,
     pub context: Context<'a>,
 }
@@ -114,9 +122,17 @@ impl<'a> Inspector<'a> {
     pub fn new(schema: Option<&'a FunctionSchema>) -> Self {
         Inspector {
             schema,
+            effective: vec![],
             events: vec![],
             context: Context::default(),
         }
+    }
+
+    /// Supply the forwarded parameters, which only a holder of the whole schema
+    /// can work out.
+    pub fn with_effective(mut self, params: Vec<ParamSchema>) -> Self {
+        self.effective = params;
+        self
     }
 
     pub fn with_context(mut self, context: Context<'a>) -> Self {
@@ -562,8 +578,11 @@ impl<'a> Inspector<'a> {
 
     fn add_argument(&mut self, ui: &mut egui::Ui, call: &CallSite) {
         let Some(schema) = self.schema else { return };
-        let missing: Vec<ParamSchema> = schema
-            .params
+        let all = match self.effective.is_empty() {
+            true => &schema.params,
+            false => &self.effective,
+        };
+        let missing: Vec<ParamSchema> = all
             .iter()
             .filter(|p| p.kind != "positional" && !call.named.iter().any(|a| a.name == p.name))
             .cloned()

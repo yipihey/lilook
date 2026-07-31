@@ -27,6 +27,9 @@ const MAX_PIXEL_PER_PT: f32 = 6.0;
 /// that each want 200 points leave nothing for the figure on a phone.
 const NARROW_WIDTH: f32 = 640.0;
 
+/// When this build was made, for the about box.
+const BUILD_DATE: &str = env!("LILOOK_BUILD_DATE");
+
 /// What to draw around the figure. A browser page has room for a gallery where
 /// a window has a menu bar, so the shell decides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +65,9 @@ pub struct Editor {
     /// This frame's egui context, so the shared tail can ask for a compile
     /// without every layout threading it through.
     ctx: Option<egui::Context>,
+    /// Where the source pane last scrolled to, so following the selection does
+    /// not fight the user's own scrolling every frame.
+    followed: Option<usize>,
     rendered_at: f32,
 }
 
@@ -88,6 +94,7 @@ impl Editor {
             pages: vec![],
             max_pixel_per_pt: MAX_PIXEL_PER_PT,
             ctx: None,
+            followed: None,
             rendered_at: 1.0,
         }
     }
@@ -304,6 +311,7 @@ impl Editor {
                 .default_size(250.0)
                 .resizable(true)
                 .show(ui, |ui| {
+                    self.about_ui(ui);
                     if self.layout.tree {
                         // Bounded when the inspector shares the column, or a long
                         // figure pushes it off the bottom.
@@ -653,6 +661,14 @@ impl Editor {
                     );
                     ui.fonts_mut(|f| f.layout_job(job))
                 };
+                // Follow the selection: clicking a curve should show the line
+                // that drew it, or the source pane and the figure are two views
+                // that happen to share a window rather than one document.
+                let follow = self.doc.call(self.selected).map(|c| c.range.start);
+                let changed = follow != self.followed;
+                if changed {
+                    self.followed = follow;
+                }
                 let out = egui::TextEdit::multiline(&mut buf)
                     .id(id)
                     .code_editor()
@@ -765,6 +781,21 @@ impl Editor {
                                 ui.label(egui::RichText::new(text).monospace().size(11.0));
                             });
                         }
+                    }
+                }
+                if changed {
+                    if let Some(at) = follow.filter(|a| *a <= buf.len()) {
+                        let row = out
+                            .galley
+                            .pos_from_cursor(egui::text::CCursor::new(buf[..at].chars().count()));
+                        ui.scroll_to_rect(
+                            egui::Rect::from_min_size(
+                                out.galley_pos + row.left_top().to_vec2(),
+                                egui::vec2(1.0, row.height()),
+                            )
+                            .expand2(egui::vec2(0.0, 40.0)),
+                            None,
+                        );
                     }
                 }
                 let r = out.response;
@@ -1272,6 +1303,31 @@ impl Editor {
         {
             self.selected = r.node;
         }
+    }
+
+    /// Who made this, under what licence, and where to find it.
+    ///
+    /// Collapsed by default: it is the answer to a question asked once, and a
+    /// permanent banner would cost the figure space every day to answer it.
+    fn about_ui(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.strong("lilook");
+            ui.weak(format!("v{}", env!("CARGO_PKG_VERSION")));
+            ui.menu_button("ⓘ", |ui| {
+                ui.set_max_width(260.0);
+                ui.label(format!("lilook {}", env!("CARGO_PKG_VERSION")));
+                ui.weak(format!("built {}", BUILD_DATE));
+                ui.separator();
+                ui.label("© Tom Abel");
+                ui.weak("MIT licence");
+                ui.separator();
+                ui.hyperlink_to(
+                    "github.com/yipihey/lilook",
+                    "https://github.com/yipihey/lilook",
+                );
+                ui.weak("figures for lilaq, in Typst");
+            });
+        });
     }
 
     /// The two settings that decide whether a figure survives being put in a

@@ -1616,3 +1616,63 @@ fn completion_offers_what_the_caret_can_take() {
     assert_eq!(sig.name, "diagram");
     assert!(sig.params.contains(&"xlim".to_string()));
 }
+
+/// A colorbar can be given the diagram arguments it forwards.
+///
+/// `lq.colorbar` takes `..args` documented as "Additional arguments to pass to
+/// @diagram", so `width` and `height` belong there as much as on the diagram —
+/// and were invisible, because the schema lists the sink rather than what it
+/// forwards to. Derived from the doc comment, so a lilaq release that forwards
+/// somewhere new is followed without a change here.
+#[test]
+fn a_colorbar_offers_the_arguments_it_passes_through() {
+    let Some(mut app) = app() else { return };
+    let index = EXAMPLES
+        .iter()
+        .position(|(name, _)| *name == "colormesh")
+        .expect("the colormesh example");
+    app.load(index);
+    run(&mut app, 3);
+    assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+
+    let params = app.editor().schema.effective_params("lq.colorbar");
+    let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+    assert!(names.contains(&"thickness"), "its own: {names:?}");
+    assert!(names.contains(&"width"), "and the diagram's: {names:?}");
+    assert!(names.contains(&"height"));
+
+    // Not invented: a function that forwards nothing gains nothing.
+    let plot: Vec<String> = app
+        .editor()
+        .schema
+        .effective_params("lq.plot")
+        .iter()
+        .map(|p| p.name.clone())
+        .collect();
+    assert!(!plot.contains(&"width".to_string()), "{plot:?}");
+
+    // And a forwarded argument actually works on a colorbar.
+    let bar = app
+        .editor()
+        .doc
+        .calls()
+        .iter()
+        .find(|c| c.short_name() == "colorbar")
+        .map(|c| c.id)
+        .expect("the colorbar");
+    app.editor_mut().doc.begin("forwarded");
+    app.editor_mut()
+        .apply_intent(lilook_core::Intent::InsertNamedArg {
+            node: bar,
+            param: "height".into(),
+            value: "3cm".into(),
+        });
+    app.editor_mut().doc.commit();
+    app.editor_mut().mark_dirty();
+    run(&mut app, 3);
+    assert!(
+        errors(&app).is_empty(),
+        "forwarding height: {:?}",
+        errors(&app)
+    );
+}

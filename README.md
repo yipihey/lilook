@@ -1,229 +1,140 @@
-# lilook.rs
+# lilook
 
-A GUI editor for [lilaq](https://lilaq.org) figures in [Typst](https://typst.app)
-manuscripts.
+**Edit a figure by pointing at it. Keep a file you can put in a paper.**
 
-**The Typst source is the document model.** There is no `.vsz`-style intermediate
-format. Every GUI action becomes a surgical byte-range replacement on the user's
-`.typ` file, and undo is a text-edit history rather than a widget-tree history.
-This is the load-bearing decision; read `docs/plan.md` §1 before changing
-anything that touches it.
+lilook is a graphical editor for [lilaq](https://lilaq.org) figures written in
+[Typst](https://typst.app). Click a curve to select it, drag a point to move it,
+pull the frame to resize it — and every gesture lands as a small edit in your own
+`.typ` file, which stays plain Typst that `typst compile` reads without lilook
+ever having existed.
 
-lilook is deliberately standalone. It knows nothing about the impress suite,
-implore, or any host application — see `docs/plan.md` §5.
+### [Try it in your browser →](https://yipihey.github.io/lilook/)
 
----
+No install, no account. A whole typesetter runs in the page.
 
-## What it is
-
-**A language server for figures.** lilook syncs a document incrementally,
-publishes diagnostics, answers go-to-definition and serves an outline — over
-JSON-RPC, to four frontends — and it does the half that helps you write: what can
-go here, what a value resolved to, and an offer to fix what broke.
-
-Two things follow from that framing, and they are the reason the codebase looks
-the way it does.
-
-**Every capability is a pure function of `(document, schema, scene)` returning
-data.** It never renders and it never edits. So a desktop window, a browser tab,
-a SwiftUI view and an MCP server for agents all get each capability from one
-place — and when lilaq adds a function, no frontend changes.
-
-**It has two surfaces, not one.** A language server maps position to meaning.
-lilook maps position ⟷ meaning ⟷ *geometry*: clicking a curve selects a byte
-range, and editing a byte range moves a curve. That round trip is what the probe
-technique (ADR-0008) exists for, and it is the part no language server has.
-
-## Status
-
-Editing: click, pan, zoom, drag points, resize by the frame — every gesture a
-surgical edit and one undo step. Every lilaq function and style element has a
-control, including pickers for colormaps and colourblind-safe palettes. Themes
-switch, fork and rename. Data links live to CSV, JSON, HDF5, npz, FITS and
-Veusz's descriptor ASCII, refreshing when the file changes. Export to PDF, SVG
-and PNG.
-
-Language-server capabilities: semantic colour, inlay hints for what `auto`
-resolved to, completion and signature help, and quick fixes. Errors that name no
-location — most of lilaq's, since it validates inside its own package — are
-located by recompiling variants at ~4 ms each, which produces the byte range the
-diagnostic was missing.
-
-229 tests. `scripts/check.sh` is the gate.
-
-| crate | what it is | GUI |
-| --- | --- | --- |
-| `lilook-core` | document, intents, history, scene, schema, policy, session, capabilities | — |
-| `lilook-compile` | in-process typst: World, probes, actor, export, blame | — |
-| `lilook-data` | npz, FITS, HDF5, Veusz ASCII, CBOR sidecars | — |
-| `lilook-ffi` | C ABI for Swift / Python / Julia | — |
-| `lilook-ui` | egui inspector, canvas, highlighting | egui |
-| `lilook-editor` | panels and layout | egui |
-| `lilook-app` / `lilook-web` | desktop and browser shells | egui |
-| `lilook-compile/bin/lilook-mcp` | MCP server: five tools, hierarchical discovery | — |
-
-About 70% of the code has no GUI dependency. `docs/plan-2.0.md` has the
-architecture; `docs/plan.md` §1 has the settled ADRs.
-
-Read `docs/findings.md` for what was actually measured versus assumed. Several
-early assumptions were overturned by measurement; the document records both.
+![lilook editing a lilaq figure](docs/images/lilook.png)
 
 ---
 
-## Build and test
+## What it gives you
 
-Requires a Rust toolchain (1.92+, for `typst` 0.15). Typst versions are pinned
-once in the workspace manifest so `typst-syntax` cannot drift from the parser
-`typst` links.
+**Direct manipulation.** Pan, zoom, drag points, drag threshold lines, resize by
+the axis frame. Undo is a text-edit history, so a gesture and a keystroke undo
+the same way.
 
-```sh
-scripts/check.sh               # the full gate: fmt, clippy, tests, recompile
-cargo test                     # everything
-cargo test -p lilook-core      # document model, history, scene maths
-cargo test -p lilook-compile   # in-process typst, probes, gestures end to end
-cargo test -p lilook-ui        # inspector and canvas, headless, no display
-cargo run  -p lilook-app -- figure.typ
+**A control for everything lilaq can do.** Every function and style element in
+lilaq 0.6 has a real widget — colours, strokes, marks, scales, alignments — with
+gradient previews for colour maps and colourblind-safe palettes for series.
+Nothing falls through to a text box unless the value genuinely has no small form.
+
+**A source pane that teaches.** Semantic colouring, where a series call wears the
+colour it draws. Completion of parameters *and* their values, so picking `smooth`
+writes `interpolation: "smooth"`. Hover a call to read its whole signature.
+Inline hints show what `auto` resolved to — `xlim: auto  ⟨0.82 … 4.18⟩` — which
+is possible only because lilook has the compiled figure beside the text.
+
+**Errors that lead somewhere.** lilaq raises most errors from inside itself, with
+no line to point at. lilook finds the cause by removing one thing at a time and
+recompiling — a few milliseconds each — then marks the offending bytes and offers
+the repair:
+
+```
+value must be strictly positive
+  caused by  yscale: "log"   ylim: (-1, 100)
+  ↻ use a linear y axis      ↻ let lilaq choose the y limits
 ```
 
-Nothing needs a `typst` binary any more: the backend compiles in process. Tests
-that need the real lilaq package skip themselves if it is neither cached nor
-downloadable.
+**Your data, still in your files.** Link a series to CSV, JSON, HDF5, npz, FITS
+or Veusz's descriptor ASCII. The figure reads the file at compile time, so it
+follows the data when the data changes — and *unlock* freezes the numbers into
+the document when you want it self-contained.
 
-### Looking at it without a display
+**Publication output.** PDF and SVG for a paper, PNG for slides. Column-width
+presets for the journals people actually submit to, and type sizes that survive
+being placed.
+
+**Themes.** lilaq's five, switchable in a click; fork one to get a copy you can
+change and name.
+
+---
+
+## How it relates to Typst and lilaq
+
+**lilaq** draws the figure. It is a Typst package, and lilook adds nothing to it:
+every control here is a lilaq argument, and a generated schema means a new lilaq
+release is picked up without lilook changing.
+
+**Typst** is the document. lilook has no project format — no `.vsz`, no XML. The
+`.typ` file *is* the model, and each edit is a byte-range replacement in it. Open
+the same file in your text editor, in `typst watch`, or in a collaborator's
+checkout, and it behaves exactly as it looks.
+
+That is the load-bearing decision. It means you can adopt lilook for an afternoon
+and abandon it without leaving anything behind, and it is why lilook can be a
+graphical editor without becoming somewhere your work is trapped.
+
+### `.lil` — a figure in its own file
+
+Optional, and reversible. Move a figure out with one click and lilook writes
+`flux.lil` beside your manuscript with an `#import` where the figure was — so a
+figure becomes a thing you can find, reuse across a paper and a talk, and open on
+its own by double-clicking it.
+
+**A `.lil` is a Typst file.** The extension exists so your operating system knows
+which application opens a figure; lilook cannot claim `.typ` without taking every
+Typst file from the editor you already use. Nothing lilook-only is written into
+one. `packaging/` has the desktop entry, the MIME type, the `Info.plist`
+fragment, and the one-line mapping that keeps your editor's highlighting working.
+
+---
+
+## Running it
 
 ```sh
-cargo run -p lilook-app -- figure.typ --select 2 --screenshot out.png
+cargo run -p lilook-app -- figure.typ    # desktop
+scripts/web.sh release                   # build the browser bundle and serve it
 ```
 
-Draws until the first compile lands, writes a PNG of the window and exits. This
-exists because "it renders correctly" was unverifiable for a whole phase.
+Requires a Rust toolchain and nothing else: Typst compiles in process, and the
+fonts and packages are inside the binary.
 
-### For an agent
+### For agents
 
 ```sh
 cargo run -p lilook-compile --bin lilook-mcp -- /path/to/project
 ```
 
-An MCP server over stdio: five tools, not one per lilaq function. That shape was
-measured — a tool per function costs ~18,000 tokens on *every* request, because
-tool definitions are re-sent each turn; a terse capability index costs 810 once
-and describing a single function 47. So discovery is hierarchical, and an agent
-spends about a thousand tokens learning what it needs instead of eighteen.
-
-It reports what actually happened, not just that something failed:
-
-```
-ERROR: unknown named field 'widht'
-  caused by `widht: 3cm` on #0 (bytes 118..121)
-  fix: rename `widht` to `width` — the nearest parameter this call takes
-```
-
-### In the browser
-
-```sh
-scripts/web.sh release      # build the wasm bundle and serve it
-```
-
-It prints a LAN address, so a phone on the same network can open it. The server
-gzips (`scripts/serve.py`), because uncompressed the module is 27 MB and
-compressed it is 10.5 -- and a phone notices the difference. Verified working on
-iOS Safari: touch, pinch and drag all reach the same editor the desktop uses.
-
-Opens a gallery of lilaq's own documentation examples -- the stacked area chart
-among them -- each editable by pointer *and* by text, with typst compiling in
-the page. Measured there: 3-16 ms per recompile on these figures.
-
-The first load is about 12 MB gzipped, because the page carries a whole
-typesetter: 10.5 MB of wasm and 1.6 MB of fonts, cached separately. After that
-nothing goes over the network, and nothing is uploaded -- a figure edited in the
-browser never leaves it. `docs/findings.md` records where the weight is: a
-PDF interpreter, a WebAssembly interpreter and two copies of a rasteriser, all
-arriving unconditionally with typst, none of which a figure uses.
-
-### Keys
-
-`⌘Z` / `⇧⌘Z` undo and redo · `⌘S` save · `⌘0` fit · `⌘C` copy the selection
-with the bindings it needs · `⌘V` paste into the selected figure · `⌘D`
-duplicate · `⌫` delete. Drag inside a diagram to pan the data, scroll to zoom
-it, drag a point of a selected literal series to move it, and drag the right or
-bottom edge of the axis frame to resize the figure -- `width` and `height` *are*
-the data area's dimensions, so the frame follows the pointer exactly.
-
-### Swift and iOS
-
-```sh
-scripts/swift.sh            # build the package and run its tests
-scripts/swift.sh --ios      # also build target/ios/Lilook.xcframework
-```
-
-The package wraps the same C ABI as the Python binding. It had never been
-compiled before -- there was no toolchain where it was written -- and what
-review had missed was uniform: every `LilookDoc *` imports as an
-`OpaquePointer`, so the pointer conversions around the handle were all wrong.
-
-### CLI
-
-```sh
-cargo run --bin lilook -- inspect figure.typ
-cargo run --bin lilook -- schema lq.plot
-cargo run --bin lilook -- set figure.typ 2 stroke "blue.darken(20%)"
-```
-
-### MCP server
-
-Newline-delimited JSON-RPC over stdio; tool descriptions are generated from the
-same schema the inspector consumes.
-
-```sh
-echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | cargo run --bin lilook-mcp
-```
-
-### Python binding
-
-```sh
-cargo build
-LILOOK_LIB=target/debug/liblilook_ffi.so python3 -c "
-import sys; sys.path.insert(0,'bindings/python'); import lilook
-d = lilook.Document(open('figure.typ').read())
-print([(c['node'], c['callee']) for c in d.calls])"
-```
+An MCP server over stdio, so an agent can build and tweak a figure — and check
+its work, because `render` reports what was drawn, how many points, and where the
+axes ended up rather than only whether it failed. Five tools with hierarchical
+discovery, since a tool per lilaq function would cost about 18,000 tokens on
+every request.
 
 ---
 
-## Regenerating the schema
+## Building on it
 
-`assets/lilaq-0.6.0.schema.json` is generated from a pinned lilaq checkout and
-committed. Do not hand-edit it.
+The editing core has no GUI dependency. A `Session` holds the document and every
+operation — link, unlock, theme, gesture, completion, quick fix — and returns
+plain data for a frontend to render. That is why one core drives a desktop
+window, a browser tab, a SwiftUI view through a C ABI, and the MCP server.
 
-```sh
-scripts/bootstrap.sh          # clones lilaq + its docs-site, regenerates
+```
+lilook-core      document, intents, history, scene, schema, session, capabilities
+lilook-compile   in-process Typst: probes, scene recovery, export, blame
+lilook-data      npz, FITS, HDF5, Veusz ASCII, CBOR sidecars
+lilook-ui        egui widgets            lilook-editor  panels
+lilook-app       desktop                 lilook-web     browser
+lilook-ffi       C ABI for Swift / Python / Julia
 ```
 
-The generator reuses **lilaq's own** tidy doc-comment parser from the docs-site
-repo rather than reimplementing it. Curation of wide type unions lives in
-`tools/extract_schema.py`, deliberately outside the emitted JSON, so
-regeneration never clobbers it.
+`scripts/check.sh` is the gate: format, clippy, every test, and a real `typst`
+recompile of what the tests produced.
+
+`docs/plan-2.0.md` is the architecture. `docs/findings.md` records what was
+measured rather than assumed — several early assumptions were overturned, and
+both the guess and the number are kept.
 
 ---
 
-## Where to start
-
-1. `docs/plan-1.0.md` — the current plan: architecture, the interaction model,
-   milestones with their exit criteria, and what is still open.
-2. `docs/findings.md` — what was measured, in order. Schema coverage, the
-   performance envelope, transform accuracy, and the in-process numbers.
-3. `AGENTS.md` — invariants that must not be broken, and the specific mistakes
-   already made once.
-4. `crates/lilook-core/src/doc.rs` — the document model.
-5. `crates/lilook-compile/src/probe.rs` — how pixels get back to byte ranges.
-
-`docs/plan.md` is the earlier plan; §1 (the ADRs) still holds, §3 is superseded.
-
-The next piece of work is **the M9 web shell** — everything under it already
-compiles for wasm32 — and then whatever a first real manuscript makes obvious.
-
----
-
-## License
-
-MIT.
+© Tom Abel. MIT licence. Figures belong to the people who make them.

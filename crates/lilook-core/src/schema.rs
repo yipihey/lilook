@@ -68,6 +68,55 @@ impl Schema {
         serde_json::from_str(s)
     }
 
+    /// A function's own parameters, plus the ones it passes through.
+    ///
+    /// `lq.colorbar` takes `..args` documented as *"Additional arguments to pass
+    /// to @diagram"*, so `width` and `height` are as settable there as on the
+    /// diagram itself -- and were invisible, because the schema lists the sink
+    /// rather than what it forwards to.
+    ///
+    /// Derived from the doc comment rather than a hand-written table: the sink's
+    /// own text names its destination, so a lilaq release that forwards somewhere
+    /// new is followed without a change here.
+    pub fn effective_params(&self, callee: &str) -> Vec<ParamSchema> {
+        let Some(f) = self.function_for_callee(callee) else {
+            return vec![];
+        };
+        let mut out = f.params.clone();
+        for sink in f.params.iter().filter(|p| p.name.starts_with("..")) {
+            let Some(target) = sink
+                .doc
+                .split('@')
+                .nth(1)
+                .map(|s| s.trim_end_matches('.'))
+                .map(|s| {
+                    s.chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '-')
+                        .collect::<String>()
+                })
+                .filter(|s| !s.is_empty())
+            else {
+                continue;
+            };
+            // Not itself, and not a name already taken: a forwarded parameter is
+            // only interesting where the function does not define its own.
+            if target == short(callee) {
+                continue;
+            }
+            let Some(into) = self.functions.get(&target) else {
+                continue;
+            };
+            let extra: Vec<ParamSchema> = into
+                .params
+                .iter()
+                .filter(|p| !p.name.starts_with("..") && !out.iter().any(|q| q.name == p.name))
+                .cloned()
+                .collect();
+            out.extend(extra);
+        }
+        out
+    }
+
     /// Look up by the callee text found in the source, e.g. `lq.plot`.
     pub fn function_for_callee(&self, callee: &str) -> Option<&FunctionSchema> {
         self.functions.get(short(callee))
