@@ -12,7 +12,7 @@ macro_rules! outln {
 }
 use std::process::ExitCode;
 
-const SCHEMA: &str = include_str!("../../../../assets/lilaq-0.6.0.schema.json");
+const SCHEMA: &str = lilook_core::schema::BUNDLED;
 
 fn usage() -> ExitCode {
     eprintln!(

@@ -2,7 +2,7 @@
 
 use lilook_core::{Schema, Session};
 
-const SCHEMA: &str = include_str!("../../../assets/lilaq-0.6.0.schema.json");
+const SCHEMA: &str = lilook_core::schema::BUNDLED;
 const SRC: &str = r#"#import "@preview/lilaq:0.6.0" as lq
 #lq.diagram(width: 8cm, yscale: "log",
   lq.colormesh(xs, ys, f, map: color.map.viridis),

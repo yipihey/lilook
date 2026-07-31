@@ -1,15 +1,27 @@
 [package]
 name = "lilook-app"
-version = "0.1.0"
-edition = "2021"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+description = "Desktop editor for lilaq figures in Typst documents."
+license.workspace = true
+keywords = ["typst", "lilaq", "plotting", "figures", "gui"]
+categories = ["science", "visualization", "gui"]
+rust-version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[package.metadata.release]
+# Publish order: crates.io must index each crate before the next verifies
+# against it.
+tag = false
 
 [dependencies]
-lilook-core = { path = "../lilook-core" }
-lilook-compile = { path = "../lilook-compile" }
-lilook-editor = { path = "../lilook-editor" }
+lilook-core = { path = "../lilook-core", version = "0.2.0" }
+lilook-compile = { path = "../lilook-compile", version = "0.2.0" }
+lilook-editor = { path = "../lilook-editor", version = "0.2.0" }
 # The formats typst cannot read. `hdf5` is off by default: it needs a C library.
-lilook-data = { path = "../lilook-data" }
+lilook-data = { path = "../lilook-data", version = "0.2.0" }
 egui = { workspace = true }
 # Only for `--screenshot`: the same tiny-skia typst-render already links, so it
 # costs no extra build.

@@ -564,7 +564,7 @@ fn a_single_point_series_plots_and_is_recovered() {
 /// new surface: the round trip is not the gate, the compiler is.
 #[test]
 fn seeded_arguments_compile() {
-    const SCHEMA: &str = include_str!("../../../assets/lilaq-0.6.0.schema.json");
+    const SCHEMA: &str = lilook_core::schema::BUNDLED;
     let schema = lilook_core::Schema::from_json(SCHEMA).expect("bundled schema");
     let mut b = Backend::new(std::env::temp_dir(), "");
 

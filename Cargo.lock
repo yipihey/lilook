@@ -2195,7 +2195,7 @@ dependencies = [
 
 [[package]]
 name = "lilook-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "eframe",
  "egui",
@@ -2208,7 +2208,7 @@ dependencies = [
 
 [[package]]
 name = "lilook-compile"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "comemo",
  "lilook-core",
@@ -2227,7 +2227,7 @@ dependencies = [
 
 [[package]]
 name = "lilook-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2237,7 +2237,7 @@ dependencies = [
 
 [[package]]
 name = "lilook-data"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "flate2",
  "hdf5-metno",
@@ -2245,7 +2245,7 @@ dependencies = [
 
 [[package]]
 name = "lilook-editor"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "egui",
  "lilook-core",
@@ -2254,7 +2254,7 @@ dependencies = [
 
 [[package]]
 name = "lilook-ffi"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "lilook-core",
  "serde_json",
@@ -2262,7 +2262,7 @@ dependencies = [
 
 [[package]]
 name = "lilook-ui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "egui",
  "egui_kittest",
@@ -2271,7 +2271,7 @@ dependencies = [
 
 [[package]]
 name = "lilook-web"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "console_error_panic_hook",
  "eframe",

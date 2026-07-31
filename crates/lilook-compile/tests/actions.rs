@@ -7,7 +7,7 @@
 use lilook_compile::{backend::Hints, blame, Backend};
 use lilook_core::{Document, Schema, Session};
 
-const SCHEMA: &str = include_str!("../../../assets/lilaq-0.6.0.schema.json");
+const SCHEMA: &str = lilook_core::schema::BUNDLED;
 
 /// Compile, collect blame for anything spanless, and ask for actions.
 fn offers(src: &str) -> Option<(Session, Vec<lilook_core::Action>)> {

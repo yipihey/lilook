@@ -15,6 +15,20 @@ resolver = "2"
 # Versions live here so `typst-syntax` cannot drift from the parser the `typst`
 # crate links against. Two parsers in one binary means two `SyntaxKind` types,
 # and the mismatch only shows up as a confusing trait error at the seam.
+[workspace.package]
+# One version for every crate. Eight independent versions is eight decisions a
+# release; one is none, and the cost -- publishing a crate that did not change --
+# is nothing.
+version = "0.2.0"
+edition = "2021"
+license = "MIT"
+authors = ["Tom Abel"]
+repository = "https://github.com/yipihey/lilook"
+homepage = "https://yipihey.github.io/lilook/"
+# The typst 0.15 line needs this; declared so a build fails with a version
+# number rather than with a page of trait errors.
+rust-version = "1.92"
+
 [workspace.dependencies]
 typst = "0.15.1"
 typst-syntax = "0.15.1"

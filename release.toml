@@ -1,0 +1,23 @@
+# `cargo release <version>` — the one command a release costs.
+#
+# Deliberately not a bot. A bot opens a pull request that nobody reads; a command
+# fails in front of the person who ran it. See docs/plan-3.0.md §2.
+
+# Every crate moves together. Eight independent versions is eight decisions a
+# release; one is none, and publishing a crate that did not change costs nothing.
+shared-version = true
+consolidate-commits = true
+
+# The tag is what the release workflow watches, so it is pushed last -- after
+# every crate is on crates.io. A tag that fires the workflow before the libraries
+# exist would produce a release nobody can `cargo install`.
+tag-name = "v{{version}}"
+tag-message = "lilook {{version}}"
+pre-release-commit-message = "release {{version}}"
+push = true
+publish = true
+
+# Dependency order. crates.io needs each one indexed before the next can verify
+# against it, which is why `--dry-run` cannot check the whole workspace at once.
+# lilook-web is `publish = false`: the browser shell is this repository's
+# deployment, not a library.

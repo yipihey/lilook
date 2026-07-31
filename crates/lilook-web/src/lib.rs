@@ -12,7 +12,7 @@ use lilook_compile::{Backend, MemoryFiles};
 use lilook_core::{Document, Schema};
 use lilook_editor::Editor;
 
-const SCHEMA: &str = include_str!("../../../assets/lilaq-0.6.0.schema.json");
+const SCHEMA: &str = lilook_core::schema::BUNDLED;
 
 /// The lilaq packages, baked in by `build.rs`.
 const PACKAGES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/packages.bin"));

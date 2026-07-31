@@ -41,7 +41,7 @@ use lilook_core::{schema::Schema, CanvasEvent, Document, Intent, Session};
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 
-const SCHEMA: &str = include_str!("../../../../assets/lilaq-0.6.0.schema.json");
+const SCHEMA: &str = lilook_core::schema::BUNDLED;
 
 /// Which bucket a lilaq function falls in, for the capability index.
 ///

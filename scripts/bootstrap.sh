@@ -21,10 +21,10 @@ fi
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' "$VENDOR/lilaq/typst.toml" | head -1)
 python3 tools/extract_schema.py \
   "$VENDOR/lilaq/src" "$VENDOR/docsite/scripts" \
-  "assets/lilaq-${VERSION}.schema.json"
+  "crates/lilook-core/assets/lilaq-${VERSION}.schema.json"
 
 echo
-echo "Regenerated assets/lilaq-${VERSION}.schema.json"
+echo "Regenerated crates/lilook-core/assets/lilaq-${VERSION}.schema.json"
 echo "If the version changed, update the include! paths in:"
 echo "  crates/lilook-core/src/bin/lilook.rs"
 echo "  crates/lilook-core/src/bin/lilook-mcp.rs"

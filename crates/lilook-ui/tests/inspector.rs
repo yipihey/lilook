@@ -6,7 +6,7 @@ use lilook_core::{Document, Editability, Schema};
 use lilook_ui::{control_for, refine, widget_control, Control, Inspector, UiEvent};
 use std::cell::RefCell;
 
-const SCHEMA_JSON: &str = include_str!("../../../assets/lilaq-0.6.0.schema.json");
+const SCHEMA_JSON: &str = lilook_core::schema::BUNDLED;
 
 const SRC: &str = r##"#import "@preview/lilaq:0.6.0" as lq
 #let accent = rgb("#4c72b0")

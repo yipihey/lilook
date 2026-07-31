@@ -1,0 +1,120 @@
+# Everything a release needs, from one tag.
+#
+# `git tag v0.2.0 && git push --tags` produces the binaries, the browser bundle
+# and the release page. Nothing else is a step someone has to remember, because a
+# step someone has to remember is a step that eventually does not happen.
+#
+# The gate runs first and blocks the rest. A release that fails its own tests is
+# worse than no release, and this is the last place that can stop it.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  # So the workflow can be exercised without minting a version. It rots
+  # otherwise: it runs on tags, which is rarely, and breaks between uses.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: fetch the pinned lilaq package
+        run: |
+          mkdir -p .packages
+          echo "TYPST_PACKAGE_CACHE_PATH=$PWD/.packages" >> "$GITHUB_ENV"
+      - run: scripts/check.sh
+
+  binaries:
+    needs: gate
+    strategy:
+      # One failing platform should not deny the others a release: a macOS
+      # runner outage is not a reason nobody can install on Linux.
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            name: macos-arm64
+          - os: macos-14
+            target: x86_64-apple-darwin
+            name: macos-x86_64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: linux-x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: windows-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev \
+                                  libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+      - run: cargo build --release -p lilook-app --target ${{ matrix.target }}
+      - name: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="lilook-${{ matrix.name }}"
+          mkdir -p "$out"
+          # The `.lil` registration travels with the binary: a figure that opens
+          # when double-clicked is the point of the extension existing.
+          cp -r packaging "$out/" 2>/dev/null || true
+          cp README.md LICENSE "$out/"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp "target/${{ matrix.target }}/release/lilook-app.exe" "$out/"
+            7z a "$out.zip" "$out"
+          else
+            cp "target/${{ matrix.target }}/release/lilook-app" "$out/"
+            tar czf "$out.tar.gz" "$out"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: |
+            lilook-*.tar.gz
+            lilook-*.zip
+
+  publish:
+    needs: [gate, binaries]
+    runs-on: ubuntu-latest
+    # Only a real tag makes a release; a manual run is a rehearsal.
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          # A pre-release tag is marked as one, so `v0.2.0-rc1` cannot be
+          # mistaken for the release it is rehearsing.
+          prerelease=""
+          case "$version" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" \
+            --title "lilook $version" \
+            --generate-notes \
+            $prerelease \
+            dist/*

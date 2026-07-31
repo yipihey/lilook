@@ -1,9 +1,20 @@
 [package]
 name = "lilook-core"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 description = "Document model, intents and history for editing lilaq figures in Typst source."
-license = "MIT"
+license.workspace = true
+keywords = ["typst", "lilaq", "plotting", "figures", "editor"]
+categories = ["science", "visualization", "text-editors"]
+rust-version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[package.metadata.release]
+# Publish order: crates.io must index each crate before the next verifies
+# against it.
+tag = false
 
 [dependencies]
 typstyle-core = { workspace = true }

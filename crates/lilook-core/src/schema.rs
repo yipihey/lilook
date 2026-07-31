@@ -51,6 +51,14 @@ pub struct ElementSchema {
     pub fields: Vec<ParamSchema>,
 }
 
+/// The generated lilaq schema, bundled.
+///
+/// Inside this crate rather than beside the workspace, because a published crate
+/// cannot reach a file outside its own directory -- `cargo publish --dry-run`
+/// said so, which is what that check is for. Every frontend reads it from here,
+/// so there is one copy and one path.
+pub const BUNDLED: &str = include_str!("../assets/lilaq-0.6.0.schema.json");
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Schema {
     pub lilaq_version: String,

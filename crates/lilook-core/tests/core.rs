@@ -499,7 +499,7 @@ fn redo_replays() {
 
 #[test]
 fn schema_covers_the_call_sites_we_index() {
-    let raw = include_str!("../../../assets/lilaq-0.6.0.schema.json");
+    let raw = lilook_core::schema::BUNDLED;
     let schema = Schema::from_json(raw).expect("schema parses");
     assert_eq!(schema.lilaq_version, "0.6.0");
 
@@ -885,7 +885,7 @@ fn a_set_rule_is_edited_like_any_other_call() {
 
 #[test]
 fn element_fields_render_as_a_function_for_the_inspector() {
-    let raw = include_str!("../../../assets/lilaq-0.6.0.schema.json");
+    let raw = lilook_core::schema::BUNDLED;
     let schema = Schema::from_json(raw).unwrap();
     assert!(schema.elements.len() >= 15, "{}", schema.elements.len());
 
@@ -1110,8 +1110,7 @@ fn a_session_is_driveable_without_a_gui() {
 // a comment that must survive every operation below
 #lq.diagram(width: 6cm, height: 4cm, lq.plot((0, 1, 2), (0, 1, 4)))
 "#;
-    let schema = Schema::from_json(include_str!("../../../assets/lilaq-0.6.0.schema.json"))
-        .expect("bundled schema");
+    let schema = Schema::from_json(lilook_core::schema::BUNDLED).expect("bundled schema");
     let mut s = Session::new(SRC, schema);
     let series = s
         .doc

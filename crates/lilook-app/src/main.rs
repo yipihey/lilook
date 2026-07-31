@@ -8,7 +8,7 @@ use lilook_compile::CompileActor;
 use lilook_core::Schema;
 use lilook_editor::Editor;
 
-const SCHEMA: &str = include_str!("../../../assets/lilaq-0.6.0.schema.json");
+const SCHEMA: &str = lilook_core::schema::BUNDLED;
 
 /// Where transcoded sidecars and their manifest live, relative to the document.
 ///

@@ -205,3 +205,43 @@ ones, and never hand-fix a release — fix the workflow and re-tag.
 **crates.io is forever.** A name published is a name taken and a version
 published cannot be replaced. `--dry-run` for every crate is R1's exit criterion
 for exactly this reason.
+
+---
+
+## Shipped: R1 and R2
+
+**R1 — the workspace is publishable.** `[workspace.package]` carries version,
+edition, licence, authors, repository, homepage and `rust-version = "1.92"`, and
+every crate inherits them. Descriptions, keywords and categories on all eight;
+`lilook-data` has a licence; path dependencies carry versions; `lilook-web` is
+`publish = false`.
+
+**The dry-run earned its place immediately.** The generated schema lived in
+`assets/` beside the workspace, and `include_str!("../../../../assets/..")`
+reaches outside the package -- so every published crate would have failed to
+build on someone else's machine, with a missing file rather than a clear error.
+It now lives in `lilook-core/assets/` and is exported as
+`lilook_core::schema::BUNDLED`, which also means one copy and one path instead of
+eight relative reaches.
+
+`lilook-core` and `lilook-data` verify standalone. The other five fail on
+"no matching package named `lilook-core`" and nothing else, which is not a defect
+but the publish order: crates.io must index each crate before the next can
+verify against it.
+
+**R2 — one tag produces everything.** `release.yml` runs the gate, builds
+`lilook-app` for macOS arm64 and x86_64, Linux x86_64 and Windows x86_64, packages
+each with `packaging/`, the README and the licence, and creates the release.
+`workflow_dispatch` is there so it can be rehearsed without minting a version --
+a workflow that runs only on tags runs rarely, and breaks between uses. A
+pre-release tag is marked as one. `fail-fast: false`, because a macOS runner
+outage is not a reason nobody can install on Linux.
+
+`release.toml` configures `cargo-release` in lockstep. Deliberately a command
+rather than a bot: a bot opens a pull request nobody reads, a command fails in
+front of the person who ran it.
+
+### Still to do
+
+R3 (the first publish to crates.io) and R4 (the Homebrew tap) are unchanged and
+now unblocked. R3 is one command once someone decides `0.2.0` is the version.

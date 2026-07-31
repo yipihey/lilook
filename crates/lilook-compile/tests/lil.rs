@@ -9,7 +9,7 @@
 use lilook_compile::{backend::Hints, Backend};
 use lilook_core::{Document, Schema, Session};
 
-const SCHEMA: &str = include_str!("../../../assets/lilaq-0.6.0.schema.json");
+const SCHEMA: &str = lilook_core::schema::BUNDLED;
 const PAPER: &str = r#"#import "@preview/lilaq:0.6.0" as lq
 #set page(width: 12cm, height: 9cm, margin: 8pt)
 = Results

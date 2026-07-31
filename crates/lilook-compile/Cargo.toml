@@ -1,9 +1,15 @@
 [package]
 name = "lilook-compile"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 description = "In-process typst backend for lilook: compile, probe, render."
-license = "MIT"
+license.workspace = true
+keywords = ["typst", "lilaq", "compiler", "svg", "pdf"]
+categories = ["science", "visualization"]
+rust-version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
 
 [features]
 # The desktop backend: read the project directory, download packages, use the
@@ -19,9 +25,14 @@ system = [
     "typst-kit/datetime",
 ]
 
+[package.metadata.release]
+# Publish order: crates.io must index each crate before the next verifies
+# against it.
+tag = false
+
 [dependencies]
 serde_json = "1"
-lilook-core = { path = "../lilook-core" }
+lilook-core = { path = "../lilook-core", version = "0.2.0" }
 typst = { workspace = true }
 typst-kit = { workspace = true }
 typst-layout = { workspace = true }
@@ -36,10 +47,10 @@ comemo = { workspace = true }
 web-time = "1"
 
 [dev-dependencies]
-lilook-data = { path = "../lilook-data" }
+lilook-data = { path = "../lilook-data", version = "0.2.0" }
 # Test-only: the inspector decides what `set` writes, and only a compiler can say
 # whether those values are valid. `check_expr` accepting them is not enough.
-lilook-ui = { path = "../lilook-ui" }
+lilook-ui = { path = "../lilook-ui", version = "0.2.0" }
 
 # The MCP server reads real files, so it needs the `system` loader. Declared
 # rather than assumed: `scripts/check.sh` also builds this crate for wasm32,

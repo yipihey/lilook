@@ -1,8 +1,20 @@
 [package]
 name = "lilook-data"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+keywords = ["npz", "fits", "hdf5", "veusz", "data"]
+categories = ["science", "parser-implementations"]
+rust-version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
 description = "Decoders for the binary and ASCII data formats lilook links figures to."
+
+[package.metadata.release]
+# Publish order: crates.io must index each crate before the next verifies
+# against it.
+tag = false
 
 [dependencies]
 # Deliberately almost nothing. Every decoder here takes `&[u8]`, so this crate

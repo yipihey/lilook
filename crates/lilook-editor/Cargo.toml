@@ -1,11 +1,22 @@
 [package]
 name = "lilook-editor"
-version = "0.1.0"
-edition = "2021"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+keywords = ["egui", "typst", "lilaq", "editor"]
+categories = ["gui", "visualization"]
+rust-version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
 description = "The lilook editor: panels, gestures and intents, over egui alone."
 
+[package.metadata.release]
+# Publish order: crates.io must index each crate before the next verifies
+# against it.
+tag = false
+
 [dependencies]
-lilook-core = { path = "../lilook-core" }
-lilook-ui = { path = "../lilook-ui" }
+lilook-core = { path = "../lilook-core", version = "0.2.0" }
+lilook-ui = { path = "../lilook-ui", version = "0.2.0" }
 egui = { workspace = true }

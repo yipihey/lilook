@@ -1,12 +1,24 @@
 [package]
 name = "lilook-ffi"
-version = "0.1.0"
-edition = "2021"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+description = "C ABI for driving a lilook document from Swift, Python or Julia."
+license.workspace = true
+keywords = ["ffi", "typst", "lilaq", "bindings"]
+categories = ["api-bindings", "visualization"]
+rust-version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
 
 [lib]
 crate-type = ["cdylib", "staticlib", "rlib"]
 
+[package.metadata.release]
+# Publish order: crates.io must index each crate before the next verifies
+# against it.
+tag = false
+
 [dependencies]
-lilook-core = { path = "../lilook-core" }
+lilook-core = { path = "../lilook-core", version = "0.2.0" }
 serde_json = { workspace = true }
