@@ -93,6 +93,11 @@ impl App {
         if let Some(expr) = query {
             self.actor.query(expr);
         }
+        let found: Vec<lilook_core::Blame> =
+            self.actor.take_blames().into_iter().flatten().collect();
+        if !found.is_empty() {
+            self.editor.accept_blame(found);
+        }
         for e in self.actor.take_exports() {
             let path = self.pending_export.take();
             self.editor.status = match (e.bytes, path) {
@@ -547,6 +552,9 @@ impl eframe::App for App {
         }
         if !requests.adopt.is_empty() {
             self.adopt(requests.adopt);
+        }
+        for message in requests.blame {
+            self.actor.blame(self.editor.text().to_string(), message);
         }
         if let Some((format, ppi)) = requests.export {
             self.export(&format, ppi);

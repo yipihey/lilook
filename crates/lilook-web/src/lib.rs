@@ -218,6 +218,20 @@ impl WebApp {
         for d in requests.adopt {
             self.adopt(d);
         }
+        if !requests.blame.is_empty() {
+            // In the frame, like the query: there is no thread to wait for, and
+            // an error the user just asked about should be explained now.
+            let doc = lilook_core::Document::new(self.editor.text());
+            let mut found = vec![];
+            for message in &requests.blame {
+                found.extend(lilook_compile::blame::locate(
+                    &mut self.backend,
+                    &doc,
+                    message,
+                ));
+            }
+            self.editor.accept_blame(found);
+        }
         if let Some((format, ppi)) = requests.export {
             self.editor.status = self.download(&format, ppi);
         }

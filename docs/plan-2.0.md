@@ -271,3 +271,36 @@ M4: hints alone justify the framing.
 - **Not a rewrite.** Every milestone is an addition to `Session` and a renderer
   in `lilook-ui`. If a milestone starts wanting to move something, that is a
   signal to stop and re-read this section.
+
+---
+
+## Shipped
+
+All six milestones, plus one the plan did not have: **localization by removal**.
+
+The unknown that shaped the plan -- whether `TextEdit::layouter` could carry
+semantic colour inside a live editable pane -- held. No new widget was needed, so
+the long pole never appeared.
+
+Two things came out differently:
+
+**Code actions are driven by `(message, document)` and `blame`, not by spans.**
+That was decided by measurement before the plan was written, and the blame
+mechanism that replaced spans turned out to be better than what it replaced: it
+produces the byte range the diagnostic was missing, and it is evidence rather
+than inference.
+
+**`Action` carries a list of intents.** A rename is a removal and an insertion.
+Inventing a `RenameNamedArg` variant would have meant teaching the undo generator
+something the existing pair already expresses.
+
+### What is not done
+
+- **Completion has no popup in egui.** `Session::completions` is complete and
+  tested; the source pane does not yet show it. The remaining work is an
+  `egui::Area` at the galley's cursor rect -- the plumbing it needs (`at(offset)`,
+  the galley) is all in place.
+- **Hints are margin-only.** Inline insertion would need a layout the `TextEdit`
+  does not offer. The value is in the number, not its placement, but it is worth
+  revisiting if the pane is ever replaced.
+- **References, code lens and folding** were never in scope for v1 and remain so.

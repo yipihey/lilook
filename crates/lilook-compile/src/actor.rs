@@ -49,6 +49,8 @@ struct Slot {
     /// Figures to export, and in what. Queued like queries rather than
     /// latest-wins: each one has a caller who asked for that particular file.
     exports: Vec<(crate::export::Format, f32)>,
+    /// Messages to locate the cause of, with the source to look in.
+    blames: Vec<(String, String)>,
     quit: bool,
 }
 
@@ -73,6 +75,7 @@ pub struct CompileActor {
     out: Receiver<Frame>,
     answers: Receiver<Answered>,
     exports: Receiver<Exported>,
+    blames: Receiver<Vec<lilook_core::Blame>>,
     /// True while a job is queued or running, so the UI can say "stale".
     busy: Arc<AtomicBool>,
     next_generation: u64,
@@ -91,6 +94,7 @@ impl CompileActor {
                 pending: None,
                 queries: vec![],
                 exports: vec![],
+                blames: vec![],
                 quit: false,
             }),
             Condvar::new(),
@@ -98,6 +102,7 @@ impl CompileActor {
         let (tx, out) = channel();
         let (qtx, answers) = channel();
         let (etx, exports) = channel();
+        let (btx, blames) = channel();
         let busy = Arc::new(AtomicBool::new(false));
 
         let thread = {
@@ -116,6 +121,7 @@ impl CompileActor {
                             while s.pending.is_none()
                                 && s.queries.is_empty()
                                 && s.exports.is_empty()
+                                && s.blames.is_empty()
                                 && !s.quit
                             {
                                 s = cv.wait(s).unwrap();
@@ -128,6 +134,7 @@ impl CompileActor {
                             // to be superseded anyway must not hold them up.
                             let queries = std::mem::take(&mut s.queries);
                             let exports = std::mem::take(&mut s.exports);
+                            let blames = std::mem::take(&mut s.blames);
                             drop(s);
                             for expr in queries {
                                 let (answer, diagnostics) = backend.query(&expr);
@@ -152,6 +159,14 @@ impl CompileActor {
                                     None => Err("nothing has compiled yet".into()),
                                 };
                                 if etx.send(Exported { format, bytes }).is_err() {
+                                    return;
+                                }
+                                wake();
+                            }
+                            for (source, message) in blames {
+                                let doc = Document::new(source);
+                                let found = crate::blame::locate(&mut backend, &doc, &message);
+                                if btx.send(found).is_err() {
                                     return;
                                 }
                                 wake();
@@ -198,6 +213,7 @@ impl CompileActor {
             out,
             answers,
             exports,
+            blames,
             busy,
             next_generation: 1,
             thread: Some(thread),
@@ -239,6 +255,21 @@ impl CompileActor {
         let (lock, cv) = &*self.slot;
         lock.lock().unwrap().exports.push((format, ppi));
         cv.notify_one();
+    }
+
+    /// Ask what causes `message` in `source`.
+    pub fn blame(&mut self, source: impl Into<String>, message: impl Into<String>) {
+        let (lock, cv) = &*self.slot;
+        lock.lock()
+            .unwrap()
+            .blames
+            .push((source.into(), message.into()));
+        cv.notify_one();
+    }
+
+    /// Causes found since this was last called.
+    pub fn take_blames(&self) -> Vec<Vec<lilook_core::Blame>> {
+        std::iter::from_fn(|| self.blames.try_recv().ok()).collect()
     }
 
     /// Exports that have finished since this was last called.

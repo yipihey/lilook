@@ -362,6 +362,7 @@ impl Editor {
         let ctx = self.ctx.clone().expect("a context for this frame");
         self.want_compile(&ctx);
         self.requests.query = self.queued_query.take();
+        self.requests.blame = std::mem::take(&mut self.queued_blame);
         std::mem::take(&mut self.requests)
     }
 
@@ -624,13 +625,41 @@ impl Editor {
                         lilook_ui::layout_job(text.as_str(), &spans, font.clone(), &visuals, wrap);
                     ui.fonts_mut(|f| f.layout_job(job))
                 };
-                let r = ui.add(
-                    egui::TextEdit::multiline(&mut buf)
-                        .id(id)
-                        .code_editor()
-                        .desired_width(f32::INFINITY)
-                        .layouter(&mut layouter),
-                );
+                let out = egui::TextEdit::multiline(&mut buf)
+                    .id(id)
+                    .code_editor()
+                    .desired_width(f32::INFINITY)
+                    .layouter(&mut layouter)
+                    .show(ui);
+                // What the compiler resolved, painted at the end of the line it
+                // belongs to. In the margin rather than inline: `TextEdit` lays
+                // out the buffer and nothing else, and a number the user cannot
+                // accidentally type into is the safer readout anyway.
+                for hint in self.session.hints() {
+                    if hint.at > buf.len() || !buf.is_char_boundary(hint.at) {
+                        continue;
+                    }
+                    // At the end of the line it belongs to, so a hint never sits
+                    // on top of the code it is describing.
+                    let eol = buf[hint.at..]
+                        .find('\n')
+                        .map(|i| hint.at + i)
+                        .unwrap_or(buf.len());
+                    // `CCursor` counts characters, not bytes.
+                    let chars = buf[..eol].chars().count();
+                    let row = out.galley.pos_from_cursor(egui::text::CCursor::new(chars));
+                    let at = out.galley_pos
+                        + row.right_top().to_vec2()
+                        + egui::vec2(ui.spacing().item_spacing.x * 2.0, 0.0);
+                    ui.painter().text(
+                        at,
+                        egui::Align2::LEFT_TOP,
+                        format!("⟨{}⟩", hint.text),
+                        egui::TextStyle::Monospace.resolve(ui.style()),
+                        ui.visuals().weak_text_color(),
+                    );
+                }
+                let r = out.response;
                 if r.changed() {
                     // Typing is a direct text edit, not model
                     // regeneration -- and a figure editor whose source
@@ -1239,7 +1268,50 @@ impl Editor {
         }
     }
 
-    fn diagnostics_ui(&self, ui: &mut egui::Ui) {
+    fn diagnostics_ui(&mut self, ui: &mut egui::Ui) {
+        // A diagnostic with no location is a dead end until something finds its
+        // cause. Offered rather than done: locating costs a compile per
+        // candidate, and an error the user is still typing into is not worth it.
+        let spanless = self
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error && d.range.is_none());
+        if spanless
+            && self.blames.is_empty()
+            && ui
+                .button("find the cause")
+                .on_hover_text(
+                    "lilaq reports most errors from inside itself, with no line to \
+                     point at. lilook can find it by removing one thing at a time \
+                     and recompiling -- a few milliseconds each.",
+                )
+                .clicked()
+        {
+            self.request_blame();
+        }
+        for b in self.blames.clone() {
+            ui.horizontal(|ui| {
+                ui.weak("caused by");
+                if ui.link(&b.label).on_hover_text("select it").clicked() {
+                    self.selected = b.node;
+                }
+            });
+        }
+        let mut chosen = None;
+        for action in self.actions(&self.blames.clone()) {
+            if ui
+                .button(format!("↻ {}", action.label))
+                .on_hover_text(&action.note)
+                .clicked()
+            {
+                chosen = Some(action);
+            }
+        }
+        if let Some(a) = chosen {
+            self.apply_action(&a);
+            self.blames.clear();
+        }
+
         for d in &self.diagnostics {
             let (color, tag) = match d.severity {
                 Severity::Error => (ui.visuals().error_fg_color, "error"),

@@ -1465,3 +1465,81 @@ fn there_are_no_hints_without_a_scene() {
     // No frames run: no compile, no scene.
     assert!(app.editor().hints().is_empty());
 }
+
+/// The whole error loop, through the real editor: broken figure → find the
+/// cause → take the fix → it compiles.
+///
+/// The capability the language-server framing most obviously demanded. Every
+/// diagnostic lilook showed used to be a dead end.
+#[test]
+fn a_broken_figure_can_be_diagnosed_and_fixed_from_the_ui() {
+    let Some(mut app) = app() else { return };
+    app.load(1);
+    run(&mut app, 3);
+    let healthy = app.editor().text().to_string();
+
+    // Break it the way a user would: a plausible misspelling.
+    let diagram = app.editor().doc.figures()[0].node;
+    app.editor_mut().doc.begin("typo");
+    app.editor_mut()
+        .apply_intent(lilook_core::Intent::InsertNamedArg {
+            node: diagram,
+            param: "widht".into(),
+            value: "8cm".into(),
+        });
+    app.editor_mut().doc.commit();
+    app.editor_mut().mark_dirty();
+    run(&mut app, 3);
+    assert!(!errors(&app).is_empty(), "the figure should be broken now");
+
+    // lilaq raises it from inside itself, so there is nothing to point at.
+    let d = app
+        .editor()
+        .diagnostics()
+        .iter()
+        .find(|d| d.severity == Severity::Error)
+        .cloned()
+        .expect("an error");
+    assert!(d.range.is_none(), "this is the spanless case");
+
+    // Ask, and the shell answers by recompiling variants.
+    app.editor_mut().request_blame();
+    run(&mut app, 2);
+    let blames = app.editor().blames.clone();
+    assert_eq!(blames.len(), 1, "one cause: {blames:?}");
+    assert_eq!(blames[0].argument.as_deref(), Some("widht"));
+    // The byte range the diagnostic never had.
+    let text = app.editor().text().to_string();
+    assert_eq!(&text[blames[0].range.clone()], "8cm");
+
+    // The offer, and taking it.
+    let actions = app.editor().actions(&blames);
+    // This example already sets `width`, so a rename would collide -- there
+    // cannot be two. Removal is the honest offer, and the note says why.
+    let fix = actions
+        .iter()
+        .find(|a| a.label.contains("widht"))
+        .cloned()
+        .unwrap_or_else(|| panic!("nothing offered: {actions:?}"));
+    assert!(fix.label.starts_with("remove"), "{}", fix.label);
+    assert!(fix.note.contains("already set"), "{}", fix.note);
+    app.editor_mut().apply_action(&fix);
+    app.editor_mut().mark_dirty();
+    run(&mut app, 3);
+    assert!(
+        errors(&app).is_empty(),
+        "the fix left it broken: {:?}",
+        errors(&app)
+    );
+    let fixed = app.editor().text().to_string();
+    assert!(!fixed.contains("widht"), "the typo is gone: {fixed}");
+    assert!(
+        fixed.contains("width:"),
+        "the real one is untouched: {fixed}"
+    );
+
+    // And it is one undoable step, back to a figure that also works.
+    app.editor_mut().doc.undo();
+    app.editor_mut().doc.undo();
+    assert_eq!(app.editor().text(), healthy);
+}

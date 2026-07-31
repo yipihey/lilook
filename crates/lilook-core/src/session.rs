@@ -78,6 +78,12 @@ pub struct Requests {
     /// no file system to have. The shell exports from the document it already
     /// compiled and puts the bytes wherever it can put them.
     pub export: Option<(String, f32)>,
+    /// Messages whose cause the shell should locate by recompiling variants.
+    ///
+    /// A request rather than an action because it needs a compiler, and because
+    /// it costs ~4 ms a candidate -- worth doing when the user asks about an
+    /// error, not on every frame that has one.
+    pub blame: Vec<String>,
 }
 
 /// Linking a file to a series, one step at a time.
@@ -190,9 +196,13 @@ pub struct Session {
     pub requests: Requests,
     pub link: Option<Link>,
     pub queued_query: Option<String>,
+    /// Blame asked for from inside a frame, emitted on the next one.
+    pub queued_blame: Vec<String>,
     pub changed_files: Vec<String>,
     pub follow_files: bool,
     pub link_path: String,
+    /// What the shell last found to be responsible for an error.
+    pub blames: Vec<crate::Blame>,
 }
 
 impl Session {
@@ -222,9 +232,11 @@ impl Session {
             requests: Requests::default(),
             link: None,
             queued_query: None,
+            queued_blame: vec![],
             changed_files: vec![],
             follow_files: false,
             link_path: String::new(),
+            blames: vec![],
         }
     }
 
@@ -1491,6 +1503,11 @@ impl Session {
                     let near = f.and_then(|f| {
                         f.params
                             .iter()
+                            // Not onto a name the call already has: `widht: 8cm`
+                            // beside an existing `width: 9cm` cannot be renamed,
+                            // only removed. Offering the rename anyway produced
+                            // an edit that silently did nothing.
+                            .filter(|p| !call.named.iter().any(|a| a.name == p.name))
                             .map(|p| (edit_distance(&wrong, &p.name), p.name.clone()))
                             .filter(|(d, _)| *d <= 3)
                             .min()
@@ -1521,7 +1538,14 @@ impl Session {
                         }
                         None => out.push(Action {
                             label: format!("remove `{wrong}`"),
-                            note: "this call does not take it".into(),
+                            note: match f.is_some_and(|f| f.params.iter().any(|p| {
+                                edit_distance(&wrong, &p.name) <= 3
+                                    && call.named.iter().any(|a| a.name == p.name)
+                            })) {
+                                true => "this call does not take it, and the name                                          it resembles is already set"
+                                    .into(),
+                                false => "this call does not take it".to_string(),
+                            },
                             intents: vec![Intent::RemoveNamedArg {
                                 node: b.node,
                                 param: wrong.clone(),
@@ -1605,6 +1629,29 @@ impl Session {
         }
         out.sort_by_key(|h| h.at);
         out
+    }
+
+    /// Ask the shell to locate what causes the errors currently reported.
+    pub fn request_blame(&mut self) {
+        // Queued, not set directly: a frontend clears `requests` at the top of
+        // every frame, so anything asked for from inside one is discarded before
+        // the shell sees it. `queued_query` exists for exactly this reason, and
+        // this is the second time the trap has been walked into.
+        self.queued_blame = self
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error && d.range.is_none())
+            .map(|d| d.message.clone())
+            .collect();
+    }
+
+    /// Take what the shell found.
+    pub fn accept_blame(&mut self, blames: Vec<crate::Blame>) {
+        self.blames = blames;
+        self.status = match self.blames.len() {
+            0 => "nothing in the document accounts for that".into(),
+            n => format!("{n} cause(s) found"),
+        };
     }
 
     /// Ask the shell for the figure as a file.
