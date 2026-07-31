@@ -62,6 +62,14 @@ pub fn refine(control: Control, editability: Editability, text: &str) -> Control
             Control::Color if parse_color(text).is_some() => Control::Color,
             Control::Alignment if parse_alignment(text).is_some() => Control::Alignment,
             Control::Text if parse_text(text).is_some() => Control::Text,
+            // A colormap and a cycle are always *chosen*, never edited in place:
+            // the picker writes a whole expression over whatever was there. So an
+            // opaque current value -- `color.map.viridis` is a field access, and
+            // every one of them is -- says nothing about whether it can be
+            // changed. Without this the most consequential control on a heatmap
+            // rendered as a read-only label.
+            Control::Colormap => Control::Colormap,
+            Control::Cycle => Control::Cycle,
             _ => Control::ReadOnly,
         };
     }

@@ -443,3 +443,40 @@ fn words_are_written_back_in_the_shape_they_came_in() {
         );
     }
 }
+
+/// A colormap stays pickable even though its value is an expression.
+///
+/// `color.map.viridis` is a field access, so `Editability` calls it opaque, and
+/// the general rule is that an opaque value becomes a read-only label. That rule
+/// is right for a number built by arithmetic and wrong here: the picker replaces
+/// the whole expression rather than editing part of one. Caught by looking at the
+/// deployed site, where the most consequential control on a heatmap was a label.
+#[test]
+fn a_colormap_is_pickable_even_though_its_value_is_an_expression() {
+    use lilook_core::{policy::control_for, Control, Editability};
+    let schema = schema();
+    let map = schema.functions["colormesh"]
+        .params
+        .iter()
+        .find(|p| p.name == "map")
+        .expect("colormesh takes a map");
+    assert_eq!(map.widget, "colormap");
+    assert_eq!(control_for(Some(map)), Control::Colormap);
+    for text in ["color.map.viridis", "color.map.magma", "my-ramp"] {
+        assert_eq!(
+            lilook_ui::inspector::control_of(Some(map), Editability::Opaque, text),
+            Control::Colormap,
+            "{text} should still be pickable"
+        );
+    }
+    // And the same for a diagram's palette, whose named form is a bare string.
+    let cycle = schema.functions["diagram"]
+        .params
+        .iter()
+        .find(|p| p.name == "cycle")
+        .expect("diagram takes a cycle");
+    assert_eq!(
+        lilook_ui::inspector::control_of(Some(cycle), Editability::Opaque, "petroff10"),
+        Control::Cycle
+    );
+}
