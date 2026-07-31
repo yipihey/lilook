@@ -245,3 +245,48 @@ front of the person who ran it.
 
 R3 (the first publish to crates.io) and R4 (the Homebrew tap) are unchanged and
 now unblocked. R3 is one command once someone decides `0.2.0` is the version.
+
+---
+
+## The rehearsal
+
+R2's exit criterion, run twice before any version existed. Both runs earned their
+keep.
+
+**Locally, before CI.** Built the binary, packaged it exactly as the workflow
+does, unpacked the archive and used it as someone downloading it would. Two
+findings:
+
+- `--help` printed `lilook: --help: No such file or directory`. The parser
+  treated any non-flag as a filename and everything else fell through to the same
+  branch. Nobody who already knows how to start a program ever types `--help`,
+  which is exactly why it survived to a release rehearsal.
+- The archive was 25 MB of which 12 was debug symbols. A `dist` profile strips
+  them; `release` keeps them so a local profile stays readable.
+
+**In CI, first run: failed.** `lilook-web`'s build script bakes the lilaq package
+tree into the binary and reads it from the local typst cache, which a fresh
+runner has none of. `ci.yml` has run `scripts/fetch-packages.sh` for this reason
+since it was written; the release workflow set an empty directory and hoped.
+
+This is precisely what `workflow_dispatch` is for, and the argument for it is now
+evidence rather than reasoning: a tag-only workflow would have found this
+*during* a release.
+
+**In CI, second run: green.** 29m43s cold, four artifacts:
+
+| | |
+| --- | --- |
+| macos-arm64 | 22 MB |
+| macos-x86_64 | 23 MB |
+| windows-x86_64 | 23 MB |
+| linux-x86_64 | 25 MB |
+
+`publish` skipped, correctly -- it is gated on a tag, and a rehearsal is not one.
+
+**And the last unproven link:** the macOS arm64 artifact was downloaded from the
+run, unpacked, and used. It reports `lilook 0.2.0` and draws a figure. Not the
+build tree's binary -- the one a stranger would get.
+
+R2 is done. R3 and R4 remain, and both need credentials this repository does not
+hold: a crates.io token, and the `yipihey/homebrew-lilook` repository.
