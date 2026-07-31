@@ -1950,3 +1950,38 @@ Two things the tests caught rather than review. An error that needs *two* causes
 reported; naming one would be arbitrary. And `locate` must first confirm the
 error is present at all, or an error nobody had is "cleared" by every removal and
 the whole document is indicted.
+
+## tinymist-query needs a patched typst, so lilook cannot have it
+
+2026-07-31. Investigated as the way to give lilook's source pane the typst-general
+completion and hover it lacks. The intended trade was bundle size against
+capability; the actual answer was neither.
+
+`tinymist-query 0.15.4-rc1` resolves `typst 0.15.1` from crates.io and then fails
+to compile against it:
+
+```
+error[E0432]: unresolved import `typst::foundations::FuncInner`
+error[E0599]: no method named `inner` found for struct `typst::foundations::Func`
+```
+
+`FuncInner` does not exist in published typst. tinymist builds against its own
+patched typst, so linking `tinymist-query` would mean replacing lilook's typst
+with that fork -- and the probe, the render, the export and every pixel-identical
+guarantee would then depend on a compiler lilook does not control. That is not a
+size trade-off, it is a foundation trade-off, and the answer is no.
+
+The size number was going to be the argument and is now only a footnote: 379
+crates, against 321 for the whole of `lilook-web`, including tokio, protobuf and
+dashmap.
+
+**What was done instead.** A hand-kept table of the twenty-six typst expressions
+people actually write inside a figure -- `calc.*`, `range`, `float`, `rgb`,
+`luma`, `gradient.linear` -- offered where an expression goes: in a data slot, and
+beside a numeric value. Each entry is asserted to parse, so the table cannot rot
+quietly.
+
+This is the second time this question has come out the same way. `typstyle-core`
+was worth linking because it is a small library with a narrow contract;
+`tinymist-query` is not because it dictates the compiler. **Borrow a library, not
+a foundation.**

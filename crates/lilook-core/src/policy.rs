@@ -313,3 +313,45 @@ pub const DASH_NAMES: &[&str] = &[
     "densely-dash-dotted",
     "loosely-dash-dotted",
 ];
+
+/// Typst expressions worth offering where a figure takes a value.
+///
+/// Not the standard library -- a menu of six hundred names is a worse answer
+/// than none. These are what people actually write *inside a diagram*: arithmetic
+/// on data, a range, a colour built rather than named.
+///
+/// A hand-kept table, deliberately. The alternative was `tinymist-query`, which
+/// turned out to require a patched typst (see `docs/findings.md`), and thirty
+/// names that never go stale beat a dependency that dictates the compiler.
+pub const TYPST_HELPERS: &[(&str, &str, &str)] = &[
+    ("calc.sqrt", "calc.sqrt(", "square root"),
+    ("calc.pow", "calc.pow(", "x to the power y"),
+    ("calc.exp", "calc.exp(", "e to the x"),
+    ("calc.ln", "calc.ln(", "natural log"),
+    ("calc.log", "calc.log(", "log base 10"),
+    ("calc.sin", "calc.sin(", "sine, in radians"),
+    ("calc.cos", "calc.cos(", "cosine, in radians"),
+    ("calc.tan", "calc.tan(", "tangent"),
+    ("calc.atan2", "calc.atan2(", "angle of a vector"),
+    ("calc.abs", "calc.abs(", "absolute value"),
+    ("calc.min", "calc.min(", "smallest of its arguments"),
+    ("calc.max", "calc.max(", "largest of its arguments"),
+    ("calc.round", "calc.round(", "to the nearest whole number"),
+    ("calc.floor", "calc.floor(", "down"),
+    ("calc.ceil", "calc.ceil(", "up"),
+    ("calc.rem", "calc.rem(", "remainder"),
+    ("calc.pi", "calc.pi", "π"),
+    ("calc.e", "calc.e", "e"),
+    ("calc.inf", "calc.inf", "infinity"),
+    ("range", "range(", "0, 1, 2, … — an index axis"),
+    ("float", "float(", "text to a number"),
+    ("int", "int(", "to a whole number"),
+    ("rgb", "rgb(\"#\")", "a colour by hex"),
+    ("luma", "luma(50%)", "a grey"),
+    ("cmyk", "cmyk(0%, 0%, 0%, 0%)", "a print colour"),
+    (
+        "gradient.linear",
+        "gradient.linear(",
+        "a colour ramp of your own",
+    ),
+];

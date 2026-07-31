@@ -1396,6 +1396,23 @@ impl Session {
                 }
                 _ => {}
             }
+            // A number or an array can be computed as easily as typed.
+            if matches!(
+                crate::widget_control(&p.widget),
+                Some(crate::Control::Number)
+                    | Some(crate::Control::NumberOrArray)
+                    | Some(crate::Control::Source)
+            ) {
+                out.extend(
+                    crate::TYPST_HELPERS
+                        .iter()
+                        .map(|(label, insert, note)| Completion {
+                            label: (*label).into(),
+                            insert: (*insert).into(),
+                            note: (*note).into(),
+                        }),
+                );
+            }
             out.extend(p.sentinels.iter().map(|sn| Completion {
                 label: sn.clone(),
                 insert: sn.clone(),
@@ -1407,6 +1424,19 @@ impl Session {
         // A name goes here, and a string is never a name.
         if cursor.in_string {
             return vec![];
+        }
+        // Inside a data slot the user is writing an *expression*, not naming a
+        // parameter. `lq.plot(x, calc.|` wants arithmetic, and offering
+        // `stroke:` there would be nonsense.
+        if cursor.slot.is_some() {
+            return crate::TYPST_HELPERS
+                .iter()
+                .map(|(label, insert, note)| Completion {
+                    label: (*label).into(),
+                    insert: (*insert).into(),
+                    note: (*note).into(),
+                })
+                .collect();
         }
         // Otherwise a parameter name. Each is offered once with its safe value,
         // and again per choice where it has a small fixed set -- so picking

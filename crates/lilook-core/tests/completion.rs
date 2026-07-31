@@ -104,3 +104,41 @@ fn signature_help_names_the_call_and_the_active_parameter() {
         .expect("inside the colormesh");
     assert_eq!(sig.name, "colormesh");
 }
+
+/// Inside a data slot the user is writing an expression, not naming a parameter.
+///
+/// `lq.plot(x, calc.|` wants arithmetic. Offering `stroke:` there would be
+/// nonsense, and offering nothing — which is what happened before — sends people
+/// to a browser tab for `calc.sqrt`.
+#[test]
+fn a_data_slot_offers_expressions_rather_than_parameter_names() {
+    let s = session();
+    let inside = at("xs, ys") + 1;
+    let names: Vec<String> = s.completions(inside).into_iter().map(|c| c.label).collect();
+    assert!(names.contains(&"calc.sqrt".to_string()), "{names:?}");
+    assert!(names.contains(&"range".to_string()));
+    assert!(
+        !names.iter().any(|n| n.contains("stroke")),
+        "not parameter names: {names:?}"
+    );
+}
+
+/// Every helper offered is something typst accepts.
+///
+/// A hand-kept table earns its keep only if it is right, so each entry is parsed
+/// — with the open parenthesis closed, since a completion leaves the caret
+/// inside the call.
+#[test]
+fn every_helper_offered_is_real_typst() {
+    for (label, insert, note) in lilook_core::TYPST_HELPERS {
+        assert!(!note.is_empty(), "{label} has no explanation");
+        let expr = match insert.ends_with('(') {
+            true => format!("{insert}1)"),
+            false => insert.to_string(),
+        };
+        assert!(
+            lilook_core::check_expr(&expr).is_ok(),
+            "{label} offers {expr:?}, which does not parse"
+        );
+    }
+}
