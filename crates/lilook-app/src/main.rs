@@ -588,6 +588,23 @@ const SAMPLE: &str = r#"#import "@preview/lilaq:0.6.0" as lq
 )
 "#;
 
+const USAGE: &str = "\
+lilook -- edit a lilaq figure by pointing at it
+
+    lilook [FILE]
+
+FILE is a Typst document, or a `.lil` figure. With none, a sample opens.
+
+    -h, --help            this
+    -V, --version         the version
+        --screenshot OUT  draw one frame to a PNG and exit
+        --select N        select call site N first, for scripted screenshots
+
+The figure is edited in place: every gesture is a small edit to the file, and
+undo is a text-edit history. Try it in a browser first if you like:
+https://yipihey.github.io/lilook/
+";
+
 fn main() -> eframe::Result<()> {
     let mut args = std::env::args().skip(1);
     let mut path = None;
@@ -600,6 +617,22 @@ fn main() -> eframe::Result<()> {
         match a.as_str() {
             "--screenshot" => screenshot = args.next().map(PathBuf::from),
             "--select" => select = args.next().and_then(|s| s.parse().ok()),
+            // The first thing anyone types after downloading a binary. Without
+            // these it read `--help` as a filename and reported that no such
+            // file exists, which is a poor first impression and was found by
+            // rehearsing the release rather than by using the program.
+            "--help" | "-h" => {
+                println!("{USAGE}");
+                return Ok(());
+            }
+            "--version" | "-V" => {
+                println!("lilook {}", env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
+            other if other.starts_with('-') => {
+                eprintln!("lilook: unknown option {other}\n\n{USAGE}");
+                std::process::exit(2);
+            }
             _ => path = Some(PathBuf::from(a)),
         }
     }

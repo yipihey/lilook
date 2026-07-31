@@ -58,6 +58,12 @@ opt-level = 2
 # here because a panic in the browser already ends the session: eframe cannot
 # continue after one. Thin rather than fat LTO because fat LTO on typst runs for
 # the better part of an hour and `wasm-opt -Oz` does the heavy lifting anyway.
+# What a release ships. `release` keeps its symbols so a local profile or a
+# backtrace is still readable; a download does not need 12 MB of them.
+[profile.dist]
+inherits = "release"
+strip = true
+
 [profile.wasm-release]
 inherits = "release"
 opt-level = "s"
