@@ -1727,3 +1727,50 @@ The methodological point is the second one. The obvious repair after the first
 failure was to teach the generator to pan through `shifted` like the canvas does
 -- which would have made the test pass and hidden the defect completely. A
 property test that only produces already-safe inputs is testing its own generator.
+
+## The layering is clean except for one crate, and it is measurable
+
+2026-07-31. Audited how much of lilook is portable Rust versus how much is tied
+to egui, since the answer decides how cheap a Swift frontend and a useful MCP
+server are.
+
+| crate | lines | needs egui |
+| --- | --- | --- |
+| lilook-core | 8,140 | no |
+| lilook-compile | 3,644 | no |
+| lilook-data | 3,490 | no |
+| lilook-ffi | 332 | no |
+| lilook-ui | 4,650 | **yes** |
+| lilook-editor | 4,560 | **yes** |
+| lilook-app / lilook-web | 2,038 | yes (shells) |
+
+58% is GUI-free, and the core/compile/data split holds up: the document model,
+the probe technique, every decoder and every emitter are portable today.
+
+**The exception is `lilook-editor`, and it is not marginal. 49 of its 62 methods
+never mention egui.** Every link operation, `unlock`, all four theme operations,
+paste, duplicate, delete, and `handle_canvas` -- the entire gesture vocabulary --
+are pure document logic sitting behind a GUI dependency. Same shape one level
+down: 18 of `inspector.rs`'s 22 functions are pure schema policy (`control_of`,
+`seed`, `takes_text`, `sentinel_of`, `widget_control`, `shape_hint`), which is
+exactly what an MCP server needs to tell an agent that a parameter takes a
+length, defaults to `1cm`, and treats `none` as unset.
+
+The cost is already visible rather than hypothetical. The MCP server exposes four
+tools -- inspect, schema, set_arg, add_arg -- and the FFI exposes ten raw
+document primitives. Neither can link a data file, unlock a dataset, switch a
+theme or perform a gesture. Not because those are GUI concerns, but because they
+live in a GUI crate.
+
+**The remedy is a move, not a rewrite,** and the struct already shows the seam.
+`Editor` holds five render fields (`canvas`, `textures`, `pages`,
+`max_pixel_per_pt`, `rendered_at`) and twenty document fields (`doc`, `schema`,
+`selected`, `link`, `data_files`, `scenes`, `clipboard`, ...). Split it into a
+GUI-free `Session` carrying the document state and the 49 methods, plus an
+`Editor` that owns a `Session` and the panels. Move the 18 policy functions to
+core beside the schema. Then Swift and MCP get the vocabulary the GUI already
+has, and "the editor never touches the compiler" gains a sibling: "the panels
+never touch the document."
+
+Not started. Recorded because the measurement is the part that would otherwise
+have to be redone.
