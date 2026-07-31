@@ -28,11 +28,15 @@ jobs:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - name: fetch the pinned lilaq package
-        run: |
-          mkdir -p .packages
-          echo "TYPST_PACKAGE_CACHE_PATH=$PWD/.packages" >> "$GITHUB_ENV"
+      # The browser build bakes the lilaq package tree into the binary, and a
+      # runner has no typst cache to bake it from. The same step `ci.yml` runs --
+      # the rehearsal found this by failing, which is what a rehearsal is for.
+      - name: fetch typst packages
+        run: scripts/fetch-packages.sh
       - run: scripts/check.sh
+        env:
+          TYPST_PACKAGE_CACHE_PATH: ${{ github.workspace }}/.packages
+          XDG_CACHE_HOME: ${{ github.workspace }}/.cache
 
   binaries:
     needs: gate
@@ -67,7 +71,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev \
                                   libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+      - name: fetch typst packages
+        shell: bash
+        run: scripts/fetch-packages.sh
       - run: cargo build --profile dist -p lilook-app --target ${{ matrix.target }}
+        env:
+          TYPST_PACKAGE_CACHE_PATH: ${{ github.workspace }}/.packages
       - name: package
         shell: bash
         run: |
