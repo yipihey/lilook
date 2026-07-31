@@ -29,6 +29,15 @@ use typst_layout::PagedDocument;
 
 pub const PROBE_LABEL: &str = "lilook-probe";
 pub const SERIES_LABEL: &str = "lilook-series";
+/// The label bracketing a pickable non-series element.
+const ELEMENT_LABEL: &str = "lilook-el";
+
+/// How wide a bracketed element is taken to be, in points.
+///
+/// The markers bracket a flow, so they agree about the left edge and say nothing
+/// about the right. Wide enough to click a colorbar and its label, narrow enough
+/// not to reach the figure beside it.
+const ELEMENT_WIDTH: f64 = 44.0;
 
 /// Named arguments that carry data rather than style, and so are worth
 /// recovering as channels alongside x and y.
@@ -340,6 +349,62 @@ pub fn inject_with(
         }
     }
 
+    // Elements that are not series and not diagrams -- a colorbar is the one
+    // lilaq has -- are bracketed by two layout-neutral markers, so lilook learns
+    // where they landed. Verified pixel-identical: `metadata` lays out to
+    // nothing, and `here().position()` still reports where nothing was put.
+    let mut pickable: Vec<usize> = doc
+        .calls()
+        .iter()
+        .filter(|c| {
+            c.parent.is_none()
+                && c.short_name() != "diagram"
+                && !c.is_xy_series()
+                && SELECTABLE.contains(&c.short_name())
+        })
+        .map(|c| c.id)
+        .collect();
+    pickable.sort_by_key(|id| std::cmp::Reverse(doc.call(*id).map(|c| c.range.start)));
+    // Offsets are in the *user's* text, and the figure probes above have already
+    // been spliced in, so each one has to be carried forward past everything
+    // inserted before it. Getting this wrong put a bracket in the middle of a
+    // probe and produced `lq.[#context ...]#place(..`.
+    let forward = |splices: &[(usize, usize)], at: usize| -> usize {
+        splices
+            .iter()
+            .filter(|(s, _)| *s <= at)
+            .map(|(_, len)| len)
+            .sum::<usize>()
+            + at
+    };
+    for id in &pickable {
+        let Some(call) = doc.call(*id) else { continue };
+        let (a, b) = (
+            forward(&splices, call.range.start),
+            forward(&splices, call.range.end),
+        );
+        // Wrapped in a content block, because the call may sit in *code* -- a
+        // grid cell, an argument list -- where a bare `#` is a syntax error. In
+        // markup both the marker and the call take their hash, and the block
+        // lays out to exactly what it contains: verified pixel-identical.
+        let marker = |e: usize| {
+            format!(
+                "#context [#metadata((el: {id}, e: {e}, pos: here().position()))<{ELEMENT_LABEL}>]"
+            )
+        };
+        // In markup the call already carries its `#`; in code it does not, and
+        // inside the wrapper it must, or it becomes literal text.
+        let hashed = out[..a].ends_with('#');
+        let close = format!("{}]", marker(1));
+        let open = format!("[{}{}", marker(0), if hashed { "" } else { "#" });
+        out.insert_str(b, &close);
+        out.insert_str(a, &open);
+        // Recorded against the user's own text, like every other splice, because
+        // that is the coordinate system diagnostics are carried back into.
+        splices.push((call.range.end, close.len()));
+        splices.push((call.range.start, open.len()));
+    }
+
     (
         out,
         Injection {
@@ -390,6 +455,9 @@ fn insertion_point(call: &CallSite, _text: &str) -> Option<usize> {
 
 // ------------------------------------------------------------------ recovery
 
+/// A page and a point on it: where a marker ended up.
+type Spot = (usize, f64, f64);
+
 #[derive(Debug, Default)]
 struct Raw {
     /// (figure, kind) -> (page, x pt, y pt)
@@ -398,7 +466,15 @@ struct Raw {
     series: HashMap<usize, Vec<SeriesGeom>>,
     /// figure -> whether each axis's data is numeric. Absent means it is.
     non_numeric: HashMap<usize, (bool, bool)>,
+    /// call -> where the content flow entered and left a pickable element.
+    elements: HashMap<usize, [Option<Spot>; 2]>,
 }
+
+/// Calls worth being able to click, that are neither a diagram nor a series.
+///
+/// A colorbar is the one lilaq has: a frame of its own, drawn beside a figure,
+/// which until now could be reached only through the tree.
+const SELECTABLE: &[&str] = &["colorbar"];
 
 pub(crate) fn label(name: &str) -> Selector {
     Selector::Label(Label::new(PicoStr::intern(name)).expect("non-empty label"))
@@ -452,6 +528,28 @@ fn read(doc: &PagedDocument) -> Raw {
 
     // `Dict::at` hands back an owned `Value`, so everything here is by value.
     let field = |d: &typst::foundations::Dict, k: &str| d.at(k.into(), None).ok();
+
+    for c in doc.introspector().query(&label(ELEMENT_LABEL)) {
+        let Ok(Value::Dict(d)) = c.field_by_name("value") else {
+            continue;
+        };
+        let (Some(el), Some(end), Some(Value::Dict(pos))) =
+            (field(&d, "el"), field(&d, "e"), field(&d, "pos"))
+        else {
+            continue;
+        };
+        let (Some(el), Some(end), Some(page), Some(x), Some(y)) = (
+            as_f64(&el),
+            as_f64(&end),
+            field(&pos, "page").as_ref().and_then(as_f64),
+            field(&pos, "x").as_ref().and_then(as_pt),
+            field(&pos, "y").as_ref().and_then(as_pt),
+        ) else {
+            continue;
+        };
+        raw.elements.entry(el as usize).or_default()[end as usize] =
+            Some(((page as usize).saturating_sub(1), x, y));
+    }
 
     for c in doc.introspector().query(&label(PROBE_LABEL)) {
         let Ok(Value::Dict(d)) = c.field_by_name("value") else {
@@ -711,6 +809,51 @@ fn axis(
 pub fn scenes(doc: &PagedDocument, injection: &Injection) -> Vec<Scene> {
     let mut raw = read(doc);
     let mut out = vec![];
+
+    // A colorbar is a frame on the page with no data in it. Modelled as a scene
+    // of its own so the canvas needs nothing new: it already picks a scene by the
+    // area it covers, and already offers the frame's edges for resizing -- which
+    // works here because a colorbar forwards `width` and `height` to the diagram
+    // it is drawn from.
+    //
+    // `numeric: (false, false)` because there is no data transform to recover:
+    // the two markers bracket where it sits, not what it means.
+    for (&node, ends) in &raw.elements {
+        let (Some(a), Some(b)) = (ends[0], ends[1]) else {
+            continue;
+        };
+        if a.0 != b.0 {
+            continue; // split across pages; nothing sensible to outline
+        }
+        let flat = AxisMap {
+            origin: 0.0,
+            scale: 1.0,
+            min: 0.0,
+            max: 0.0,
+            kind: AxisScale::Linear,
+        };
+        out.push(Scene {
+            figure: node,
+            page: a.0,
+            // The two markers report where the content flow entered and left,
+            // which gives an honest *height* and no width at all -- both sit on
+            // the same left edge. So the box is the flow between them, grown
+            // rightwards by enough to be clickable.
+            //
+            // A pick target, not a measurement. Recovering a real outline would
+            // need corner probes inside the element, and a colorbar's argument
+            // list has nowhere to put them.
+            area: (
+                a.1.min(b.1),
+                a.2.min(b.2),
+                a.1.max(b.1) + ELEMENT_WIDTH,
+                a.2.max(b.2),
+            ),
+            transform: Transform { x: flat, y: flat },
+            numeric: (false, false),
+            series: vec![],
+        });
+    }
     for (&figure, &data) in &injection.scale_probes {
         let get = |k: &str| raw.probes.get(&(figure, k.to_string())).copied();
         // Without the scale probes there is no transform to solve, but the corners

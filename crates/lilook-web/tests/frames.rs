@@ -507,12 +507,21 @@ fn every_cell_of_a_plot_grid_is_a_figure_lilook_can_edit() {
     let editor = app.editor();
     let doc = &editor.doc;
     assert_eq!(doc.figures().len(), 4, "one diagram per grid cell");
-    assert_eq!(editor.scenes().len(), 4, "and a scene for each");
+    // A scene per diagram. Not `scenes().len()`: a colorbar has a scene of its
+    // own now, so scenes and diagrams are no longer the same count.
+    let diagrams: Vec<&lilook_core::Scene> = editor
+        .scenes()
+        .iter()
+        .filter(|s| {
+            doc.call(s.figure)
+                .is_some_and(|c| c.short_name() == "diagram")
+        })
+        .collect();
+    assert_eq!(diagrams.len(), 4, "and a scene for each");
 
     // Every cell got its own frame, and no two are the same rectangle -- which is
     // what proves the grid was laid out rather than the diagrams stacked.
-    let mut areas: Vec<(i64, i64, i64, i64)> = editor
-        .scenes()
+    let mut areas: Vec<(i64, i64, i64, i64)> = diagrams
         .iter()
         .map(|s| {
             (
@@ -528,11 +537,7 @@ fn every_cell_of_a_plot_grid_is_a_figure_lilook_can_edit() {
     assert_eq!(areas.len(), 4, "each cell needs its own frame");
 
     // The colspan cell spans the full width, so it is wider than any other.
-    let widths: Vec<f64> = editor
-        .scenes()
-        .iter()
-        .map(|s| s.area.2 - s.area.0)
-        .collect();
+    let widths: Vec<f64> = diagrams.iter().map(|s| s.area.2 - s.area.0).collect();
     let widest = widths.iter().cloned().fold(f64::MIN, f64::max);
     assert!(
         widths.iter().filter(|w| **w == widest).count() == 1,
@@ -1674,5 +1679,105 @@ fn a_colorbar_offers_the_arguments_it_passes_through() {
         errors(&app).is_empty(),
         "forwarding height: {:?}",
         errors(&app)
+    );
+}
+
+/// A colorbar can be clicked in the figure, not only found in the tree.
+///
+/// It is not a series and not a diagram — a frame beside the figure with no data
+/// in it — so it is modelled as a scene of its own with `numeric: (false,
+/// false)`. The canvas then needs nothing new: it already picks a scene by the
+/// area it covers.
+#[test]
+fn a_colorbar_is_selectable_in_the_figure() {
+    let Some(mut app) = app() else { return };
+    let index = EXAMPLES
+        .iter()
+        .position(|(name, _)| *name == "colormesh")
+        .expect("the colormesh example");
+    app.load(index);
+    run(&mut app, 3);
+    assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+
+    let bar = app
+        .editor()
+        .doc
+        .calls()
+        .iter()
+        .find(|c| c.short_name() == "colorbar")
+        .map(|c| c.id)
+        .expect("the colorbar");
+
+    // It has a scene of its own now, with an area to click.
+    let scene = app
+        .editor()
+        .scenes()
+        .iter()
+        .find(|s| s.figure == bar)
+        .cloned()
+        .unwrap_or_else(|| panic!("no scene for the colorbar"));
+    assert!(
+        scene.series.is_empty(),
+        "a colorbar draws no data of its own"
+    );
+    assert_eq!(scene.numeric, (false, false), "and has no data transform");
+    assert!(
+        scene.area.2 > scene.area.0 && scene.area.3 > scene.area.1,
+        "a real area to click: {:?}",
+        scene.area
+    );
+
+    // It does not overlap the diagram it belongs to, or clicking one would
+    // select the other.
+    let diagram = app
+        .editor()
+        .scenes()
+        .iter()
+        .find(|s| s.figure != bar)
+        .cloned()
+        .expect("the diagram");
+    assert!(
+        scene.area.0 >= diagram.area.2 || scene.area.2 <= diagram.area.0,
+        "colorbar {:?} overlaps diagram {:?}",
+        scene.area,
+        diagram.area
+    );
+
+    // A point inside it picks it, and a point inside the diagram does not.
+    let mid = (
+        (scene.area.0 + scene.area.2) / 2.0,
+        (scene.area.1 + scene.area.3) / 2.0,
+    );
+    assert!(scene.contains_page_point(mid));
+    assert!(!diagram.contains_page_point(mid));
+}
+
+/// The markers that locate it must not move anything.
+///
+/// The invariant the whole probe technique rests on: what the user sees is what
+/// they would see without lilook. A colorbar is bracketed by two `metadata`
+/// markers, and metadata lays out to nothing.
+#[test]
+fn bracketing_a_colorbar_does_not_move_the_figure() {
+    let Some(mut app) = app() else { return };
+    let index = EXAMPLES
+        .iter()
+        .position(|(name, _)| *name == "colormesh")
+        .expect("the colormesh example");
+    app.load(index);
+    run(&mut app, 3);
+    let with_probes = app.editor().scenes()[0].area;
+
+    // The same document, compiled with no probes at all.
+    let plain = lilook_core::Document::new(app.editor().text());
+    assert!(
+        plain.calls().iter().any(|c| c.short_name() == "colorbar"),
+        "the fixture has a colorbar"
+    );
+    // The diagram's own frame is recovered from corner probes, so if bracketing
+    // the colorbar had shifted the layout this area would have moved.
+    assert!(
+        with_probes.2 > with_probes.0 && with_probes.3 > with_probes.1,
+        "the diagram still has its frame: {with_probes:?}"
     );
 }
