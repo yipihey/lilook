@@ -2029,6 +2029,16 @@ impl Session {
                         self.set_or_insert(figure, param, value);
                     }
                 }
+                CanvasEvent::MoveLegend { figure, to } => {
+                    let Some(scene) = self.scenes.iter().find(|s| s.figure == figure) else {
+                        continue;
+                    };
+                    let position = scene.nearest_legend_position(to);
+                    // The whole dictionary, because `legend:` takes one and
+                    // rewriting a field inside it would mean parsing what the
+                    // user wrote there.
+                    self.set_or_insert(figure, "legend", format!("(position: {position})"));
+                }
                 CanvasEvent::SetSize {
                     figure,
                     width_pt,

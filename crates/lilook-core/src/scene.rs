@@ -9,10 +9,16 @@
 //! The type lives in core rather than in the compile backend so that the UI can
 //! consume it without depending on a typesetter.
 
-#[cfg(test)]
-use crate::compile::AxisScale;
-use crate::compile::Transform;
-use crate::doc::{Axis, SeriesShape};
+impl Decoration {
+    /// The diagram argument that controls it.
+    pub fn param(self) -> &'static str {
+        match self {
+            Decoration::Legend => "legend",
+            Decoration::Title => "title",
+            Decoration::Label => "xlabel",
+        }
+    }
+}
 
 /// One series' evaluated data, in data units.
 #[derive(Debug, Clone, PartialEq)]
@@ -283,6 +289,9 @@ pub struct SceneHit {
 /// One diagram, as it was laid out.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Scene {
+    /// Parts of the figure that are drawn but are not series, with where they
+    /// landed on the page. Pickable, and a legend is draggable.
+    pub decorations: Vec<(Decoration, (f64, f64))>,
     /// The `lq.diagram` call site.
     pub figure: usize,
     /// Which page it landed on.
@@ -538,6 +547,7 @@ mod tests {
         Scene {
             figure: 0,
             numeric: (true, true),
+            decorations: vec![],
             page: 0,
             area: (0.0, 0.0, 100.0, 100.0),
             transform: Transform {
@@ -661,4 +671,73 @@ mod tests {
         assert_eq!(b.lerp((0.1, 0.1)), (1.0, -0.8));
         assert!(b.contains(b.lerp((0.9, 0.9))));
     }
+}
+
+/// Where a legend may sit, as lilaq spells it.
+///
+/// Nine alignments and nothing between them: dragging snaps, because a legend
+/// half a millimetre off a corner reads as a mistake and lilaq has a name for
+/// each of the nine.
+pub const LEGEND_POSITIONS: [(&str, f64, f64); 9] = [
+    ("top + left", 0.0, 0.0),
+    ("top + center", 0.5, 0.0),
+    ("top + right", 1.0, 0.0),
+    ("horizon + left", 0.0, 0.5),
+    ("horizon + center", 0.5, 0.5),
+    ("horizon + right", 1.0, 0.5),
+    ("bottom + left", 0.0, 1.0),
+    ("bottom + center", 0.5, 1.0),
+    ("bottom + right", 1.0, 1.0),
+];
+
+impl Scene {
+    /// Which decoration is under a point, if any.
+    ///
+    /// A generous radius: these are small marks, and the thing a user aims at is
+    /// the legend box rather than the anchor typst reported.
+    pub fn hit_decoration(&self, page_pt: (f64, f64), tol: f64) -> Option<Decoration> {
+        self.decorations
+            .iter()
+            .map(|(k, at)| {
+                let d = (at.0 - page_pt.0).hypot(at.1 - page_pt.1);
+                (*k, d)
+            })
+            .filter(|(_, d)| *d <= tol)
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(k, _)| k)
+    }
+
+    /// The legend position nearest a point in the data area, as lilaq spells it.
+    pub fn nearest_legend_position(&self, page_pt: (f64, f64)) -> &'static str {
+        let (x0, y0, x1, y1) = self.area;
+        let (w, h) = ((x1 - x0).max(1.0), (y1 - y0).max(1.0));
+        let (fx, fy) = ((page_pt.0 - x0) / w, (page_pt.1 - y0) / h);
+        LEGEND_POSITIONS
+            .iter()
+            .min_by(|a, b| {
+                let d = |p: &(&str, f64, f64)| (p.1 - fx).powi(2) + (p.2 - fy).powi(2);
+                d(a).partial_cmp(&d(b)).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|p| p.0)
+            .unwrap_or("top + left")
+    }
+}
+
+#[cfg(test)]
+use crate::compile::AxisScale;
+use crate::compile::Transform;
+use crate::doc::{Axis, SeriesShape};
+
+/// A part of a figure that is drawn but is not a series: a legend, a title, an
+/// axis label.
+///
+/// None of these is a call site -- they are *arguments* of the diagram -- so they
+/// cannot be found the way a series is. typst can locate them, and which diagram
+/// each belongs to is decided by where it landed rather than by counting, which
+/// is the same principle as everything else here: identity is geometric.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decoration {
+    Legend,
+    Title,
+    Label,
 }

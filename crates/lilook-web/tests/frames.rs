@@ -1781,3 +1781,113 @@ fn bracketing_a_colorbar_does_not_move_the_figure() {
         "the diagram still has its frame: {with_probes:?}"
     );
 }
+
+/// A legend can be dragged to any of the nine places lilaq names for it.
+///
+/// A legend is not a call site — it is `legend: (position: ..)` on the diagram —
+/// so there is nothing to bracket. typst can locate it, and which diagram it
+/// belongs to is decided by where it landed rather than by counting, which is the
+/// same principle as everything else here: identity is geometric.
+#[test]
+fn a_legend_can_be_dragged_to_another_corner() {
+    let Some(mut app) = app() else { return };
+    app.load(1);
+    run(&mut app, 3);
+    assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+    let original = app.editor().text().to_string();
+    assert!(
+        original.contains("legend: (position: top + left)"),
+        "{original}"
+    );
+
+    let scene = app.editor().scenes()[0].clone();
+    let legend = scene
+        .decorations
+        .iter()
+        .find(|(k, _)| *k == lilook_core::scene::Decoration::Legend)
+        .map(|(_, at)| *at)
+        .expect("the legend was located");
+
+    // It is where the source says it is: the top-left of the frame.
+    assert_eq!(
+        scene.nearest_legend_position(legend),
+        "top + left",
+        "the position round-trips"
+    );
+    // And it is grabbable there.
+    assert_eq!(
+        scene.hit_decoration(legend, 28.0),
+        Some(lilook_core::scene::Decoration::Legend)
+    );
+
+    // Drag it to the opposite corner.
+    let bottom_right = (scene.area.2 - 2.0, scene.area.3 - 2.0);
+    assert_eq!(
+        scene.nearest_legend_position(bottom_right),
+        "bottom + right"
+    );
+    app.editor_mut().handle_canvas(vec![
+        lilook_editor::CanvasEvent::Begin,
+        lilook_editor::CanvasEvent::MoveLegend {
+            figure: scene.figure,
+            to: bottom_right,
+        },
+        lilook_editor::CanvasEvent::Commit,
+    ]);
+    app.editor_mut().mark_dirty();
+    run(&mut app, 3);
+    assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+    assert!(
+        app.editor()
+            .text()
+            .contains("legend: (position: bottom + right)"),
+        "{}",
+        app.editor().text()
+    );
+
+    // The legend actually moved in the figure, not just in the source.
+    let moved = app.editor().scenes()[0]
+        .decorations
+        .iter()
+        .find(|(k, _)| *k == lilook_core::scene::Decoration::Legend)
+        .map(|(_, at)| *at)
+        .expect("still located");
+    assert!(
+        moved.0 > legend.0 && moved.1 > legend.1,
+        "it went down and right: {legend:?} -> {moved:?}"
+    );
+
+    // One undo step.
+    app.editor_mut().doc.undo();
+    assert_eq!(app.editor().text(), original);
+}
+
+/// A title and an axis label are located too, and belong to the right diagram.
+#[test]
+fn a_figures_other_parts_are_located_as_well() {
+    let Some(mut app) = app() else { return };
+    app.load(1);
+    run(&mut app, 3);
+    let scene = app.editor().scenes()[0].clone();
+    use lilook_core::scene::Decoration;
+
+    let kinds: Vec<Decoration> = scene.decorations.iter().map(|(k, _)| *k).collect();
+    assert!(kinds.contains(&Decoration::Legend), "{kinds:?}");
+    assert!(
+        kinds.iter().filter(|k| **k == Decoration::Label).count() >= 2,
+        "an x and a y label: {kinds:?}"
+    );
+
+    // Each sits at or around the frame it belongs to, which is what assigning
+    // them geometrically is supposed to guarantee.
+    for (kind, at) in &scene.decorations {
+        assert!(
+            at.0 > scene.area.0 - 80.0
+                && at.0 < scene.area.2 + 80.0
+                && at.1 > scene.area.1 - 80.0
+                && at.1 < scene.area.3 + 80.0,
+            "{kind:?} at {at:?} is nowhere near {:?}",
+            scene.area
+        );
+    }
+}

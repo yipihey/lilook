@@ -123,6 +123,7 @@ use lilook_ui::CanvasEvent;
 /// 0..10 on x and 0..10 on y. No compiler needed: the canvas consumes scenes.
 fn fixture() -> ([PageTexture; 1], Vec<Scene>) {
     let scene = Scene {
+        decorations: vec![],
         figure: 1,
         numeric: (true, true),
         page: 0,

@@ -39,6 +39,10 @@ pub enum CanvasEvent {
         slot: usize,
         to: f64,
     },
+    /// A legend was dragged. lilaq names nine places a legend may sit, so the
+    /// drag snaps to the nearest rather than inventing an offset -- a legend half
+    /// a millimetre off a corner reads as a mistake.
+    MoveLegend { figure: usize, to: (f64, f64) },
     /// The diagram was resized by its frame. Sizes are in typographic points --
     /// `width` and `height` on `lq.diagram` *are* the data area's dimensions,
     /// which is what makes dragging the axis frame mean what it looks like it

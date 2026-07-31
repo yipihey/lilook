@@ -32,6 +32,13 @@ pub const SERIES_LABEL: &str = "lilook-series";
 /// The label bracketing a pickable non-series element.
 const ELEMENT_LABEL: &str = "lilook-el";
 
+/// The label carrying where a figure's non-series parts landed.
+const DECOR_LABEL: &str = "lilook-decor";
+
+/// How far outside a frame a decoration may sit and still belong to it, in
+/// points. A title is above the frame and an axis label below it.
+const DECOR_REACH: f64 = 60.0;
+
 /// How wide a bracketed element is taken to be, in points.
 ///
 /// The markers bracket a flow, so they agree about the left edge and say nothing
@@ -405,6 +412,27 @@ pub fn inject_with(
         splices.push((call.range.start, open.len()));
     }
 
+    let lq = doc.lilaq_alias();
+    // Only where there is a figure to ask about. A document with no diagram has
+    // no decorations, and `lq.selector` is not defined in one that never
+    // imported lilaq -- which made every such compile fail.
+    if !figures.is_empty() {
+        // Where lilaq put the parts of a figure that are not series. None of these
+        // is a call site -- a legend is `legend: (..)` on the diagram -- so there is
+        // nothing to bracket; but typst can locate them, which is enough.
+        //
+        // One query for the whole document: which diagram each belongs to is decided
+        // by where it landed, not by counting, so a figure with three diagrams and
+        // two legends still gets it right.
+        out.push_str(&format!(
+            "\n#context [#metadata((\
+           legend: query({lq}.selector({lq}.legend)).map(m => m.location().position()), \
+           title: query({lq}.selector({lq}.title)).map(m => m.location().position()), \
+           label: query({lq}.selector({lq}.label)).map(m => m.location().position()) \
+         ))<{DECOR_LABEL}>]\n"
+        ));
+    }
+
     (
         out,
         Injection {
@@ -466,6 +494,9 @@ struct Raw {
     series: HashMap<usize, Vec<SeriesGeom>>,
     /// figure -> whether each axis's data is numeric. Absent means it is.
     non_numeric: HashMap<usize, (bool, bool)>,
+    /// Where the figure's non-series parts landed, before they are assigned to
+    /// the diagram that contains them.
+    decorations: Vec<(lilook_core::scene::Decoration, Spot)>,
     /// call -> where the content flow entered and left a pickable element.
     elements: HashMap<usize, [Option<Spot>; 2]>,
 }
@@ -528,6 +559,33 @@ fn read(doc: &PagedDocument) -> Raw {
 
     // `Dict::at` hands back an owned `Value`, so everything here is by value.
     let field = |d: &typst::foundations::Dict, k: &str| d.at(k.into(), None).ok();
+
+    if let Some(c) = doc.introspector().query_first(&label(DECOR_LABEL)) {
+        use lilook_core::scene::Decoration;
+        if let Ok(Value::Dict(d)) = c.field_by_name("value") {
+            for (key, kind) in [
+                ("legend", Decoration::Legend),
+                ("title", Decoration::Title),
+                ("label", Decoration::Label),
+            ] {
+                let Some(Value::Array(list)) = field(&d, key) else {
+                    continue;
+                };
+                for item in list.iter() {
+                    let Value::Dict(pos) = item else { continue };
+                    let (Some(page), Some(x), Some(y)) = (
+                        field(pos, "page").as_ref().and_then(as_f64),
+                        field(pos, "x").as_ref().and_then(as_pt),
+                        field(pos, "y").as_ref().and_then(as_pt),
+                    ) else {
+                        continue;
+                    };
+                    raw.decorations
+                        .push((kind, ((page as usize).saturating_sub(1), x, y)));
+                }
+            }
+        }
+    }
 
     for c in doc.introspector().query(&label(ELEMENT_LABEL)) {
         let Ok(Value::Dict(d)) = c.field_by_name("value") else {
@@ -852,6 +910,7 @@ pub fn scenes(doc: &PagedDocument, injection: &Injection) -> Vec<Scene> {
             transform: Transform { x: flat, y: flat },
             numeric: (false, false),
             series: vec![],
+            decorations: vec![],
         });
     }
     for (&figure, &data) in &injection.scale_probes {
@@ -886,6 +945,7 @@ pub fn scenes(doc: &PagedDocument, injection: &Injection) -> Vec<Scene> {
                 transform: Transform { x: flat, y: flat },
                 numeric: (false, false),
                 series,
+                decorations: vec![],
             }
         };
         if let (Some(r0), Some(r1), None) = (get("r0"), get("r1"), get("d0")) {
@@ -924,7 +984,23 @@ pub fn scenes(doc: &PagedDocument, injection: &Injection) -> Vec<Scene> {
                 .copied()
                 .unwrap_or((true, true)),
             series,
+            decorations: vec![],
         });
+    }
+    for (kind, spot) in &raw.decorations {
+        let Some(scene) = out
+            .iter_mut()
+            .filter(|s| s.page == spot.0 && !s.series.is_empty())
+            .find(|s| {
+                spot.1 >= s.area.0 - DECOR_REACH
+                    && spot.1 <= s.area.2 + DECOR_REACH
+                    && spot.2 >= s.area.1 - DECOR_REACH
+                    && spot.2 <= s.area.3 + DECOR_REACH
+            })
+        else {
+            continue;
+        };
+        scene.decorations.push((*kind, (spot.1, spot.2)));
     }
     out.sort_by_key(|s| s.figure);
     out

@@ -54,8 +54,16 @@ const GRIP_RADIUS_PX: f32 = 7.0;
 /// A diagram smaller than this is not a figure, it is an accident.
 const MIN_SIZE_PT: f64 = 24.0;
 
+/// How close the pointer must be to a decoration's anchor to grab it, in points.
+///
+/// Generous: what typst reports is a single point, and what the user aims at is a
+/// legend box several centimetres across.
+const DECORATION_TOL: f64 = 28.0;
+
 #[derive(Debug, Clone, PartialEq)]
 enum Gesture {
+    /// Dragging a legend to another of the nine places lilaq names for it.
+    MoveLegend { figure: usize },
     /// Move the view. Changes nothing in the document.
     ViewPan,
     /// Pan the data: rewrites the diagram's limits.
@@ -275,6 +283,21 @@ impl Canvas {
                             return Some(g);
                         }
 
+                        // A legend is grabbed before the frame's grips: it can
+                        // sit in a corner, and the resize handle would otherwise
+                        // take a drag meant for it.
+                        let legend = inside.and_then(|scene| {
+                            scene
+                                .hit_decoration(pt, DECORATION_TOL)
+                                .filter(|d| *d == lilook_core::scene::Decoration::Legend)
+                                .map(|_| Gesture::MoveLegend {
+                                    figure: scene.figure,
+                                })
+                        });
+                        if let Some(g) = legend {
+                            return Some(g);
+                        }
+
                         if let Some((figure, grip)) = grip_at(scenes, page, pt, grip_tol) {
                             let scene = scenes.iter().find(|s| s.figure == figure)?;
                             return Some(Gesture::Resize {
@@ -317,6 +340,17 @@ impl Canvas {
                         x: start.0.shifted(page(self.drag.x)),
                         y: start.1.shifted(page(self.drag.y)),
                     });
+                }
+                Some(Gesture::MoveLegend { figure }) => {
+                    if let Some((_, pt)) = response
+                        .interact_pointer_pos()
+                        .and_then(|p| locate(&viewport, &boxes, p))
+                    {
+                        events.push(CanvasEvent::MoveLegend {
+                            figure: *figure,
+                            to: pt,
+                        });
+                    }
                 }
                 Some(Gesture::Resize {
                     figure,
