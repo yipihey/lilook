@@ -1879,3 +1879,38 @@ blob rather than a data URL because a 300 ppi PNG is megabytes and some browsers
 refuse a data URL that size outright. The MCP server picks the format from the
 extension and defaults to PDF, on the grounds that a bare name usually means a
 paper.
+
+## Diagnostic ranges are unusable, in two different ways
+
+2026-07-31. Measured before planning the language-server capabilities, because
+code actions were going to be built on them.
+
+Six representative errors, through the path the app actually uses:
+
+| what the user wrote | range reported | where it points |
+| --- | --- | --- |
+| `bogus: 1` — unknown argument | none | — |
+| `width: "wide"` — wrong type | none | — |
+| `xlim: ()` | none | — |
+| `yscale: "log", ylim: (-1, 10)` | none | — |
+| `lq.plot(nope, ..)` — undefined name | `781..785` | past the end of a 200-byte file |
+| unclosed delimiter | `772..773` | past the end |
+
+**Most lilaq errors carry no location.** lilaq validates through `elembic`,
+inside the package, so `span.id()` is the package's file rather than the user's
+and `world.rs:193` correctly declines to report a range. Four of the six most
+common failures have no span to follow -- including every entry in the quick-fix
+catalogue.
+
+**The two that do have spans point into the derived buffer.** Probes are injected
+into each diagram's argument list, so every offset after the first diagram is
+shifted by the length of what was inserted. Harmless while diagnostics are only
+displayed as text; a live defect the moment anything tries to highlight one.
+
+The design consequence is the useful part. Code actions cannot be driven off
+diagnostic ranges and **should not be**: they are driven off *(message,
+document)*. lilook knows without any span which call has `xlim` set to `()`, and
+which diagram pairs a log scale with a non-positive limit. That is more robust
+than span-following -- it survives lilaq moving its assertions -- and it uses the
+thing lilook has that a text-only language server does not: a parsed document and
+a recovered scene beside the error.
