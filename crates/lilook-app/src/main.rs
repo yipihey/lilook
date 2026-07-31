@@ -20,6 +20,8 @@ struct App {
     editor: Editor,
     path: Option<PathBuf>,
     actor: CompileActor,
+    /// Where the export in flight should be written when its bytes arrive.
+    pending_export: Option<std::path::PathBuf>,
     /// Current window title, so it is only pushed when it changes.
     title: String,
     /// What was last written to (or read from) disk, so unsaved changes are a
@@ -67,6 +69,7 @@ impl App {
             ),
             path: path.clone(),
             actor,
+            pending_export: None,
             title: String::new(),
             saved_text: text,
             saved_at: mtime(path.as_ref()),
@@ -89,6 +92,17 @@ impl App {
         }
         if let Some(expr) = query {
             self.actor.query(expr);
+        }
+        for e in self.actor.take_exports() {
+            let path = self.pending_export.take();
+            self.editor.status = match (e.bytes, path) {
+                (Ok(bytes), Some(p)) => match std::fs::write(&p, &bytes) {
+                    Ok(()) => format!("wrote {} ({} KB)", p.display(), bytes.len() / 1024),
+                    Err(err) => format!("could not write {}: {err}", p.display()),
+                },
+                (Err(why), _) => why,
+                (Ok(_), None) => "an export arrived with nowhere to go".into(),
+            };
         }
         for a in self.actor.take_answers() {
             self.editor.accept_answer(&a.expr, a.answer, &a.diagnostics);
@@ -115,6 +129,27 @@ impl App {
             }
             Err(e) => e.to_string(),
         };
+    }
+
+    /// Write the figure beside the manuscript, in the format asked for.
+    ///
+    /// From the document the canvas is already showing, so what lands on disk is
+    /// exactly what is on screen -- not a second compile that might differ.
+    fn export(&mut self, format: &str, ppi: f32) {
+        let Some(fmt) = lilook_compile::export::Format::of_path(&format!("x.{format}")) else {
+            self.editor.status = format!("unknown format {format}");
+            return;
+        };
+        // Beside the .typ under its own name, or in the working directory for a
+        // buffer that has never been saved.
+        let path = match &self.path {
+            Some(p) => p.with_extension(fmt.extension()),
+            None => std::path::PathBuf::from(format!("figure.{}", fmt.extension())),
+        };
+        // The compile thread owns the document, so this is a round trip: the
+        // bytes come back through `take_exports` and land in `pending_export`.
+        self.pending_export = Some(path);
+        self.actor.export(fmt, ppi);
     }
 
     fn unsaved(&self) -> bool {
@@ -512,6 +547,9 @@ impl eframe::App for App {
         }
         if !requests.adopt.is_empty() {
             self.adopt(requests.adopt);
+        }
+        if let Some((format, ppi)) = requests.export {
+            self.export(&format, ppi);
         }
         self.pump(&ctx, requests.compile, requests.query);
         self.screenshot_step(&ctx);

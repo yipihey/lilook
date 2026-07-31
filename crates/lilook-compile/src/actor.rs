@@ -46,7 +46,17 @@ struct Slot {
     /// Expressions to evaluate. A queue rather than latest-wins, because unlike
     /// a compile every query has a caller waiting for its particular answer.
     queries: Vec<String>,
+    /// Figures to export, and in what. Queued like queries rather than
+    /// latest-wins: each one has a caller who asked for that particular file.
+    exports: Vec<(crate::export::Format, f32)>,
     quit: bool,
+}
+
+/// The bytes of one `CompileActor::export`.
+#[derive(Debug)]
+pub struct Exported {
+    pub format: crate::export::Format,
+    pub bytes: Result<Vec<u8>, String>,
 }
 
 /// The answer to one `CompileActor::query`.
@@ -62,6 +72,7 @@ pub struct CompileActor {
     slot: Arc<(Mutex<Slot>, Condvar)>,
     out: Receiver<Frame>,
     answers: Receiver<Answered>,
+    exports: Receiver<Exported>,
     /// True while a job is queued or running, so the UI can say "stale".
     busy: Arc<AtomicBool>,
     next_generation: u64,
@@ -79,12 +90,14 @@ impl CompileActor {
             Mutex::new(Slot {
                 pending: None,
                 queries: vec![],
+                exports: vec![],
                 quit: false,
             }),
             Condvar::new(),
         ));
         let (tx, out) = channel();
         let (qtx, answers) = channel();
+        let (etx, exports) = channel();
         let busy = Arc::new(AtomicBool::new(false));
 
         let thread = {
@@ -100,7 +113,11 @@ impl CompileActor {
                         let job = {
                             let (lock, cv) = &*slot;
                             let mut s = lock.lock().unwrap();
-                            while s.pending.is_none() && s.queries.is_empty() && !s.quit {
+                            while s.pending.is_none()
+                                && s.queries.is_empty()
+                                && s.exports.is_empty()
+                                && !s.quit
+                            {
                                 s = cv.wait(s).unwrap();
                             }
                             if s.quit {
@@ -110,6 +127,7 @@ impl CompileActor {
                             // UI is waiting on each one. A compile that is about
                             // to be superseded anyway must not hold them up.
                             let queries = std::mem::take(&mut s.queries);
+                            let exports = std::mem::take(&mut s.exports);
                             drop(s);
                             for expr in queries {
                                 let (answer, diagnostics) = backend.query(&expr);
@@ -121,6 +139,19 @@ impl CompileActor {
                                     })
                                     .is_err()
                                 {
+                                    return;
+                                }
+                                wake();
+                            }
+                            // From the document already compiled, so what lands
+                            // on disk is what is on screen rather than a second
+                            // compile that might differ.
+                            for (format, ppi) in exports {
+                                let bytes = match backend.document() {
+                                    Some(d) => crate::export::export(d, format, ppi),
+                                    None => Err("nothing has compiled yet".into()),
+                                };
+                                if etx.send(Exported { format, bytes }).is_err() {
                                     return;
                                 }
                                 wake();
@@ -166,6 +197,7 @@ impl CompileActor {
             slot,
             out,
             answers,
+            exports,
             busy,
             next_generation: 1,
             thread: Some(thread),
@@ -200,6 +232,18 @@ impl CompileActor {
     /// Answers that have arrived since this was last called.
     pub fn take_answers(&self) -> Vec<Answered> {
         std::iter::from_fn(|| self.answers.try_recv().ok()).collect()
+    }
+
+    /// Ask for the figure as a file.
+    pub fn export(&mut self, format: crate::export::Format, ppi: f32) {
+        let (lock, cv) = &*self.slot;
+        lock.lock().unwrap().exports.push((format, ppi));
+        cv.notify_one();
+    }
+
+    /// Exports that have finished since this was last called.
+    pub fn take_exports(&self) -> Vec<Exported> {
+        std::iter::from_fn(|| self.exports.try_recv().ok()).collect()
     }
 
     /// The newest finished frame, discarding any that were superseded while the

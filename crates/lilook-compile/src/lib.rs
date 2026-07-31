@@ -10,6 +10,10 @@
 //! over this backend. Everything that would be wasteful to route through JSON
 //! -- rasterised pages, per-series point data -- is returned directly instead.
 
+// Not gated on `system`: exporting is pure encoding, and the browser needs it
+// most -- there is no `typst compile` to fall back on in a tab.
+pub mod export;
+
 #[cfg(feature = "system")]
 pub mod actor;
 pub mod backend;
@@ -21,6 +25,7 @@ pub mod world;
 #[cfg(feature = "system")]
 pub use actor::{CompileActor, Frame};
 pub use backend::{Backend, Image, Page, Render};
+pub use export::{export, Format as ExportFormat};
 pub use files::{MainOverlay, MemoryFiles};
 pub use lilook_core::data::Answer;
 pub use probe::{inject, scenes};

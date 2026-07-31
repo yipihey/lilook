@@ -141,8 +141,8 @@ fn tools() -> Value {
                         counts and channels, and the axis ranges and scales. Use this \
                         to check your work. Optionally write the figure to a file.",
         "inputSchema": {"type": "object", "properties": {
-            "write": {"type": "string", "description": "path to write a PNG to"},
-            "ppi": {"type": "number", "description": "pixels per inch for `write` (default 300, publication quality)"}
+            "write": {"type": "string", "description": "path to write the figure to; the extension picks the format — .pdf for a paper, .svg to edit, .png for slides"},
+            "ppi": {"type": "number", "description": "resolution for .png only (default 300); PDF and SVG are vector and ignore it"}
         }}
     }])
 }
@@ -559,80 +559,35 @@ impl Server {
                 out.push_str(&format!("  #{} {name}  {}\n", g.node, g.summary()));
             }
         }
-        if let Some(path) = args.get("write").and_then(Value::as_str) {
-            let path = self.root.join(path);
-            match render.pages.first() {
-                Some(p) if p.image.width > 0 => match write_png(&path, &p.image) {
-                    Ok(()) => out.push_str(&format!("wrote {} at {ppi} ppi\n", path.display())),
-                    Err(e) => out.push_str(&format!("could not write {}: {e}\n", path.display())),
-                },
-                _ => out.push_str("nothing rendered to write\n"),
+        if let Some(name) = args.get("write").and_then(Value::as_str) {
+            let path = self.root.join(name);
+            // The extension chooses. A bare name gets a PDF rather than a raster
+            // nobody can print: that is what the figure is usually for.
+            let fmt = lilook_compile::export::Format::of_path(name)
+                .unwrap_or(lilook_compile::export::Format::Pdf);
+            let written = self
+                .backend
+                .document()
+                .ok_or_else(|| "nothing has compiled yet".to_string())
+                .and_then(|d| lilook_compile::export::export(d, fmt, ppi as f32))
+                .and_then(|bytes| {
+                    let n = bytes.len();
+                    std::fs::write(&path, bytes)
+                        .map(|()| n)
+                        .map_err(|e| e.to_string())
+                });
+            match written {
+                Ok(n) => out.push_str(&format!(
+                    "wrote {} as {} ({} KB)\n",
+                    path.display(),
+                    fmt.extension(),
+                    n / 1024
+                )),
+                Err(e) => out.push_str(&format!("could not write {}: {e}\n", path.display())),
             }
         }
         out
     }
-}
-
-/// A minimal PNG writer, so the server has no image dependency.
-///
-/// One IDAT of stored (uncompressed) deflate blocks: larger on disk than a
-/// compressed PNG and readable by everything, which is the right trade for a
-/// file an agent writes once and a human opens once.
-fn write_png(path: &std::path::Path, img: &lilook_core::render::Image) -> std::io::Result<()> {
-    fn crc(bytes: &[u8]) -> u32 {
-        let mut c: u32 = 0xffff_ffff;
-        for &b in bytes {
-            c ^= b as u32;
-            for _ in 0..8 {
-                c = if c & 1 != 0 {
-                    0xedb8_8320 ^ (c >> 1)
-                } else {
-                    c >> 1
-                };
-            }
-        }
-        !c
-    }
-    fn chunk(out: &mut Vec<u8>, tag: &[u8; 4], data: &[u8]) {
-        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
-        let mut body = tag.to_vec();
-        body.extend_from_slice(data);
-        out.extend_from_slice(&body);
-        out.extend_from_slice(&crc(&body).to_be_bytes());
-    }
-    let (w, h) = (img.width, img.height);
-    let mut raw = Vec::with_capacity((w * h * 4 + h) as usize);
-    for y in 0..h {
-        raw.push(0); // filter: none
-        let row = (y * w * 4) as usize;
-        raw.extend_from_slice(&img.rgba[row..row + (w * 4) as usize]);
-    }
-    // zlib with stored deflate blocks.
-    let mut z = vec![0x78, 0x01];
-    let mut a: u32 = 1;
-    let mut b: u32 = 0;
-    for &byte in &raw {
-        a = (a + byte as u32) % 65521;
-        b = (b + a) % 65521;
-    }
-    for (i, part) in raw.chunks(65535).enumerate() {
-        let last = u8::from((i + 1) * 65535 >= raw.len());
-        z.push(last);
-        z.extend_from_slice(&(part.len() as u16).to_le_bytes());
-        z.extend_from_slice(&(!(part.len() as u16)).to_le_bytes());
-        z.extend_from_slice(part);
-    }
-    z.extend_from_slice(&((b << 16) | a).to_be_bytes());
-
-    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
-    let mut ihdr = Vec::new();
-    ihdr.extend_from_slice(&w.to_be_bytes());
-    ihdr.extend_from_slice(&h.to_be_bytes());
-    ihdr.extend_from_slice(&[8, 6, 0, 0, 0]); // 8-bit RGBA
-    chunk(&mut png, b"IHDR", &ihdr);
-    chunk(&mut png, b"IDAT", &z);
-    chunk(&mut png, b"IEND", &[]);
-    std::fs::write(path, png)
 }
 
 fn main() {

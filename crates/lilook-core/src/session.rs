@@ -70,6 +70,14 @@ pub struct Requests {
     /// file system in the browser -- and then call `Editor::file_adopted` with
     /// the project-relative path it ended up at.
     pub adopt: Vec<Dropped>,
+    /// The user asked for the figure as a file. `"pdf"`, `"svg"` or `"png"`,
+    /// with the resolution the PNG path needs.
+    ///
+    /// A request rather than an action for the same reason `save` is: the
+    /// session has no compiler and no file system, and in the browser there is
+    /// no file system to have. The shell exports from the document it already
+    /// compiled and puts the bytes wherever it can put them.
+    pub export: Option<(String, f32)>,
 }
 
 /// Linking a file to a series, one step at a time.
@@ -1105,6 +1113,11 @@ impl Session {
         self.doc.commit();
         self.status = format!("theme renamed to {to}");
         true
+    }
+
+    /// Ask the shell for the figure as a file.
+    pub fn request_export(&mut self, format: &str, ppi: f32) {
+        self.requests.export = Some((format.to_string(), ppi));
     }
 
     /// End of the line that imports lilaq: a set rule has to come after it, or

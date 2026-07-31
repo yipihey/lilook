@@ -1832,3 +1832,50 @@ Two things driving it turned up that review had not:
 - **`schoolbook` is incompatible with a log axis** -- it sets `position: 0`, and
   lilaq answers "value must be strictly positive". Not a lilook bug, and the
   server reports it verbatim, which is exactly what an agent needs.
+
+## The axis guard needed an invariant, not a better fit test
+
+2026-07-31. The first attempt at guarding the scale recovery checked whether the
+log fit reproduced the third probe. It was committed unverified, because no lilaq
+fixture could be made to demonstrate it firing. Driving the four cases directly
+showed why:
+
+| scale | recovered as | y range |
+| --- | --- | --- |
+| linear | Linear | 0.82 … 4.18 |
+| log | Log | 0.66 … 1513 |
+| custom `v/(1+abs v)` | **Linear** | **0.846 … −1.749** |
+
+The custom scale passed the bend test -- the three probes did look straight in
+page space -- and produced **a maximum below its minimum**. Nothing failed and
+nothing was reported; every pan and drag on that figure would have written
+nonsense into the document.
+
+What catches it is the cheapest thing available and needs no knowledge of which
+scales lilaq has: *an axis whose recovered maximum is below its minimum is not a
+transform.* The figure then degrades to frame-only -- the path a datetime axis
+already takes -- so it still draws, selects and resizes while the gestures fall
+back to moving the view.
+
+The lesson is about the shape of the check rather than the bug. Testing the fit
+asks "is this one of the two things I know?", which is a coin flip when the answer
+is neither. Testing an invariant asks "is this result possible at all?", which is
+answerable without enumerating the alternatives.
+
+## Export: PDF, SVG and PNG, from the document already on screen
+
+2026-07-31. The release blocker. All three come from `Backend::document()` -- the
+same compiled document the canvas is showing -- so what lands on disk cannot be a
+second, subtly different compile, and an export costs only the encode.
+
+PDF and SVG go through typst's own exporters, which is most of the argument for
+building on typst. PNG stays a forty-line encoder writing stored deflate blocks:
+bigger on disk, readable everywhere, no dependency.
+
+Reaching all four frontends took one shape each. The desktop compiles on another
+thread, so export is a round trip through the actor beside `query`. The browser
+has no file system, so "write a file" is a blob URL and a synthetic click -- a
+blob rather than a data URL because a 300 ppi PNG is megabytes and some browsers
+refuse a data URL that size outright. The MCP server picks the format from the
+extension and defaults to PDF, on the grounds that a bare name usually means a
+paper.

@@ -59,7 +59,7 @@ fn an_agent_can_discover_edit_and_verify_a_figure() {
                 r#"{{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{{"name":"lilook_edit","arguments":{{"ops":[{{"op":"source","value":"{source}"}}]}}}}}}"#
             ),
             r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"lilook_edit","arguments":{"ops":[{"op":"add","node":0,"param":"ylabel","value":"[flux]"},{"op":"add","node":0,"param":"yscale","value":"\"log\""},{"op":"theme","name":"ocean"}]}}}"#,
-            r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"lilook_render","arguments":{"write":"figure.png","ppi":150}}}"#,
+            r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"lilook_render","arguments":{"write":"figure.pdf"}}}"#,
             r#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"lilook_doc","arguments":{}}}"#,
         ],
     );
@@ -92,11 +92,14 @@ fn an_agent_can_discover_edit_and_verify_a_figure() {
     assert!(out[5].contains("(log)"), "the log axis: {}", out[5]);
     assert!(!out[5].contains("ERROR"), "{}", out[5]);
 
+    // A PDF by default and by extension: what a paper takes. The `write`
+    // argument names the format, so an agent asks for the right thing once
+    // rather than converting afterwards.
     assert!(out[6].contains("wrote"), "{}", out[6]);
-    let png = dir.join("figure.png");
-    let bytes = std::fs::read(&png).expect("the png");
-    assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "a real PNG header");
-    assert!(bytes.len() > 10_000, "{} bytes is too small", bytes.len());
+    assert!(out[6].contains("as pdf"), "{}", out[6]);
+    let bytes = std::fs::read(dir.join("figure.pdf")).expect("the pdf");
+    assert_eq!(&bytes[..5], b"%PDF-", "a real PDF header");
+    assert!(bytes.len() > 2_000, "{} bytes is too small", bytes.len());
 
     assert!(out[7].contains("theme: ocean"), "{}", out[7]);
     assert!(

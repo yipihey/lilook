@@ -218,6 +218,9 @@ impl WebApp {
         for d in requests.adopt {
             self.adopt(d);
         }
+        if let Some((format, ppi)) = requests.export {
+            self.editor.status = self.download(&format, ppi);
+        }
         if let Some(expr) = requests.query {
             // In process and in the frame, like the compile: there is no thread
             // to wait for, so the answer is already there when the editor next
@@ -245,6 +248,53 @@ impl WebApp {
         self.backend
             .loader_mut()
             .insert(format!("project/{name}"), bytes);
+    }
+
+    /// "Save a file" in a browser is a link the page clicks for you.
+    ///
+    /// A blob URL rather than a data URL: a 300 ppi PNG is megabytes, and a data
+    /// URL that size is refused outright by some browsers and merely very slow in
+    /// the rest. The URL is revoked straight away -- the download has already
+    /// taken a reference by then.
+    fn download(&mut self, format: &str, ppi: f32) -> String {
+        use wasm_bindgen::JsCast;
+        let Some(fmt) = lilook_compile::export::Format::of_path(&format!("x.{format}")) else {
+            return format!("unknown format {format}");
+        };
+        let Some(doc) = self.backend.document() else {
+            return "nothing has compiled yet".into();
+        };
+        let bytes = match lilook_compile::export::export(doc, fmt, ppi) {
+            Ok(b) => b,
+            Err(e) => return e,
+        };
+        let n = bytes.len();
+        let array = js_sys::Uint8Array::from(bytes.as_slice());
+        let parts = js_sys::Array::of1(&array.buffer());
+        let Ok(blob) = web_sys::Blob::new_with_u8_array_sequence(&parts) else {
+            return "could not build the file".into();
+        };
+        let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob) else {
+            return "could not build a download link".into();
+        };
+        let name = format!("figure.{}", fmt.extension());
+        let done = (|| -> Option<()> {
+            let d = web_sys::window()?.document()?;
+            let a = d
+                .create_element("a")
+                .ok()?
+                .dyn_into::<web_sys::HtmlAnchorElement>()
+                .ok()?;
+            a.set_href(&url);
+            a.set_download(&name);
+            a.click();
+            Some(())
+        })();
+        let _ = web_sys::Url::revoke_object_url(&url);
+        match done {
+            Some(()) => format!("downloaded {name} ({} KB)", n / 1024),
+            None => "the browser refused the download".into(),
+        }
     }
 
     fn adopt(&mut self, d: lilook_editor::Dropped) {

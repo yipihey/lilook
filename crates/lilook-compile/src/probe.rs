@@ -643,6 +643,17 @@ fn axis(
     if !map.min.is_finite() || !map.max.is_finite() {
         return None;
     }
+    // An axis whose recovered maximum is below its minimum is not a transform,
+    // whatever scale it came from. A custom `lq.scale` produced exactly that --
+    // `min 0.846, max -1.749` -- and it passed every check above, because the
+    // three probes happened to look straight in page space while the mapping
+    // between them was anything but.
+    //
+    // Cheap, and it does not depend on knowing which scales lilaq has: any fit
+    // that inverts the axis is refused, and the figure degrades to frame-only.
+    if map.min >= map.max {
+        return None;
+    }
     Some(map)
 }
 

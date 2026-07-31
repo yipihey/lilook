@@ -23,6 +23,9 @@ pub use lilook_core::{
 /// recompile is not, and every re-render costs one.
 const RESOLUTION_SLACK: f32 = 1.35;
 const MAX_PIXEL_PER_PT: f32 = 6.0;
+/// Below this width the panels stop being panels. Three side-by-side columns
+/// that each want 200 points leave nothing for the figure on a phone.
+const NARROW_WIDTH: f32 = 640.0;
 
 /// What to draw around the figure. A browser page has room for a gallery where
 /// a window has a menu bar, so the shell decides.
@@ -56,6 +59,9 @@ pub struct Editor {
     textures: Vec<egui::TextureHandle>,
     pages: Vec<PageTexture>,
     max_pixel_per_pt: f32,
+    /// This frame's egui context, so the shared tail can ask for a compile
+    /// without every layout threading it through.
+    ctx: Option<egui::Context>,
     rendered_at: f32,
 }
 
@@ -81,6 +87,7 @@ impl Editor {
             textures: vec![],
             pages: vec![],
             max_pixel_per_pt: MAX_PIXEL_PER_PT,
+            ctx: None,
             rendered_at: 1.0,
         }
     }
@@ -246,6 +253,7 @@ impl Editor {
         banner: impl FnOnce(&mut egui::Ui),
     ) -> Requests {
         let ctx = ui.ctx().clone();
+        self.ctx = Some(ctx.clone());
         self.requests = Requests::default();
         self.keys(&ctx);
         self.take_dropped(&ctx);
@@ -253,6 +261,41 @@ impl Editor {
 
         let mut events = vec![];
         let mut source_edit: Option<(std::ops::Range<usize>, String)> = None;
+        let mut canvas_events = vec![];
+
+        // On a narrow screen the four parts stack in the order they read:
+        // tree, inspector, figure, source. Not a squeezed desktop -- panels that
+        // each want 200 points leave nothing for the figure on a phone -- but the
+        // same sequence, top to bottom, in one scroll.
+        if ui.available_width() < NARROW_WIDTH {
+            egui::ScrollArea::vertical()
+                .id_salt("stack")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    if self.layout.tree {
+                        self.call_list(ui);
+                        ui.separator();
+                    }
+                    if self.layout.inspector {
+                        events = self.inspector_ui(ui);
+                        ui.separator();
+                    }
+                    // A fixed slice rather than "whatever is left": inside a
+                    // scroll area the available height is unbounded, so the
+                    // figure would take the whole column and push the source out
+                    // of reach.
+                    let tall = (ui.available_width() * 0.75).clamp(200.0, 420.0);
+                    ui.allocate_ui(egui::vec2(ui.available_width(), tall), |ui| {
+                        canvas_events = self.canvas_ui(ui);
+                    });
+                    if self.layout.source {
+                        ui.separator();
+                        source_edit = self.source_ui(ui, banner);
+                    }
+                });
+            return self.finish(source_edit, events, canvas_events, now);
+        }
+
         // Tree above, inspector below, in one column: what a thing *is* and what
         // it *can be set to* belong together, and it leaves the whole right side
         // to the figure with its source underneath.
@@ -286,139 +329,29 @@ impl Editor {
                 .default_size(200.0)
                 .resizable(true)
                 .show(ui, |ui| {
-                    // Copy the whole figure to the clipboard. lilook is often used
-                    // to compose a figure that then lives in someone else's
-                    // manuscript, and for that the source *is* the deliverable --
-                    // there is no file to hand over.
-                    ui.horizontal(|ui| {
-                        if ui
-                            .button("⧉")
-                            .on_hover_text("copy the Typst source to the clipboard")
-                            .clicked()
-                        {
-                            ui.ctx().copy_text(self.doc.text().to_string());
-                            self.status = format!(
-                                "copied {} lines of Typst to the clipboard",
-                                self.doc.text().lines().count()
-                            );
-                        }
-                        ui.weak("source");
-                    });
-                    if !self.diagnostics.is_empty() {
-                        self.diagnostics_ui(ui);
-                        ui.separator();
-                    }
-                    // The shell's slot: a file that changed on disk, a link back to a
-                    // gallery. The editor has no idea what its host can offer.
-                    banner(ui);
-                    if !self.status.is_empty() {
-                        ui.label(&self.status);
-                        ui.separator();
-                    }
-                    egui::ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            let id = egui::Id::new("source-pane");
-                            let editing = ui.memory(|m| m.has_focus(id));
-                            // Adopt the document whenever the pane is not being
-                            // typed in, so a canvas drag or an undo shows up here.
-                            let mut buf = match editing {
-                                true => ui
-                                    .data(|d| d.get_temp::<String>(id))
-                                    .unwrap_or_else(|| self.doc.text().to_string()),
-                                false => self.doc.text().to_string(),
-                            };
-                            let r = ui.add(
-                                egui::TextEdit::multiline(&mut buf)
-                                    .id(id)
-                                    .code_editor()
-                                    .desired_width(f32::INFINITY),
-                            );
-                            if r.changed() {
-                                // Typing is a direct text edit, not model
-                                // regeneration -- and a figure editor whose source
-                                // pane is read-only is a strange object.
-                                if let Some((range, value)) =
-                                    lilook_core::minimal_replacement(self.doc.text(), &buf)
-                                {
-                                    source_edit = Some((range, value));
-                                }
-                            }
-                            ui.data_mut(|d| d.insert_temp(id, buf));
-                        });
+                    source_edit = self.source_ui(ui, banner);
                 });
         }
 
         let mut canvas_events = vec![];
         egui::CentralPanel::default().show(ui, |ui| {
-            let editable = self.editable_series();
-            let out = self.canvas.ui(
-                ui,
-                CanvasInput {
-                    pages: &self.pages,
-                    // `self.session.scenes`, not `self.scenes`: the `Deref` would
-                    // borrow the whole editor and collide with `&mut self.canvas`.
-                    // Naming the field keeps the two borrows disjoint.
-                    scenes: &self.session.scenes,
-                    selected: Some(self.selected),
-                    editable: &editable,
-                },
-            );
-            canvas_events = out.events.clone();
-            if let Some((page, pt)) = out.hover {
-                // Data coordinates when the pointer is inside a diagram, page
-                // points otherwise: the first is what the user is thinking in.
-                let text = match self
-                    .scenes
-                    .iter()
-                    .find(|s| s.page == page && s.contains_page_point(pt))
-                {
-                    Some(s) => {
-                        let d = s.transform.to_data(pt);
-                        match &out.hovered {
-                            Some((_, hit)) => {
-                                // A mesh's field is the whole point of hovering
-                                // one: the position is already on the axes, the
-                                // value is not written anywhere.
-                                // `gesture_num`, not `data_num`: this is a
-                                // readout, not a value going into the document,
-                                // and the shortest *round-tripping* form of a
-                                // field value is seventeen digits of noise under
-                                // a moving cursor.
-                                let z = match s.field_at(hit) {
-                                    Some(z) => format!("   z {}", lilook_core::gesture_num(z)),
-                                    None => String::new(),
-                                };
-                                format!("{:.4}, {:.4}{z}   [#{}]", hit.data.0, hit.data.1, hit.node)
-                            }
-                            None => format!("{:.4}, {:.4}", d.0, d.1),
-                        }
-                    }
-                    None => format!("p{page}  {:.1}, {:.1} pt", pt.0, pt.1),
-                };
-                ui.painter().text(
-                    out.response.rect.left_bottom() + egui::vec2(6.0, -6.0),
-                    egui::Align2::LEFT_BOTTOM,
-                    text,
-                    egui::FontId::monospace(11.0),
-                    ui.visuals().weak_text_color(),
-                );
-            }
-            if self.pages.is_empty() {
-                ui.painter().text(
-                    out.response.rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    if self.diagnostics.is_empty() {
-                        "compiling…"
-                    } else {
-                        "nothing rendered — see the diagnostics below"
-                    },
-                    egui::FontId::proportional(14.0),
-                    ui.visuals().weak_text_color(),
-                );
-            }
+            canvas_events = self.canvas_ui(ui);
         });
 
+        self.finish(source_edit, events, canvas_events, now)
+    }
+
+    /// Apply a frame's gestures and hand the shell its requests.
+    ///
+    /// One tail for both layouts, so the narrow stack cannot drift from the wide
+    /// one in what it *does* -- only in where it draws.
+    fn finish(
+        &mut self,
+        source_edit: Option<(std::ops::Range<usize>, String)>,
+        events: Vec<lilook_core::UiEvent>,
+        canvas_events: Vec<CanvasEvent>,
+        now: f64,
+    ) -> Requests {
         self.handle_canvas(canvas_events);
         if let Some((range, value)) = source_edit {
             self.open_idle(now);
@@ -426,6 +359,7 @@ impl Editor {
         }
         self.handle(events, now);
 
+        let ctx = self.ctx.clone().expect("a context for this frame");
         self.want_compile(&ctx);
         self.requests.query = self.queued_query.take();
         std::mem::take(&mut self.requests)
@@ -537,6 +471,167 @@ impl Editor {
                 }
             });
         events
+    }
+
+    /// The figure itself, with no panel around it.
+    ///
+    /// Factored out for the same reason the inspector was: on a narrow screen it
+    /// is the third thing in one scrolling column rather than whatever is left
+    /// after the panels have taken their share.
+    fn canvas_ui(&mut self, ui: &mut egui::Ui) -> Vec<CanvasEvent> {
+        let mut canvas_events = vec![];
+        let editable = self.editable_series();
+        let out = self.canvas.ui(
+            ui,
+            CanvasInput {
+                pages: &self.pages,
+                // `self.session.scenes`, not `self.scenes`: the `Deref` would
+                // borrow the whole editor and collide with `&mut self.canvas`.
+                // Naming the field keeps the two borrows disjoint.
+                scenes: &self.session.scenes,
+                selected: Some(self.selected),
+                editable: &editable,
+            },
+        );
+        canvas_events = out.events.clone();
+        if let Some((page, pt)) = out.hover {
+            // Data coordinates when the pointer is inside a diagram, page
+            // points otherwise: the first is what the user is thinking in.
+            let text = match self
+                .scenes
+                .iter()
+                .find(|s| s.page == page && s.contains_page_point(pt))
+            {
+                Some(s) => {
+                    let d = s.transform.to_data(pt);
+                    match &out.hovered {
+                        Some((_, hit)) => {
+                            // A mesh's field is the whole point of hovering
+                            // one: the position is already on the axes, the
+                            // value is not written anywhere.
+                            // `gesture_num`, not `data_num`: this is a
+                            // readout, not a value going into the document,
+                            // and the shortest *round-tripping* form of a
+                            // field value is seventeen digits of noise under
+                            // a moving cursor.
+                            let z = match s.field_at(hit) {
+                                Some(z) => format!("   z {}", lilook_core::gesture_num(z)),
+                                None => String::new(),
+                            };
+                            format!("{:.4}, {:.4}{z}   [#{}]", hit.data.0, hit.data.1, hit.node)
+                        }
+                        None => format!("{:.4}, {:.4}", d.0, d.1),
+                    }
+                }
+                None => format!("p{page}  {:.1}, {:.1} pt", pt.0, pt.1),
+            };
+            ui.painter().text(
+                out.response.rect.left_bottom() + egui::vec2(6.0, -6.0),
+                egui::Align2::LEFT_BOTTOM,
+                text,
+                egui::FontId::monospace(11.0),
+                ui.visuals().weak_text_color(),
+            );
+        }
+        if self.pages.is_empty() {
+            ui.painter().text(
+                out.response.rect.center(),
+                egui::Align2::CENTER_CENTER,
+                if self.diagnostics.is_empty() {
+                    "compiling…"
+                } else {
+                    "nothing rendered — see the diagnostics below"
+                },
+                egui::FontId::proportional(14.0),
+                ui.visuals().weak_text_color(),
+            );
+        }
+        canvas_events
+    }
+
+    /// The source pane's contents, with no panel around them.
+    fn source_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        banner: impl FnOnce(&mut egui::Ui),
+    ) -> Option<(std::ops::Range<usize>, String)> {
+        let mut source_edit = None;
+        // Copy the whole figure to the clipboard. lilook is often used
+        // to compose a figure that then lives in someone else's
+        // manuscript, and for that the source *is* the deliverable --
+        // there is no file to hand over.
+        ui.horizontal(|ui| {
+            // Export first: it is what the whole tool is for. PDF
+            // leads because that is what a journal takes -- SVG when a
+            // co-author needs to nudge a label, PNG for slides.
+            ui.menu_button("export…", |ui| {
+                for (label, fmt) in [
+                    ("PDF — for a paper", "pdf"),
+                    ("SVG — vector, editable", "svg"),
+                    ("PNG at 300 ppi — slides", "png"),
+                ] {
+                    if ui.button(label).clicked() {
+                        self.request_export(fmt, 300.0);
+                        ui.close();
+                    }
+                }
+            });
+            if ui
+                .button("⧉")
+                .on_hover_text("copy the Typst source to the clipboard")
+                .clicked()
+            {
+                ui.ctx().copy_text(self.doc.text().to_string());
+                self.status = format!(
+                    "copied {} lines of Typst to the clipboard",
+                    self.doc.text().lines().count()
+                );
+            }
+            ui.weak("source");
+        });
+        if !self.diagnostics.is_empty() {
+            self.diagnostics_ui(ui);
+            ui.separator();
+        }
+        // The shell's slot: a file that changed on disk, a link back to a
+        // gallery. The editor has no idea what its host can offer.
+        banner(ui);
+        if !self.status.is_empty() {
+            ui.label(&self.status);
+            ui.separator();
+        }
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let id = egui::Id::new("source-pane");
+                let editing = ui.memory(|m| m.has_focus(id));
+                // Adopt the document whenever the pane is not being
+                // typed in, so a canvas drag or an undo shows up here.
+                let mut buf = match editing {
+                    true => ui
+                        .data(|d| d.get_temp::<String>(id))
+                        .unwrap_or_else(|| self.doc.text().to_string()),
+                    false => self.doc.text().to_string(),
+                };
+                let r = ui.add(
+                    egui::TextEdit::multiline(&mut buf)
+                        .id(id)
+                        .code_editor()
+                        .desired_width(f32::INFINITY),
+                );
+                if r.changed() {
+                    // Typing is a direct text edit, not model
+                    // regeneration -- and a figure editor whose source
+                    // pane is read-only is a strange object.
+                    if let Some((range, value)) =
+                        lilook_core::minimal_replacement(self.doc.text(), &buf)
+                    {
+                        source_edit = Some((range, value));
+                    }
+                }
+                ui.data_mut(|d| d.insert_temp(id, buf));
+            });
+        source_edit
     }
 
     fn call_list(&mut self, ui: &mut egui::Ui) {

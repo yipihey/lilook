@@ -1134,3 +1134,65 @@ fn themes_can_be_switched_forked_and_renamed() {
     }
     assert_eq!(app.editor().text(), original, "themes did not fully undo");
 }
+
+/// A phone gets the same four parts in the same order, stacked.
+///
+/// Three side-by-side columns that each want 200 points leave nothing for the
+/// figure on a narrow screen, so below a threshold the panels stop being panels
+/// and become one scroll: tree, inspector, figure, source. The order is the same
+/// one the desktop reads left-to-right then top-to-bottom.
+///
+/// What this asserts is that the narrow path *does the same things* -- both
+/// layouts end in one shared tail, so a gesture, an edit and a compile request
+/// cannot drift between them.
+#[test]
+fn a_narrow_window_stacks_the_same_four_parts() {
+    let Some(mut app) = app() else { return };
+    app.load(1);
+    run(&mut app, 3);
+    assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+    let wide_text = app.editor().text().to_string();
+    let wide_scenes = app.editor().scenes().len();
+
+    // A phone-sized viewport through a real egui context.
+    let ctx = egui::Context::default();
+    ctx.set_fonts(egui::FontDefinitions::empty());
+    let narrow = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::pos2(0.0, 0.0),
+            egui::vec2(390.0, 780.0),
+        )),
+        ..Default::default()
+    };
+    for _ in 0..3 {
+        let _ = ctx.run_ui(narrow.clone(), |ui| app.frame(ui));
+    }
+
+    // The document is untouched by a change of layout, and the figure is still
+    // there to be edited.
+    assert_eq!(app.editor().text(), wide_text, "layout is not an edit");
+    assert_eq!(
+        app.editor().scenes().len(),
+        wide_scenes,
+        "the figure is still recovered on a narrow screen"
+    );
+    assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+
+    // And a gesture still lands, which is what proves the narrow path runs the
+    // same tail rather than merely drawing.
+    let scene = &app.editor().scenes()[0];
+    let figure = scene.figure;
+    let (x, y) = (scene.transform.x, scene.transform.y);
+    app.editor_mut().handle_canvas(vec![
+        lilook_editor::CanvasEvent::Begin,
+        lilook_editor::CanvasEvent::SetLimits {
+            figure,
+            x: (x.min - 1.0, x.max - 1.0),
+            y: (y.min, y.max),
+        },
+        lilook_editor::CanvasEvent::Commit,
+    ]);
+    assert_ne!(app.editor().text(), wide_text, "the pan was written");
+    app.editor_mut().doc.undo();
+    assert_eq!(app.editor().text(), wide_text, "and undoes");
+}

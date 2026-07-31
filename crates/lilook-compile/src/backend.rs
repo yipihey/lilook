@@ -198,7 +198,7 @@ fn learn(hints: &mut Hints, scenes: &[Scene]) {
 
 /// The most pixels lilook will ask for in one page: 64 megapixels, or 256 MB of
 /// RGBA. Far beyond any figure, and far below what makes the allocator fail.
-const MAX_RASTER_PIXELS: f64 = 64.0 * 1024.0 * 1024.0;
+pub(crate) const MAX_RASTER_PIXELS: f64 = 64.0 * 1024.0 * 1024.0;
 
 fn rasterize(doc: &PagedDocument, pixel_per_pt: f32) -> Vec<Page> {
     let opts = typst_render::RenderOptions {

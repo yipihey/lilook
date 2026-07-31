@@ -2,6 +2,7 @@
 //! evaluated points of each series.
 
 use lilook_compile::{backend::Hints, Backend};
+use lilook_core::compile::AxisScale;
 use lilook_core::Document;
 
 fn skip(r: &lilook_compile::Render) -> bool {
@@ -473,5 +474,81 @@ fn the_mesh_helper_is_not_a_series() {
                 z[row * 6 + col]
             );
         }
+    }
+}
+
+/// A scale lilook cannot model is declined, not guessed at.
+///
+/// lilook knows two scales. lilaq ships symlog as well, and `lq.scale.scale` lets
+/// anyone define one — so "does the midpoint bend?" is a coin flip between the
+/// only two answers available, and it came up wrong.
+///
+/// The scale here squashes: `v / (1 + |v|)`, defined for every real so the probes
+/// can be placed anywhere, and nothing like either of lilook's. Before the guard
+/// it was recovered as **linear with `min 0.846` and `max -1.749`** — a maximum
+/// below the minimum. Nothing failed and nothing was reported; every pan and drag
+/// on that figure would have written nonsense into the user's document.
+///
+/// What catches it is the cheapest invariant available, and one that needs no
+/// knowledge of which scales lilaq has: an axis whose recovered maximum is below
+/// its minimum is not a transform. The figure then degrades to frame-only, the
+/// path a datetime axis already takes — it still draws, selects and resizes, and
+/// the gestures fall back to moving the view instead of rewriting limits.
+#[test]
+fn a_scale_lilook_cannot_model_is_declined_rather_than_guessed() {
+    const SQUASH: &str =
+        r#"yscale: lq.scale.scale(v => v / (1 + calc.abs(v)), u => u / (1 - calc.abs(u))),"#;
+    let src = |scale: &str| {
+        format!(
+            r#"#import "@preview/lilaq:0.6.0" as lq
+#set page(width: auto, height: auto, margin: 5pt)
+#lq.diagram(width: 6cm, height: 4cm,
+  {scale}
+  lq.plot((1, 2, 3, 4), (1, 40, 900, 40000)),
+)
+"#
+        )
+    };
+    let mut b = Backend::new(std::env::temp_dir(), "");
+    let mut hints = Hints::new();
+
+    let doc = Document::new(src(SQUASH));
+    let (render, scenes) = b.render_scenes(&doc, 1.0, &mut hints);
+    if skip(&render) {
+        return;
+    }
+    // The figure still draws. Only lilook's data-space arithmetic declines.
+    assert!(!render.failed(), "{:?}", render.diagnostics);
+    assert_eq!(scenes.len(), 1, "the frame is still recovered");
+    assert!(
+        !scenes[0].numeric.1,
+        "an unmodelled y scale must not be reported as usable in data space"
+    );
+    assert!(
+        !scenes[0].area.0.is_nan(),
+        "and the frame itself is still usable, so the diagram can be resized"
+    );
+
+    // The two scales lilook does model are unaffected, so the guard has not
+    // simply switched data-space editing off.
+    for (scale, want) in [
+        ("", AxisScale::Linear),
+        (r#"yscale: "log","#, AxisScale::Log),
+    ] {
+        let doc = Document::new(src(scale));
+        let mut h = Hints::new();
+        let (r, s) = b.render_scenes(&doc, 1.0, &mut h);
+        assert!(!r.failed(), "{scale}: {:?}", r.diagnostics);
+        assert!(
+            s[0].numeric.0 && s[0].numeric.1,
+            "{scale} should be numeric"
+        );
+        assert_eq!(s[0].transform.y.kind, want, "{scale}");
+        assert!(
+            s[0].transform.y.min < s[0].transform.y.max,
+            "{scale}: {} .. {}",
+            s[0].transform.y.min,
+            s[0].transform.y.max
+        );
     }
 }
