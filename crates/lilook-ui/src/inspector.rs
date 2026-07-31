@@ -16,6 +16,7 @@ pub use lilook_core::policy::{
     shape_hint, takes_text, widget_control, Control,
 };
 
+use egui::Color32;
 use lilook_core::schema::{FunctionSchema, ParamSchema};
 use lilook_core::{CallSite, Editability, NamedArg};
 
@@ -327,6 +328,79 @@ impl<'a> Inspector<'a> {
                     let current = arg.text.trim().trim_matches('"').to_string();
                     if let Some(c) = combo(ui, (node, &name), &current, &options) {
                         ev.push(set(node, &name, quoted_choice(&c, &sentinels)));
+                    }
+                }
+                // A colour ramp, shown as one. A name in a list says nothing
+                // about what the figure will look like; a gradient strip says all
+                // of it, and choosing a map is the single biggest visual decision
+                // on a heatmap.
+                Control::Colormap => {
+                    let current = arg.text.trim().to_string();
+                    let short = current
+                        .rsplit_once('.')
+                        .map(|(_, n)| n.to_string())
+                        .unwrap_or_else(|| current.clone());
+                    let mut picked = None;
+                    egui::ComboBox::from_id_salt((node, &name))
+                        .selected_text(&short)
+                        .width(190.0)
+                        .show_ui(ui, |ui| {
+                            for (map, note) in lilook_core::COLORMAPS {
+                                let on = short == *map;
+                                let r = ui
+                                    .horizontal(|ui| {
+                                        ramp(ui, map);
+                                        ui.selectable_label(on, *map)
+                                    })
+                                    .inner;
+                                if r.on_hover_text(*note).clicked() {
+                                    picked = Some(format!("color.map.{map}"));
+                                }
+                            }
+                        });
+                    // The strip beside the box, so the current choice reads
+                    // without opening anything.
+                    ramp(ui, &short);
+                    if let Some(v) = picked {
+                        ev.push(set(node, &name, v));
+                    }
+                }
+                // The palette every series in this diagram draws from.
+                Control::Cycle => {
+                    let current = arg.text.trim().to_string();
+                    let label = lilook_core::CYCLES
+                        .iter()
+                        .find(|(_, expr, _)| *expr == current)
+                        .map(|(n, _, _)| n.to_string())
+                        .unwrap_or_else(|| match current.len() > 18 {
+                            true => "custom".into(),
+                            false => current.clone(),
+                        });
+                    let mut picked = None;
+                    egui::ComboBox::from_id_salt((node, &name))
+                        .selected_text(&label)
+                        .width(210.0)
+                        .show_ui(ui, |ui| {
+                            for (n, expr, note) in lilook_core::CYCLES {
+                                let r = ui
+                                    .horizontal(|ui| {
+                                        swatches(ui, expr);
+                                        ui.selectable_label(label == *n, *n)
+                                    })
+                                    .inner;
+                                if r.on_hover_text(*note).clicked() {
+                                    picked = Some(expr.to_string());
+                                }
+                            }
+                        });
+                    if let Some(v) = picked {
+                        // A named cycle is a string; a list of colours is an
+                        // array and must not be quoted.
+                        let value = match v.starts_with('(') {
+                            true => v,
+                            false => format!("\"{v}\""),
+                        };
+                        ev.push(set(node, &name, value));
                     }
                 }
                 Control::Mark | Control::Scale => {
@@ -711,4 +785,111 @@ fn stroke_row(ui: &mut egui::Ui, id: (usize, &str), s: &Stroke) -> Option<Stroke
     }
 
     changed.then_some(next)
+}
+
+/// A colour-map preview strip.
+///
+/// The stops are typst's own, sampled coarsely: enough to tell viridis from
+/// magma at a glance, which is all a chooser needs. Painted rather than
+/// described, because "perceptually uniform, warm" is not a thing anyone can
+/// picture and a two-centimetre gradient is.
+fn ramp(ui: &mut egui::Ui, map: &str) {
+    let stops = colormap_stops(map);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(48.0, 12.0), egui::Sense::hover());
+    if stops.is_empty() {
+        return;
+    }
+    let n = stops.len();
+    let w = rect.width() / n as f32;
+    for (i, c) in stops.iter().enumerate() {
+        let x = rect.left() + i as f32 * w;
+        ui.painter().rect_filled(
+            egui::Rect::from_min_size(
+                egui::pos2(x, rect.top()),
+                egui::vec2(w + 0.5, rect.height()),
+            ),
+            0.0,
+            *c,
+        );
+    }
+}
+
+/// A palette preview: one square per colour.
+fn swatches(ui: &mut egui::Ui, expr: &str) {
+    let colors = cycle_colors(expr);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(56.0, 12.0), egui::Sense::hover());
+    if colors.is_empty() {
+        return;
+    }
+    let w = rect.width() / colors.len() as f32;
+    for (i, c) in colors.iter().enumerate() {
+        let x = rect.left() + i as f32 * w;
+        ui.painter().rect_filled(
+            egui::Rect::from_min_size(
+                egui::pos2(x, rect.top()),
+                egui::vec2(w - 1.0, rect.height()),
+            ),
+            1.0,
+            *c,
+        );
+    }
+}
+
+/// Five stops per map, eyeballed from typst's own gradients.
+///
+/// Approximate on purpose: this is a preview, and carrying the real 256-entry
+/// tables would be kilobytes of data to answer a question the eye settles in a
+/// glance. The figure itself is drawn by typst from the true map.
+fn colormap_stops(map: &str) -> Vec<Color32> {
+    let hex = |s: &str| {
+        let v = u32::from_str_radix(s, 16).unwrap_or(0);
+        Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)
+    };
+    let stops: &[&str] = match map {
+        "viridis" => &["440154", "3b528b", "21918c", "5ec962", "fde725"],
+        "magma" => &["000004", "3b0f70", "8c2981", "de4968", "fcfdbf"],
+        "inferno" => &["000004", "420a68", "932667", "dd513a", "fcffa4"],
+        "plasma" => &["0d0887", "6a00a8", "b12a90", "e16462", "f0f921"],
+        "rocket" => &["03051a", "541f3f", "a41e50", "e05c3a", "faebdd"],
+        "mako" => &["0b0405", "382a54", "3e6d8a", "3ebcaa", "def5e5"],
+        "turbo" => &["30123b", "1fa8d8", "a5fd3d", "fb8022", "7a0403"],
+        "crest" => &["a5cd90", "5aa96f", "24837b", "1f5f8b", "39366a"],
+        "flare" => &["edb081", "e7876f", "d75c68", "b13e64", "7d1d67"],
+        "vlag" => &["2369bd", "8fb9d8", "f2f2f2", "d99c92", "a11a2b"],
+        "icefire" => &["bde7f0", "4a86b8", "191a1a", "b8452e", "f0d9a8"],
+        "spectral" => &["9e0142", "f98e52", "ffffbf", "88cfa4", "5e4fa2"],
+        "rainbow" => &["6e40aa", "1ab0d0", "8fea52", "ff8c38", "d9335a"],
+        _ => &[],
+    };
+    stops.iter().map(|s| hex(s)).collect()
+}
+
+/// The colours of a cycle, for its swatch row.
+///
+/// Parsed out of the expression when it is a literal array -- which every palette
+/// offered here is -- and looked up for lilaq's named ones, whose values live in
+/// the package rather than in lilook.
+fn cycle_colors(expr: &str) -> Vec<Color32> {
+    if expr.starts_with('(') {
+        return expr
+            .split(',')
+            .filter_map(|part| parse_color(part.trim()))
+            .collect();
+    }
+    let hex = |s: &str| {
+        let v = u32::from_str_radix(s, 16).unwrap_or(0);
+        Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)
+    };
+    let named: &[&str] = match expr.trim_matches('"') {
+        "petroff10" => &[
+            "3f90da", "ffa90e", "bd1f01", "94a4a2", "832db6", "a96b59", "e76300", "b9ac70",
+            "717581", "92dadd",
+        ],
+        "petroff8" => &[
+            "1845fb", "ff5e02", "c91f16", "c849a9", "adad7d", "86c8dd", "578dff", "656364",
+        ],
+        "petroff6" => &["5790fc", "f89c20", "e42536", "964a8b", "9c9ca1", "7a21dd"],
+        _ => &[],
+    };
+    named.iter().map(|s| hex(s)).collect()
 }

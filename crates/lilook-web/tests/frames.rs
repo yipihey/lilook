@@ -1196,3 +1196,191 @@ fn a_narrow_window_stacks_the_same_four_parts() {
     app.editor_mut().doc.undo();
     assert_eq!(app.editor().text(), wide_text, "and undoes");
 }
+
+/// The four visual controls, each verified by compiling what it writes.
+///
+/// These are the levers that decide whether a figure looks considered: the colour
+/// ramp on a field, the palette every series draws from, the width of the column
+/// it will sit in, and the size of its type. Each writes plain Typst, so the test
+/// that matters is that lilaq accepts it.
+#[test]
+fn the_visual_controls_write_typst_that_compiles() {
+    let Some(mut app) = app() else { return };
+    let index = EXAMPLES
+        .iter()
+        .position(|(name, _)| *name == "colormesh")
+        .expect("the colormesh example");
+    app.load(index);
+    run(&mut app, 3);
+    assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+    let original = app.editor().text().to_string();
+
+    let mesh = app
+        .editor()
+        .doc
+        .calls()
+        .iter()
+        .find(|c| c.short_name() == "colormesh")
+        .map(|c| c.id)
+        .expect("the colormesh");
+    let diagram = app
+        .editor()
+        .doc
+        .figures()
+        .first()
+        .map(|f| f.node)
+        .expect("a diagram");
+
+    // Every colour map lilook offers has to be a real one. A name that is not in
+    // `color.map` compiles to "unknown field", which is exactly the failure a
+    // picker is supposed to make impossible.
+    for (map, _) in lilook_core::COLORMAPS {
+        app.editor_mut().doc.begin("map");
+        app.editor_mut()
+            .apply_intent(lilook_core::Intent::SetNamedArg {
+                node: mesh,
+                param: "map".into(),
+                value: format!("color.map.{map}"),
+            });
+        app.editor_mut().doc.commit();
+        app.editor_mut().mark_dirty();
+        run(&mut app, 3);
+        assert!(errors(&app).is_empty(), "{map}: {:?}", errors(&app));
+    }
+
+    // And every palette. The named ones are strings; the explicit ones arrays,
+    // and quoting an array is the mistake this asserts against.
+    for (name, expr, _) in lilook_core::CYCLES {
+        let value = match expr.starts_with('(') {
+            true => expr.to_string(),
+            false => format!("\"{expr}\""),
+        };
+        app.editor_mut().doc.begin("cycle");
+        app.editor_mut()
+            .apply_intent(lilook_core::Intent::SetNamedArg {
+                node: diagram,
+                param: "cycle".into(),
+                value,
+            });
+        app.editor_mut().doc.commit();
+        app.editor_mut().mark_dirty();
+        run(&mut app, 3);
+        assert!(errors(&app).is_empty(), "{name}: {:?}", errors(&app));
+    }
+
+    // Journal widths, and a type size that lands as a `#set text` rather than a
+    // lilaq argument.
+    for (label, width, _) in lilook_core::FIGURE_WIDTHS {
+        app.editor_mut().doc.begin("width");
+        app.editor_mut()
+            .apply_intent(lilook_core::Intent::SetNamedArg {
+                node: diagram,
+                param: "width".into(),
+                value: width.to_string(),
+            });
+        app.editor_mut().doc.commit();
+        app.editor_mut().mark_dirty();
+        run(&mut app, 3);
+        assert!(errors(&app).is_empty(), "{label}: {:?}", errors(&app));
+    }
+    for (label, size, _) in lilook_core::FIGURE_TEXT_SIZES {
+        app.editor_mut().set_text_size_for_test(size);
+        app.editor_mut().mark_dirty();
+        run(&mut app, 3);
+        assert!(errors(&app).is_empty(), "{label}: {:?}", errors(&app));
+        // Set twice must not stack two rules.
+        assert_eq!(
+            app.editor().text().matches("#set text(size:").count(),
+            1,
+            "{label} stacked a second rule"
+        );
+    }
+
+    // All of it undoes.
+    while app.editor().doc.history_depth().0 > 0 {
+        app.editor_mut().doc.undo();
+    }
+    assert_eq!(
+        app.editor().text(),
+        original,
+        "the visual controls did not undo"
+    );
+}
+
+/// A series can be moved onto its own right-hand axis, and back.
+///
+/// lilaq's twin axis is a nesting -- `lq.yaxis(position: right, <series>)` -- so
+/// lilook's job is a wrap and an unwrap of the call's own bytes. The part worth
+/// asserting is the honest limitation: the series still reads correctly in the
+/// tree and the inspector, and it stops being draggable, because lilook recovers
+/// one transform per diagram and that is not the axis this series is drawn on.
+#[test]
+fn a_series_can_move_to_a_second_y_axis() {
+    let Some(mut app) = app() else { return };
+    app.load(1);
+    run(&mut app, 3);
+    assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+    let original = app.editor().text().to_string();
+
+    let series = app
+        .editor()
+        .doc
+        .calls()
+        .iter()
+        .find(|c| c.is_xy_series())
+        .map(|c| c.id)
+        .expect("a series");
+    assert!(
+        app.editor().editable_series().contains(&series),
+        "draggable to begin with"
+    );
+
+    assert!(app.editor_mut().set_secondary_axis(series, true));
+    app.editor_mut().mark_dirty();
+    run(&mut app, 3);
+    assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+    assert!(
+        app.editor().text().contains("yaxis(position: right"),
+        "{}",
+        app.editor().text()
+    );
+
+    // Still a series of the diagram, still with its data.
+    let editor = app.editor();
+    let moved = editor
+        .doc
+        .calls()
+        .iter()
+        .find(|c| c.is_xy_series())
+        .expect("still a series");
+    assert!(editor.doc.on_secondary_axis(moved.id));
+    assert!(
+        editor.doc.figures()[0].series.contains(&moved.id),
+        "the diagram still owns it"
+    );
+    assert!(
+        editor
+            .scenes()
+            .iter()
+            .flat_map(|s| &s.series)
+            .any(|g| g.node == moved.id && !g.points.is_empty()),
+        "its data is still recovered"
+    );
+    // And the honest part: no drag handle, because the transform is not its own.
+    assert!(
+        !editor.editable_series().contains(&moved.id),
+        "a series on a second axis must not offer a drag it cannot honour"
+    );
+
+    // Back again, byte for byte.
+    let moved_id = moved.id;
+    assert!(app.editor_mut().set_secondary_axis(moved_id, false));
+    app.editor_mut().mark_dirty();
+    run(&mut app, 3);
+    assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+    assert_eq!(
+        app.editor().text(),
+        original,
+        "unwrapping restores the source"
+    );
+}

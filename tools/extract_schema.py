@@ -131,15 +131,33 @@ CURATED = [
     ({"str", "lq.scale"}, "scale"),
     ({"color", "gradient", "tiling", "ratio"}, "paint"),
     ({"color", "gradient", "tiling", "array"}, "paint"),
-    ({"array", "gradient"}, "paint"),
+    # `array | gradient` is lilaq's colormap signature and nothing else's: a list
+    # of colours, or a gradient across them. Calling it a paint made the inspector
+    # offer a *colour* picker for `map: color.map.viridis`, which cannot parse as
+    # one -- so the most visually consequential parameter on a heatmap had no
+    # control at all and fell through to a text box.
+    ({"array", "gradient"}, "colormap"),
 ]
 
+# Parameters whose type says `array` but whose meaning is a named palette. The
+# one case, and it is worth naming: `cycle` decides what *every* series in a
+# diagram looks like, which makes it the largest single lever on how a figure
+# reads. Its own default is the string `petroff10`, so the type union cannot tell
+# it from any other array.
+BY_NAME = {"cycle": "cycle"}
 
-def widget_for(types):
+
+def widget_for(types, name=None):
     """Decide the control for a parameter given its type union."""
     if not types:
         return {"widget": "opaque", "sentinels": [], "concrete": []}
     sentinels = [t for t in types if t in SENTINELS]
+    if name in BY_NAME:
+        return {
+            "widget": BY_NAME[name],
+            "sentinels": sentinels,
+            "concrete": [t for t in types if t not in SENTINELS],
+        }
     concrete = [t for t in types if t not in SENTINELS]
     # a union of only string literals is a dropdown
     if concrete and all(re.fullmatch(r'"[^"]*"', t) for t in concrete):
@@ -350,7 +368,7 @@ def main():
         params = []
         for p in d.get("params", []):
             types = p.get("types") or []
-            w = widget_for(types)
+            w = widget_for(types, p.get("name"))
             widget_hist[w["widget"]] += 1
             n_params += 1
             n_typed += 1 if types else 0
@@ -376,7 +394,7 @@ def main():
             if f["internal"]:
                 continue
             types = types_from_expr(f["type_expr"])
-            w = widget_for(types)
+            w = widget_for(types, f.get("name"))
             fields.append({**f, "types": types, **w})
         schema["elements"][name] = {"file": el["file"], "fields": fields}
 

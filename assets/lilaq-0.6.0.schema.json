@@ -727,7 +727,7 @@
       "color",
       "dictionary"
      ],
-     "widget": "variant"
+     "widget": "cycle"
     },
     {
      "concrete": [
@@ -3081,7 +3081,7 @@
       "array",
       "gradient"
      ],
-     "widget": "paint"
+     "widget": "colormap"
     },
     {
      "concrete": [
@@ -3334,7 +3334,7 @@
       "array",
       "gradient"
      ],
-     "widget": "paint"
+     "widget": "colormap"
     },
     {
      "concrete": [
@@ -3737,7 +3737,7 @@
      "types": [
       "array"
      ],
-     "widget": "array"
+     "widget": "cycle"
     },
     {
      "concrete": [
@@ -7240,7 +7240,7 @@
       "array",
       "gradient"
      ],
-     "widget": "paint"
+     "widget": "colormap"
     },
     {
      "concrete": [
@@ -7662,7 +7662,7 @@
       "array",
       "gradient"
      ],
-     "widget": "paint"
+     "widget": "colormap"
     },
     {
      "concrete": [
@@ -8922,10 +8922,12 @@
   "widgets": {
    "alignment": 4,
    "angle": 1,
-   "array": 38,
+   "array": 37,
    "color": 8,
+   "colormap": 4,
    "content": 22,
    "coordinate": 6,
+   "cycle": 1,
    "data": 8,
    "dictionary": 6,
    "enum": 13,
@@ -8935,7 +8937,7 @@
    "number": 64,
    "number-or-array": 16,
    "opaque": 29,
-   "paint": 18,
+   "paint": 14,
    "ratio": 3,
    "relative": 4,
    "scale": 7,

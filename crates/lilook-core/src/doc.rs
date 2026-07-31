@@ -542,6 +542,26 @@ impl Document {
             })
     }
 
+    /// Is this call drawn against an axis of its own rather than the diagram's?
+    ///
+    /// `lq.diagram(.., lq.yaxis(position: right, lq.plot(..)))` is how lilaq does
+    /// a twin axis: the plot is nested inside an axis, and that axis has its own
+    /// scale. lilook recovers one transform per *diagram*, so such a series is
+    /// read correctly but cannot be positioned by it.
+    pub fn on_secondary_axis(&self, id: usize) -> bool {
+        let mut at = self.call(id).and_then(|c| c.parent);
+        while let Some(p) = at {
+            let Some(call) = self.call(p) else {
+                return false;
+            };
+            if matches!(call.short_name(), "axis" | "xaxis" | "yaxis") {
+                return true;
+            }
+            at = call.parent;
+        }
+        false
+    }
+
     /// The diagram a call site is drawn in, if any.
     pub fn figure_of(&self, id: usize) -> Option<usize> {
         let mut at = self.call(id)?.parent;

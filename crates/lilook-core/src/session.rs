@@ -626,6 +626,14 @@ impl Session {
                 if c.generated {
                     return false;
                 }
+                // A series hanging off a secondary axis is drawn against *that*
+                // axis, and lilook recovers one transform per diagram -- the
+                // primary's. Its data is read correctly, so the tree and the
+                // inspector are right; dragging it would move it by the wrong
+                // scale, so the canvas is not offered the handle.
+                if self.doc.on_secondary_axis(c.id) {
+                    return false;
+                }
                 // A rules series is movable when *every* coordinate is a literal
                 // number, because the canvas gets one flag per call and a partly
                 // computed `hlines(1, threshold)` would offer a drag it cannot
@@ -1113,6 +1121,65 @@ impl Session {
         self.doc.commit();
         self.status = format!("theme renamed to {to}");
         true
+    }
+
+    /// Move a series onto a secondary axis, or bring it back to the primary.
+    ///
+    /// lilaq's twin axis is a nesting: `lq.yaxis(position: right, <series>)`
+    /// inside the diagram. So this is a wrap and an unwrap of the call's own
+    /// bytes -- no new syntax, and undo takes it back like anything else.
+    ///
+    /// The series keeps working in the tree and the inspector afterwards, because
+    /// the probe reads it through the nesting. What it loses is dragging: lilook
+    /// recovers one transform per diagram, and a series on its own axis is not
+    /// drawn against that one.
+    pub fn set_secondary_axis(&mut self, node: usize, secondary: bool) -> bool {
+        let Some(call) = self.doc.call(node).cloned() else {
+            return false;
+        };
+        let on = self.doc.on_secondary_axis(node);
+        if on == secondary {
+            return false;
+        }
+        let lq = self.doc.lilaq_alias();
+        if secondary {
+            let text = self.doc.text()[call.range.clone()].to_string();
+            self.doc.begin("second axis");
+            self.apply(Intent::ReplaceRange {
+                range: call.range,
+                value: format!("{lq}.yaxis(position: right, {text})"),
+            });
+            self.doc.commit();
+            self.status =
+                "moved to a right-hand axis — it reads there, but cannot be dragged".into();
+        } else {
+            // Replace the wrapping axis call with the series alone.
+            let Some(axis) = self.axis_around(node) else {
+                return false;
+            };
+            let text = self.doc.text()[call.range.clone()].to_string();
+            self.doc.begin("one axis");
+            self.apply(Intent::ReplaceRange {
+                range: axis,
+                value: text,
+            });
+            self.doc.commit();
+            self.status = "back on the diagram's own axis".into();
+        }
+        true
+    }
+
+    /// The byte range of the axis call wrapping this series, if there is one.
+    fn axis_around(&self, node: usize) -> Option<std::ops::Range<usize>> {
+        let mut at = self.doc.call(node)?.parent;
+        while let Some(p) = at {
+            let call = self.doc.call(p)?;
+            if matches!(call.short_name(), "axis" | "xaxis" | "yaxis") {
+                return Some(call.range.clone());
+            }
+            at = call.parent;
+        }
+        None
     }
 
     /// Ask the shell for the figure as a file.

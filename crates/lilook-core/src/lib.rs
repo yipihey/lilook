@@ -32,7 +32,10 @@ pub use doc::{
 pub use edit::{minimal_replacement, Anchor, AppliedEdit, CoalesceKey, History, Transaction};
 pub use events::{CanvasEvent, UiEvent};
 pub use intent::Intent;
-pub use policy::{seed_for_test, sentinel_of, widget_control, Control};
+pub use policy::{
+    seed_for_test, sentinel_of, widget_control, Control, COLORMAPS, CYCLES, FIGURE_TEXT_SIZES,
+    FIGURE_WIDTHS,
+};
 pub use render::{Diagnostic, Image, Page, Render, Severity};
 pub use scene::{Bounds, Scene, SceneHit, SeriesGeom};
 pub use schema::{ElementSchema, FunctionSchema, ParamSchema, Schema};

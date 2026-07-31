@@ -709,6 +709,7 @@ impl Editor {
                 // from the figure tree, is what keeps the figure inspector
                 // honest about what it is editing.
                 ui.separator();
+                self.figure_ui(ui);
                 self.theme_ui(ui);
                 ui.horizontal(|ui| {
                     ui.label("document styles");
@@ -1033,6 +1034,125 @@ impl Editor {
         {
             self.selected = r.node;
         }
+    }
+
+    /// The two settings that decide whether a figure survives being put in a
+    /// paper: how wide the column is, and how big the type is.
+    ///
+    /// Neither is exotic and both are routinely got wrong -- a figure drawn at
+    /// whatever size the window happened to be, then rescaled on import, is how a
+    /// paper ends up with six-point axis labels. The width goes on the diagram;
+    /// the size is a typst `set text`, which is why the styles menu below cannot
+    /// reach it: that lists lilaq's elements, and this is not one.
+    fn figure_ui(&mut self, ui: &mut egui::Ui) {
+        let diagrams: Vec<usize> = self.doc.figures().iter().map(|f| f.node).collect();
+        if diagrams.is_empty() {
+            return;
+        }
+        let mut width = None;
+        let mut size = None;
+        ui.horizontal(|ui| {
+            ui.label("for print");
+            ui.weak("?").on_hover_text(
+                "Set the figure to the width of the column it will sit in, and its \
+                 type to what the journal asks for. A figure scaled on import is \
+                 the usual cause of unreadable axis labels.",
+            );
+            egui::ComboBox::from_id_salt("figure-width")
+                .selected_text("width…")
+                .show_ui(ui, |ui| {
+                    for (label, value, note) in lilook_core::FIGURE_WIDTHS {
+                        if ui
+                            .selectable_label(false, format!("{label} — {value}"))
+                            .on_hover_text(*note)
+                            .clicked()
+                        {
+                            width = Some(*value);
+                        }
+                    }
+                });
+            egui::ComboBox::from_id_salt("figure-text")
+                .selected_text("type…")
+                .show_ui(ui, |ui| {
+                    for (label, value, note) in lilook_core::FIGURE_TEXT_SIZES {
+                        if ui
+                            .selectable_label(false, *label)
+                            .on_hover_text(*note)
+                            .clicked()
+                        {
+                            size = Some(*value);
+                        }
+                    }
+                });
+        });
+        // Twin axis, offered where the series is: a second y-axis is a property
+        // of one series, not of the diagram.
+        if let Some(call) = self.doc.call(self.selected).cloned() {
+            if call.is_xy_series() {
+                let on = self.doc.on_secondary_axis(call.id);
+                let mut want = on;
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut want, "second y-axis").on_hover_text(
+                        "Draw this series against its own axis on the right, \
+                             for a quantity in different units. It stays readable \
+                             and editable here; it cannot be dragged on the canvas, \
+                             because the canvas knows one scale per diagram.",
+                    );
+                });
+                if want != on {
+                    self.set_secondary_axis(call.id, want);
+                    self.mark_dirty();
+                }
+            }
+        }
+        if let Some(w) = width {
+            // Every diagram in the document: a figure made of panels is still one
+            // figure, and setting the width of only the selected panel is never
+            // what anyone means.
+            self.doc.begin("figure width");
+            for node in diagrams {
+                self.set_or_insert(node, "width", w.to_string());
+            }
+            self.doc.commit();
+            self.status = format!("figures set to {w} wide");
+            self.mark_dirty();
+        }
+        if let Some(sz) = size {
+            self.set_text_size(sz);
+            self.mark_dirty();
+        }
+    }
+
+    /// Set the type size, for a test that cannot open a menu.
+    pub fn set_text_size_for_test(&mut self, size: &str) {
+        self.set_text_size(size);
+    }
+
+    /// Set the figure's type size, replacing any `#set text(size: ..)` already
+    /// there rather than stacking a second one.
+    fn set_text_size(&mut self, size: &str) {
+        let text = self.doc.text();
+        let existing = text.find("#set text(").and_then(|at| {
+            let end = text[at..].find(')')? + at + 1;
+            text[at..end].contains("size:").then_some(at..end)
+        });
+        let Some(after) = self.import_end() else {
+            self.status = "no lilaq import to place a text size after".into();
+            return;
+        };
+        self.doc.begin("figure type size");
+        match existing {
+            Some(range) => self.apply(Intent::ReplaceRange {
+                range,
+                value: format!("#set text(size: {size})"),
+            }),
+            None => self.apply(Intent::ReplaceRange {
+                range: after..after,
+                value: format!("\n#set text(size: {size})"),
+            }),
+        }
+        self.doc.commit();
+        self.status = format!("figure type set to {size}");
     }
 
     /// The theme picker: lilaq's own, plus any the user has made here.
