@@ -123,7 +123,8 @@ fn tools() -> Value {
                         set_size {figure,width_pt,height_pt}; style {element,param,value} \
                         (adds a #show rule); theme {name} or {name:null} to clear; \
                         fork_theme {name}; rename_theme {name}; replace {range:[a,b],value}; \
-                        source {value}; undo; redo. \
+                        source {value}; fix {label} (applies a fix `render` offered); \
+                        undo; redo. \
                         Node ids are positions in a document-order walk, so an op \
                         that inserts text above a node renumbers it: put ops that \
                         target existing nodes BEFORE theme/fork_theme/style ops in \
@@ -488,6 +489,38 @@ impl Server {
                         value: text,
                     });
                 }
+                // Apply a fix `render` offered, by its label.
+                "fix" => {
+                    let want = sval(o, "label")?;
+                    self.session.doc.commit();
+                    let doc = Document::new(self.session.doc.text());
+                    let mut blames = vec![];
+                    for d in self
+                        .session
+                        .diagnostics
+                        .clone()
+                        .iter()
+                        .filter(|d| d.range.is_none())
+                    {
+                        blames.extend(lilook_compile::blame::locate(
+                            &mut self.backend,
+                            &doc,
+                            &d.message,
+                        ));
+                    }
+                    let actions = self.session.actions(&blames);
+                    let found = actions.iter().find(|a| a.label == want).cloned();
+                    match found {
+                        Some(a) => self.session.apply_action(&a),
+                        None => {
+                            let names: Vec<&str> =
+                                actions.iter().map(|a| a.label.as_str()).collect();
+                            self.session.doc.begin(label);
+                            return Err(format!("no fix named {want:?}; offered: {names:?}"));
+                        }
+                    }
+                    self.session.doc.begin(label);
+                }
                 "undo" => {
                     self.session.doc.commit();
                     self.session.doc.undo();
@@ -532,11 +565,17 @@ impl Server {
                 // one thing, see if the error survives. ~4 ms a variant, and it
                 // is evidence rather than a guess.
                 None => {
-                    for b in lilook_compile::blame::locate(&mut self.backend, &doc, &d.message) {
+                    let blames = lilook_compile::blame::locate(&mut self.backend, &doc, &d.message);
+                    for b in &blames {
                         out.push_str(&format!(
                             "  caused by `{}` on #{} (bytes {}..{})\n",
                             b.label, b.node, b.range.start, b.range.end
                         ));
+                    }
+                    // Knowing the cause is worth more with the cure beside it.
+                    self.session.diagnostics = vec![d.clone()];
+                    for a in self.session.actions(&blames) {
+                        out.push_str(&format!("  fix: {} — {}\n", a.label, a.note));
                     }
                 }
             }

@@ -11,11 +11,13 @@
 //! policy in one place and lets another frontend consume the same vocabulary.
 
 pub mod canvas;
+pub mod highlight;
 pub mod inspector;
 pub mod value;
 pub mod viewport;
 
 pub use canvas::{Canvas, CanvasEvent, CanvasInput, CanvasOutput, PageTexture};
+pub use highlight::{layout_job, token_color};
 pub use inspector::{
     add_argument_choice_id, control_for, refine, widget_control, Context, Control, Inspector,
     SlotSource, UiEvent,

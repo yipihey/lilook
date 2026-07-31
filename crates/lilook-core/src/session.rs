@@ -105,6 +105,73 @@ pub enum Link {
     Failed { path: String, why: String },
 }
 
+/// One thing that may be written at the caret.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Completion {
+    /// What to show in the list.
+    pub label: String,
+    /// What to put in the buffer.
+    pub insert: String,
+    /// Type or explanation, shown beside it.
+    pub note: String,
+}
+
+/// The call the caret is inside.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Signature {
+    pub name: String,
+    pub doc: String,
+    pub params: Vec<String>,
+    /// Which parameter the caret is in, if any, so it can be emphasised.
+    pub active: Option<String>,
+}
+
+/// Something lilook can offer to do about a diagnostic.
+///
+/// A label, a reason, and the edit. Never applied on its own.
+#[derive(Debug, Clone)]
+pub struct Action {
+    pub label: String,
+    pub note: String,
+    /// The edits, applied as one transaction.
+    ///
+    /// A list rather than one intent because some fixes are two edits -- a
+    /// rename is a removal and an insertion -- and inventing a `RenameNamedArg`
+    /// intent for it would mean a new variant to teach the undo generator, for
+    /// something the existing pair already expresses.
+    pub intents: Vec<Intent>,
+}
+
+/// Levenshtein distance, for "did you mean".
+fn edit_distance(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut row = vec![0; b.len() + 1];
+    for i in 1..=a.len() {
+        row[0] = i;
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            row[j] = (prev[j] + 1).min(row[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut row);
+    }
+    prev[b.len()]
+}
+
+/// A value the compiler resolved, to be shown at a byte offset.
+///
+/// Data, not a widget: a frontend places it inline, in the margin, or in a
+/// tooltip, and the core does not care which.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Hint {
+    /// Where it belongs, in the user's buffer.
+    pub at: usize,
+    /// What to show.
+    pub text: String,
+    /// Why, for a tooltip.
+    pub note: String,
+}
+
 /// The document being edited and everything an operation needs to reach.
 pub struct Session {
     pub doc: Document,
@@ -1180,6 +1247,364 @@ impl Session {
             at = call.parent;
         }
         None
+    }
+
+    /// What may be written at this offset.
+    ///
+    /// Schema and parse only -- never a compile. A completion that waits on the
+    /// compiler is a bug: the answer is already known before the figure is drawn,
+    /// and the whole point is that it arrives while the user is still typing.
+    pub fn completions(&self, offset: usize) -> Vec<Completion> {
+        let cursor = self.doc.at(offset);
+        let Some(call) = cursor.call.and_then(|id| self.doc.call(id)) else {
+            return vec![];
+        };
+        let element = self.schema.element_as_function(&call.callee);
+        let Some(f) = element
+            .as_ref()
+            .or_else(|| self.schema.function_for_callee(&call.callee))
+        else {
+            return vec![];
+        };
+
+        // On a value: what this parameter accepts.
+        if let Some(param) = cursor.argument.as_deref() {
+            let Some(p) = f.params.iter().find(|p| p.name == param) else {
+                return vec![];
+            };
+            // Inside a string, offer only what belongs in one. `yscale: "l|og"`
+            // wants the scale names -- the quotes are how a named variant is
+            // written -- but a title is prose, and a parameter list dropped into
+            // the middle of someone's words is noise.
+            if cursor.in_string && crate::policy::takes_text(Some(p)) {
+                return vec![];
+            }
+            // The schema does not always carry choices -- a named variant like
+            // `yscale` has its values in lilaq's own code -- so the same
+            // fallbacks the inspector's menus use apply here. One table, so the
+            // text pane and the menu cannot offer different things.
+            let fallback: &[&str] = match crate::widget_control(&p.widget) {
+                Some(crate::Control::Scale) => crate::policy::SCALE_NAMES,
+                Some(crate::Control::Mark) => crate::policy::MARK_NAMES,
+                _ => &[],
+            };
+            let choices: Vec<String> = match p.choices.is_empty() {
+                true => fallback.iter().map(|s| (*s).to_string()).collect(),
+                false => p.choices.clone(),
+            };
+            let mut out: Vec<Completion> = choices
+                .iter()
+                .map(|c| Completion {
+                    label: c.clone(),
+                    insert: format!("\"{c}\""),
+                    note: format!("a {} this takes", p.widget),
+                })
+                .collect();
+            // The pickers' own tables, so the text pane offers what the
+            // inspector does rather than a different, poorer list.
+            match crate::widget_control(&p.widget) {
+                Some(crate::Control::Colormap) => {
+                    out.extend(crate::COLORMAPS.iter().map(|(m, note)| Completion {
+                        label: (*m).into(),
+                        insert: format!("color.map.{m}"),
+                        note: (*note).into(),
+                    }))
+                }
+                Some(crate::Control::Cycle) => {
+                    out.extend(crate::CYCLES.iter().map(|(n, expr, note)| Completion {
+                        label: (*n).into(),
+                        insert: match expr.starts_with('(') {
+                            true => (*expr).into(),
+                            false => format!("\"{expr}\""),
+                        },
+                        note: (*note).into(),
+                    }))
+                }
+                _ => {}
+            }
+            out.extend(p.sentinels.iter().map(|sn| Completion {
+                label: sn.clone(),
+                insert: sn.clone(),
+                note: "leave it to lilaq".into(),
+            }));
+            return out;
+        }
+
+        // A name goes here, and a string is never a name.
+        if cursor.in_string {
+            return vec![];
+        }
+        // Otherwise a parameter name, minus the ones already written.
+        f.params
+            .iter()
+            .filter(|p| !call.named.iter().any(|a| a.name == p.name))
+            .map(|p| {
+                let seed = crate::widget_control(&p.widget)
+                    .and_then(|c| crate::policy::seed(Some(p), c))
+                    .unwrap_or_default();
+                Completion {
+                    label: p.name.clone(),
+                    insert: match seed.is_empty() {
+                        true => format!("{}: ", p.name),
+                        // The policy's safe value, so accepting a completion
+                        // leaves a figure that still compiles.
+                        false => format!("{}: {seed}", p.name),
+                    },
+                    note: p.types.join("|"),
+                }
+            })
+            .collect()
+    }
+
+    /// The call the caret is inside, described in one line.
+    pub fn signature(&self, offset: usize) -> Option<Signature> {
+        let cursor = self.doc.at(offset);
+        let call = cursor.call.and_then(|id| self.doc.call(id))?;
+        let element = self.schema.element_as_function(&call.callee);
+        let f = element
+            .as_ref()
+            .or_else(|| self.schema.function_for_callee(&call.callee))?;
+        Some(Signature {
+            name: call.short_name().to_string(),
+            doc: f
+                .doc
+                .lines()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("")
+                .trim()
+                .to_string(),
+            params: f.params.iter().map(|p| p.name.clone()).collect(),
+            active: cursor.argument.clone(),
+        })
+    }
+
+    /// Apply an action, as one undoable step.
+    pub fn apply_action(&mut self, action: &Action) {
+        self.doc.begin(&action.label);
+        for intent in &action.intents {
+            self.apply(intent.clone());
+        }
+        self.doc.commit();
+        self.status = action.label.clone();
+        self.dirty = true;
+    }
+
+    /// What lilook can offer to do about a broken figure.
+    ///
+    /// Driven by `(message, document)` rather than by a diagnostic's span,
+    /// because most of lilaq's errors have no span -- it validates inside its own
+    /// package. See `docs/findings.md`. `blame` narrows *where*; this decides
+    /// *what to offer*, and the two are independent: an action that knows which
+    /// argument is at fault is better, and one that does not is still useful.
+    ///
+    /// Advisory, always. An action is a label and an `Intent`; applying it is an
+    /// ordinary undoable edit that the user asked for.
+    pub fn actions(&self, blames: &[crate::Blame]) -> Vec<Action> {
+        let mut out = vec![];
+        for d in self
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+        {
+            let msg = d.message.as_str();
+            let blamed = |param: &str| {
+                blames
+                    .iter()
+                    .find(|b| b.argument.as_deref() == Some(param))
+                    .map(|b| b.node)
+            };
+
+            // A log axis given a limit at or below zero. lilaq raises this from
+            // inside itself, so without blame there is nothing to point at.
+            if msg.contains("strictly positive") {
+                for axis in ["x", "y"] {
+                    let scale = format!("{axis}scale");
+                    let lim = format!("{axis}lim");
+                    if let Some(node) = blamed(&scale) {
+                        out.push(Action {
+                            label: format!("use a linear {axis} axis"),
+                            note: "a log axis cannot show zero or negative values".into(),
+                            intents: vec![Intent::RemoveNamedArg {
+                                node,
+                                param: scale.clone(),
+                            }],
+                        });
+                    }
+                    if let Some(node) = blamed(&lim) {
+                        out.push(Action {
+                            label: format!("let lilaq choose the {axis} limits"),
+                            note: "the data is positive even where the limit is not".into(),
+                            intents: vec![Intent::SetNamedArg {
+                                node,
+                                param: lim.clone(),
+                                value: "auto".into(),
+                            }],
+                        });
+                    }
+                }
+            }
+
+            // An empty or wrong-length limit array. The data range is known, so
+            // the offer can be a real pair of numbers rather than a placeholder.
+            if msg.contains("Limit arrays") {
+                for b in blames
+                    .iter()
+                    .filter(|b| matches!(b.argument.as_deref(), Some("xlim") | Some("ylim")))
+                {
+                    let param = b.argument.clone().unwrap_or_default();
+                    let from_data = self.scenes.iter().find(|s| s.figure == b.node).map(|s| {
+                        match param.starts_with('x') {
+                            true => (s.transform.x.min, s.transform.x.max),
+                            false => (s.transform.y.min, s.transform.y.max),
+                        }
+                    });
+                    let value = match from_data {
+                        Some((lo, hi)) if lo < hi => {
+                            format!("({}, {})", crate::gesture_num(lo), crate::gesture_num(hi))
+                        }
+                        _ => "auto".into(),
+                    };
+                    out.push(Action {
+                        label: format!("set {param} to {value}"),
+                        note: "a limit array holds exactly two numbers".into(),
+                        intents: vec![Intent::SetNamedArg {
+                            node: b.node,
+                            param,
+                            value,
+                        }],
+                    });
+                }
+            }
+
+            // A parameter that does not exist. The schema knows every name, so
+            // the offer is the nearest one rather than a list to read.
+            if msg.contains("unknown named") {
+                for b in blames.iter().filter(|b| b.argument.is_some()) {
+                    let wrong = b.argument.clone().unwrap_or_default();
+                    let Some(call) = self.doc.call(b.node) else {
+                        continue;
+                    };
+                    let element = self.schema.element_as_function(&call.callee);
+                    let f = element
+                        .as_ref()
+                        .or_else(|| self.schema.function_for_callee(&call.callee));
+                    let near = f.and_then(|f| {
+                        f.params
+                            .iter()
+                            .map(|p| (edit_distance(&wrong, &p.name), p.name.clone()))
+                            .filter(|(d, _)| *d <= 3)
+                            .min()
+                    });
+                    match near {
+                        Some((_, right)) => {
+                            let value = call
+                                .named
+                                .iter()
+                                .find(|a| a.name == wrong)
+                                .map(|a| a.text.clone())
+                                .unwrap_or_default();
+                            out.push(Action {
+                                label: format!("rename `{wrong}` to `{right}`"),
+                                note: "the nearest parameter this call takes".into(),
+                                intents: vec![
+                                    Intent::RemoveNamedArg {
+                                        node: b.node,
+                                        param: wrong.clone(),
+                                    },
+                                    Intent::InsertNamedArg {
+                                        node: b.node,
+                                        param: right,
+                                        value,
+                                    },
+                                ],
+                            })
+                        }
+                        None => out.push(Action {
+                            label: format!("remove `{wrong}`"),
+                            note: "this call does not take it".into(),
+                            intents: vec![Intent::RemoveNamedArg {
+                                node: b.node,
+                                param: wrong.clone(),
+                            }],
+                        }),
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// What the compiler resolved, shown where it was left unsaid.
+    ///
+    /// The capability that exists *only* because of the probe. A language server
+    /// can say what a name refers to; it cannot say what `xlim: auto` became,
+    /// because that is not in the text -- it is in the rendered figure. lilook
+    /// has the recovered transform sitting beside the source, so it can:
+    ///
+    /// ```typst
+    /// #lq.diagram(xlim: auto,   ⟨0.82 … 4.18⟩
+    /// ```
+    ///
+    /// Advisory, like every capability: a hint is a readout and never an edit.
+    /// Empty when nothing has compiled, rather than stale from the last thing
+    /// that did -- a number that quietly describes a different figure is worse
+    /// than no number.
+    pub fn hints(&self) -> Vec<Hint> {
+        let mut out = vec![];
+        for scene in &self.scenes {
+            let Some(call) = self.doc.call(scene.figure) else {
+                continue;
+            };
+            for (param, axis, numeric) in [
+                ("xlim", scene.transform.x, scene.numeric.0),
+                ("ylim", scene.transform.y, scene.numeric.1),
+            ] {
+                // Only where the user left it to lilaq. A limit they wrote needs
+                // no echo, and an axis lilook could not model has nothing true
+                // to say.
+                if !numeric {
+                    continue;
+                }
+                let Some(arg) = call.named.iter().find(|a| a.name == param) else {
+                    continue;
+                };
+                if crate::policy::sentinel_of(&arg.text, None).is_some()
+                    || arg.text.trim() != "auto"
+                {
+                    continue;
+                }
+                out.push(Hint {
+                    at: arg.value.end,
+                    text: format!(
+                        "{} … {}",
+                        crate::gesture_num(axis.min),
+                        crate::gesture_num(axis.max)
+                    ),
+                    note: format!("what lilaq chose for {param}"),
+                });
+            }
+            // What a slot's data actually amounted to, beside the expression
+            // that produced it. `run.map(r => float(r.t))` says nothing about
+            // how many rows arrived.
+            for geom in &scene.series {
+                let Some(series) = self.doc.call(geom.node) else {
+                    continue;
+                };
+                let Some(slot) = series.positional.first() else {
+                    continue;
+                };
+                if slot.elements.len() > 1 {
+                    continue; // a literal array already shows its own length
+                }
+                out.push(Hint {
+                    at: slot.range.end,
+                    text: geom.summary(),
+                    note: "what this slot evaluated to".into(),
+                });
+            }
+        }
+        out.sort_by_key(|h| h.at);
+        out
     }
 
     /// Ask the shell for the figure as a file.

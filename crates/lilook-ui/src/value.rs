@@ -8,6 +8,9 @@
 //! that is correct behaviour rather than a gap.
 
 pub use lilook_core::{parse_text, split_numeric, TextShape};
+// The name tables live beside the schema policy, so a completion in the source
+// pane offers exactly what the inspector's menu does.
+pub use lilook_core::policy::{DASH_NAMES, MARK_NAMES, SCALE_NAMES};
 
 use egui::Color32;
 
@@ -33,30 +36,6 @@ pub const NAMED_COLORS: &[(&str, u32)] = &[
     ("olive", 0x3d9970),
     ("green", 0x2ecc40),
     ("lime", 0x01ff70),
-];
-
-/// Marks lilaq registers by name, from `lilaq 0.6.0 src/model/mark.typ:157`.
-/// Order is the source's, so the list reads the way the docs do.
-pub const MARK_NAMES: &[&str] = &[
-    "o", "s", "d", "x", "+", "*", ".", ",", "|", "-", "^", "v", "<", ">", "star", "moon",
-    "polygon", "asterisk", "a3", "a4", "a5", "a6", "p5", "p6", "p7", "p8", "s3", "s4", "s5", "s6",
-];
-
-/// Built-in scale names, from the `axis.scale` documentation.
-pub const SCALE_NAMES: &[&str] = &["linear", "log", "symlog", "datetime"];
-
-/// Typst's named dash patterns.
-pub const DASH_NAMES: &[&str] = &[
-    "solid",
-    "dotted",
-    "densely-dotted",
-    "loosely-dotted",
-    "dashed",
-    "densely-dashed",
-    "loosely-dashed",
-    "dash-dotted",
-    "densely-dash-dotted",
-    "loosely-dash-dotted",
 ];
 
 pub const H_ALIGN: &[&str] = &["left", "center", "right", "start", "end"];

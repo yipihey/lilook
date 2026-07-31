@@ -1384,3 +1384,84 @@ fn a_series_can_move_to_a_second_y_axis() {
         "unwrapping restores the source"
     );
 }
+
+/// Inlay hints: what the compiler resolved, where the user left it unsaid.
+///
+/// The capability that exists only because of the probe. A language server can
+/// say what a name refers to; it cannot say what `xlim: auto` became, because
+/// that is not in the text — it is in the rendered figure.
+#[test]
+fn hints_report_what_auto_resolved_to() {
+    let Some(mut app) = app() else { return };
+    app.load(1);
+    run(&mut app, 3);
+    assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+
+    let diagram = app.editor().doc.figures()[0].node;
+    app.editor_mut().doc.begin("auto limits");
+    for param in ["xlim", "ylim"] {
+        app.editor_mut()
+            .apply_intent(lilook_core::Intent::InsertNamedArg {
+                node: diagram,
+                param: param.into(),
+                value: "auto".into(),
+            });
+    }
+    app.editor_mut().doc.commit();
+    app.editor_mut().mark_dirty();
+    run(&mut app, 3);
+    assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+
+    let hints = app.editor().hints();
+    let limits: Vec<&lilook_core::Hint> = hints
+        .iter()
+        .filter(|h| h.note.contains("lilaq chose"))
+        .collect();
+    assert_eq!(limits.len(), 2, "one per auto axis: {hints:?}");
+
+    // The numbers are the recovered transform, not a guess.
+    let scene = &app.editor().scenes()[0];
+    let shown = limits[0].text.clone();
+    let want = format!(
+        "{} … {}",
+        lilook_core::gesture_num(scene.transform.x.min),
+        lilook_core::gesture_num(scene.transform.x.max)
+    );
+    assert_eq!(shown, want);
+
+    // Every hint lands on a real byte boundary in the user's buffer.
+    let text = app.editor().text().to_string();
+    for h in &hints {
+        assert!(h.at <= text.len() && text.is_char_boundary(h.at), "{h:?}");
+    }
+
+    // A limit the user wrote gets no echo: they can already see it.
+    app.editor_mut().doc.begin("explicit");
+    app.editor_mut()
+        .apply_intent(lilook_core::Intent::SetNamedArg {
+            node: diagram,
+            param: "xlim".into(),
+            value: "(0, 10)".into(),
+        });
+    app.editor_mut().doc.commit();
+    app.editor_mut().mark_dirty();
+    run(&mut app, 3);
+    assert_eq!(
+        app.editor()
+            .hints()
+            .iter()
+            .filter(|h| h.note.contains("lilaq chose"))
+            .count(),
+        1,
+        "only the axis still on auto"
+    );
+}
+
+/// Nothing has compiled, so there is nothing true to say.
+#[test]
+fn there_are_no_hints_without_a_scene() {
+    let Some(mut app) = app() else { return };
+    app.load(1);
+    // No frames run: no compile, no scene.
+    assert!(app.editor().hints().is_empty());
+}

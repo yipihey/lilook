@@ -613,11 +613,23 @@ impl Editor {
                         .unwrap_or_else(|| self.doc.text().to_string()),
                     false => self.doc.text().to_string(),
                 };
+                // Coloured from the document's own spans. The layouter runs on
+                // every layout pass, so the spans are computed once per frame
+                // outside it rather than per call.
+                let spans = self.doc.spans();
+                let font = egui::TextStyle::Monospace.resolve(ui.style());
+                let visuals = ui.visuals().clone();
+                let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap: f32| {
+                    let job =
+                        lilook_ui::layout_job(text.as_str(), &spans, font.clone(), &visuals, wrap);
+                    ui.fonts_mut(|f| f.layout_job(job))
+                };
                 let r = ui.add(
                     egui::TextEdit::multiline(&mut buf)
                         .id(id)
                         .code_editor()
-                        .desired_width(f32::INFINITY),
+                        .desired_width(f32::INFINITY)
+                        .layouter(&mut layouter),
                 );
                 if r.changed() {
                     // Typing is a direct text edit, not model

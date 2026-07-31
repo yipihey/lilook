@@ -39,4 +39,7 @@ pub use policy::{
 pub use render::{Blame, Diagnostic, Image, Page, Render, Severity};
 pub use scene::{Bounds, Scene, SceneHit, SeriesGeom};
 pub use schema::{ElementSchema, FunctionSchema, ParamSchema, Schema};
-pub use session::{Clip, Dropped, Link, Requests, Session, SlotSource, IDLE_COMMIT_SECONDS};
+pub use session::{
+    Action, Clip, Completion, Dropped, Hint, Link, Requests, Session, Signature, SlotSource,
+    IDLE_COMMIT_SECONDS,
+};

@@ -290,3 +290,26 @@ pub const FIGURE_TEXT_SIZES: &[(&str, &str, &str)] = &[
     ("6pt", "6pt", "dense figures — check it is still legible"),
     ("11pt", "11pt", "presentations"),
 ];
+
+/// Marks lilaq registers by name, from `lilaq 0.6.0 src/model/mark.typ:157`.
+/// Order is the source's, so the list reads the way the docs do.
+pub const MARK_NAMES: &[&str] = &[
+    "o", "s", "d", "x", "+", "*", ".", ",", "|", "-", "^", "v", "<", ">", "star", "moon",
+    "polygon", "asterisk", "a3", "a4", "a5", "a6", "p5", "p6", "p7", "p8", "s3", "s4", "s5", "s6",
+];
+/// Built-in scale names, from the `axis.scale` documentation.
+pub const SCALE_NAMES: &[&str] = &["linear", "log", "symlog", "datetime"];
+
+/// Typst's named dash patterns.
+pub const DASH_NAMES: &[&str] = &[
+    "solid",
+    "dotted",
+    "densely-dotted",
+    "loosely-dotted",
+    "dashed",
+    "densely-dashed",
+    "loosely-dashed",
+    "dash-dotted",
+    "densely-dash-dotted",
+    "loosely-dash-dotted",
+];
