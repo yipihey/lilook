@@ -94,18 +94,7 @@ impl CallSite {
     /// How to read the positional arguments: paired coordinates, grid axes, or
     /// one line each.
     pub fn series_shape(&self) -> SeriesShape {
-        let name = self.short_name();
-        if let Some((_, axis)) = DISTRIBUTION_SERIES.iter().find(|(n, _)| *n == name) {
-            return SeriesShape::Distributions(*axis);
-        }
-        match name {
-            n if MESH_SERIES.contains(&n) => SeriesShape::Mesh,
-            "hlines" => SeriesShape::Rules(Axis::Y),
-            "vlines" => SeriesShape::Rules(Axis::X),
-            "place" | "rect" | "ellipse" => SeriesShape::Anchor,
-            "line" | "path" => SeriesShape::Vertices,
-            _ => SeriesShape::Points,
-        }
+        series_shape_of(self.short_name())
     }
 
     /// True when both data slots are literal arrays of the same length, which
@@ -237,6 +226,25 @@ pub enum SeriesShape {
 pub enum Axis {
     X,
     Y,
+}
+
+/// How to read a series' positional slots, by name alone.
+///
+/// Free-standing as well as a method, because a frontend with only a name in
+/// hand -- an MCP server categorising what lilaq can draw -- needs the same
+/// answer without a parsed call site to ask.
+pub fn series_shape_of(name: &str) -> SeriesShape {
+    if let Some((_, axis)) = DISTRIBUTION_SERIES.iter().find(|(n, _)| *n == name) {
+        return SeriesShape::Distributions(*axis);
+    }
+    match name {
+        n if MESH_SERIES.contains(&n) => SeriesShape::Mesh,
+        "hlines" => SeriesShape::Rules(Axis::Y),
+        "vlines" => SeriesShape::Rules(Axis::X),
+        "place" | "rect" | "ellipse" => SeriesShape::Anchor,
+        "line" | "path" => SeriesShape::Vertices,
+        _ => SeriesShape::Points,
+    }
 }
 
 /// The mesh-shaped constructors. Their slots 0 and 1 are axes, not coordinates.

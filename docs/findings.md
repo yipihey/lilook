@@ -1792,3 +1792,43 @@ Three things the move turned up that the audit had not predicted:
 
 The receipt was the compiler's: after the move, `lilook-editor` no longer needed
 to import `Document` at all.
+
+## One MCP tool per lilaq function costs 18,000 tokens a turn; five tools cost 500
+
+2026-07-31. Measured before building, because the shape of the MCP server
+depended on the answer. Tool definitions are re-sent on every request, so the
+standing cost is what matters, not the one-off.
+
+| surface | tokens | paid |
+| --- | --- | --- |
+| whole schema as one blob | 44,550 | — |
+| one tool per function (48) | 17,980 | **every request** |
+| terse capability index | 810 | once, on demand |
+| `describe` for one function | 47 | only when used |
+
+So discovery is hierarchical: five fixed tools (`doc`, `capabilities`,
+`describe`, `edit`, `render`), an index that names functions without their
+parameters, and expansion only for what the agent will actually use. An agent
+spends ~1,000 tokens to learn what it needs against ~18,000 per turn for the flat
+surface, and gets *more* detail on the functions it uses rather than less.
+
+Nothing in the server enumerates lilaq. `capabilities` and `describe` are
+projections of the generated schema, and `edit` is a projection of `Session` --
+the same operations the GUI performs, which is what the Session extraction was
+for. A new lilaq function needs no change here.
+
+`render` reports a scene readback -- what was drawn, point counts, axis ranges and
+scales -- not just diagnostics, so an agent can check its work without pixels.
+`edit` recompiles and includes that readback in its own reply, because an edit
+that does not compile is the thing an agent most needs to hear about and hearing
+it a round trip later is a wasted turn.
+
+Two things driving it turned up that review had not:
+
+- **Node ids renumber within a batch.** They are positions in a document-order
+  walk, so an op that inserts text above a node (a theme, a style rule) moves it.
+  The same hazard `commit_link` already documents. The tool description now says
+  to order such ops last, and every reply lists the ids as they are afterwards.
+- **`schoolbook` is incompatible with a log axis** -- it sets `position: 0`, and
+  lilaq answers "value must be strictly positive". Not a lilook bug, and the
+  server reports it verbatim, which is exactly what an agent needs.

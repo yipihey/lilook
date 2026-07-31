@@ -25,8 +25,8 @@ pub use data::{
     MAX_EMBEDDED_VALUES,
 };
 pub use doc::{
-    check_expr, Axis, CallSite, Document, Editability, Figure, NamedArg, PositionalArg,
-    SeriesShape, SetRule, Theme, XY_SERIES,
+    check_expr, series_shape_of, Axis, CallSite, Document, Editability, Figure, NamedArg,
+    PositionalArg, SeriesShape, SetRule, Theme, XY_SERIES,
 };
 pub use edit::{minimal_replacement, Anchor, AppliedEdit, CoalesceKey, History, Transaction};
 pub use events::{CanvasEvent, UiEvent};

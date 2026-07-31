@@ -20,6 +20,7 @@ system = [
 ]
 
 [dependencies]
+serde_json = "1"
 lilook-core = { path = "../lilook-core" }
 typst = { workspace = true }
 typst-kit = { workspace = true }
@@ -37,3 +38,10 @@ lilook-data = { path = "../lilook-data" }
 # Test-only: the inspector decides what `set` writes, and only a compiler can say
 # whether those values are valid. `check_expr` accepting them is not enough.
 lilook-ui = { path = "../lilook-ui" }
+
+# The MCP server reads real files, so it needs the `system` loader. Declared
+# rather than assumed: `scripts/check.sh` also builds this crate for wasm32,
+# where `SystemFiles` does not exist.
+[[bin]]
+name = "lilook-mcp"
+required-features = ["system"]
