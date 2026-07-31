@@ -12,6 +12,7 @@ pub mod doc;
 pub mod edit;
 pub mod events;
 pub mod intent;
+pub mod policy;
 pub mod render;
 pub mod scene;
 pub mod schema;
@@ -20,9 +21,9 @@ pub mod session;
 pub use compile::{AxisMap, AxisScale, CliCompiler, Compiler, Hit, Transform};
 pub use data::{
     binding_name_for, binding_source, column_source, columns_of, csv_binding_source,
-    csv_column_source, data_array_source, data_num, gesture_num, is_plain_identifier,
-    split_numeric, string_literal, Answer, Columns, DataFile, FileRoot, SourceKind, TooManyValues,
-    MAX_EMBEDDED_VALUES,
+    csv_column_source, data_array_source, data_num, gesture_num, is_plain_identifier, parse_text,
+    split_numeric, string_literal, Answer, Columns, DataFile, FileRoot, SourceKind, TextShape,
+    TooManyValues, MAX_EMBEDDED_VALUES,
 };
 pub use doc::{
     check_expr, series_shape_of, Axis, CallSite, Document, Editability, Figure, NamedArg,
@@ -31,6 +32,7 @@ pub use doc::{
 pub use edit::{minimal_replacement, Anchor, AppliedEdit, CoalesceKey, History, Transaction};
 pub use events::{CanvasEvent, UiEvent};
 pub use intent::Intent;
+pub use policy::{seed_for_test, sentinel_of, widget_control, Control};
 pub use render::{Diagnostic, Image, Page, Render, Severity};
 pub use scene::{Bounds, Scene, SceneHit, SeriesGeom};
 pub use schema::{ElementSchema, FunctionSchema, ParamSchema, Schema};

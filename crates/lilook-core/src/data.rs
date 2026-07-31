@@ -482,6 +482,59 @@ pub fn split_numeric(s: &str) -> Option<(f64, String)> {
         .map(|v| (v, unit.to_string()))
 }
 
+/// `[Time]` -> `Time`. Content the user wrote as a variable or an expression
+/// returns None.
+pub fn parse_content(s: &str) -> Option<String> {
+    let s = s.trim();
+    let inner = s.strip_prefix('[')?.strip_suffix(']')?;
+    // Nested brackets are fine, unbalanced ones are not this control's problem.
+    (!inner.contains(']') || inner.matches('[').count() == inner.matches(']').count())
+        .then(|| inner.to_string())
+}
+/// Which of typst's two spellings of "some words" a value is written in.
+///
+/// lilaq takes either almost everywhere -- `title: [Flux]` and `title: "Flux"`
+/// are both fine -- and the difference matters when writing back: a value the
+/// user wrote as a string has to stay a string, or lilook has silently changed
+/// the shape of their source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextShape {
+    /// `[some words]` -- typst content, which can hold markup.
+    Content,
+    /// `"some words"` -- a plain string.
+    Str,
+}
+/// Read a value that is words: content, a string, or nothing at all.
+///
+/// `None` means this is not a textual value (an expression, a function call), so
+/// the caller must leave it to the source editor. `Some((shape, text))` gives the
+/// words with the quoting removed, ready for a plain text field -- which is the
+/// whole point: the schema already says this parameter takes words, so nobody
+/// should have to type `[..]` or `".."` to say so again.
+pub fn parse_text(s: &str) -> Option<(TextShape, String)> {
+    let s = s.trim();
+    if let Some(inner) = parse_content(s) {
+        return Some((TextShape::Content, inner));
+    }
+    let inner = s.strip_prefix('"')?.strip_suffix('"')?;
+    // An escaped quote is fine; a bare one means this is not one string literal.
+    let mut chars = inner.chars().peekable();
+    let mut out = String::new();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some(e) => out.push(e),
+                None => return None,
+            },
+            '"' => return None,
+            _ => out.push(c),
+        }
+    }
+    Some((TextShape::Str, out))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -572,6 +625,12 @@ mod tests {
     }
 
     /// Everything this emits has to survive the parser lilook validates with.
+    #[test]
+    fn content_is_read_out_of_its_brackets() {
+        assert_eq!(super::parse_content("[Time]").as_deref(), Some("Time"));
+        assert_eq!(super::parse_content("my-label"), None);
+    }
+
     #[test]
     fn emitted_arrays_reparse() {
         let arrays: Vec<Vec<f64>> = vec![

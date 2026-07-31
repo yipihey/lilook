@@ -7,7 +7,7 @@
 //! `stroke: 1pt + red.darken(20%)` both fall through to the source editor, and
 //! that is correct behaviour rather than a gap.
 
-pub use lilook_core::split_numeric;
+pub use lilook_core::{parse_text, split_numeric, TextShape};
 
 use egui::Color32;
 
@@ -225,61 +225,6 @@ pub fn split_top_level(s: &str, sep: char) -> Vec<String> {
     out
 }
 
-/// `[Time]` -> `Time`. Content the user wrote as a variable or an expression
-/// returns None.
-pub fn parse_content(s: &str) -> Option<String> {
-    let s = s.trim();
-    let inner = s.strip_prefix('[')?.strip_suffix(']')?;
-    // Nested brackets are fine, unbalanced ones are not this control's problem.
-    (!inner.contains(']') || inner.matches('[').count() == inner.matches(']').count())
-        .then(|| inner.to_string())
-}
-
-/// Which of typst's two spellings of "some words" a value is written in.
-///
-/// lilaq takes either almost everywhere -- `title: [Flux]` and `title: "Flux"`
-/// are both fine -- and the difference matters when writing back: a value the
-/// user wrote as a string has to stay a string, or lilook has silently changed
-/// the shape of their source.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TextShape {
-    /// `[some words]` -- typst content, which can hold markup.
-    Content,
-    /// `"some words"` -- a plain string.
-    Str,
-}
-
-/// Read a value that is words: content, a string, or nothing at all.
-///
-/// `None` means this is not a textual value (an expression, a function call), so
-/// the caller must leave it to the source editor. `Some((shape, text))` gives the
-/// words with the quoting removed, ready for a plain text field -- which is the
-/// whole point: the schema already says this parameter takes words, so nobody
-/// should have to type `[..]` or `".."` to say so again.
-pub fn parse_text(s: &str) -> Option<(TextShape, String)> {
-    let s = s.trim();
-    if let Some(inner) = parse_content(s) {
-        return Some((TextShape::Content, inner));
-    }
-    let inner = s.strip_prefix('"')?.strip_suffix('"')?;
-    // An escaped quote is fine; a bare one means this is not one string literal.
-    let mut chars = inner.chars().peekable();
-    let mut out = String::new();
-    while let Some(c) = chars.next() {
-        match c {
-            '\\' => match chars.next() {
-                Some('n') => out.push('\n'),
-                Some('t') => out.push('\t'),
-                Some(e) => out.push(e),
-                None => return None,
-            },
-            '"' => return None,
-            _ => out.push(c),
-        }
-    }
-    Some((TextShape::Str, out))
-}
-
 /// Write words back in the shape they came in.
 pub fn text_source(shape: TextShape, text: &str) -> String {
     match shape {
@@ -425,8 +370,6 @@ mod tests {
 
     #[test]
     fn content_and_alignment() {
-        assert_eq!(parse_content("[Time]").as_deref(), Some("Time"));
-        assert_eq!(parse_content("my-label"), None);
         assert_eq!(
             parse_alignment("left + top"),
             Some((Some("left".into()), Some("top".into())))

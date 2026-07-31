@@ -251,73 +251,59 @@ impl Editor {
         self.take_dropped(&ctx);
         self.tick_idle(&ctx, now);
 
-        if self.layout.tree {
-            egui::containers::Panel::left(egui::Id::new("calls"))
-                .default_size(190.0)
-                .resizable(true)
-                .show(ui, |ui| self.call_list(ui));
-        }
-
         let mut events = vec![];
         let mut source_edit: Option<(std::ops::Range<usize>, String)> = None;
-        if self.layout.inspector {
-            egui::containers::Panel::right(egui::Id::new("inspector"))
-                .default_size(280.0)
+        // Tree above, inspector below, in one column: what a thing *is* and what
+        // it *can be set to* belong together, and it leaves the whole right side
+        // to the figure with its source underneath.
+        if self.layout.tree || self.layout.inspector {
+            egui::containers::Panel::left(egui::Id::new("calls"))
+                .default_size(250.0)
                 .resizable(true)
                 .show(ui, |ui| {
-                    egui::ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            let call = self.doc.call(self.selected).cloned();
-                            match call {
-                                Some(call) => {
-                                    // A set rule is an ordinary call site, so the
-                                    // inspector renders it from the element's field
-                                    // list with no special case.
-                                    let element = self.schema.element_as_function(&call.callee);
-                                    let f = element
-                                        .as_ref()
-                                        .or_else(|| self.schema.function_for_callee(&call.callee));
-                                    let sources = self.slot_sources(&call);
-                                    let context = lilook_ui::Context {
-                                        recovered_points: self
-                                            .scenes
-                                            .iter()
-                                            .flat_map(|s| &s.series)
-                                            .find(|s| s.node == call.id)
-                                            // Only a paired-point series has a
-                                            // flat array to embed. A mesh has
-                                            // axes, a rule has one coordinate per
-                                            // argument, a distribution has whole
-                                            // datasets -- and `points` is empty
-                                            // for all three, so offering
-                                            // "materialise" would write `()` into
-                                            // the slot and break the figure. The
-                                            // same shape of bug as seeding `xlim`
-                                            // with an empty array.
-                                            .filter(|s| {
-                                                s.shape == lilook_core::SeriesShape::Points
-                                                    && !s.points.is_empty()
-                                            })
-                                            .map(|s| s.points.len()),
-                                        slot_sources: &sources,
-                                    };
-                                    let mut insp = Inspector::new(f).with_context(context);
-                                    insp.ui(ui, &call);
-                                    events = std::mem::take(&mut insp.events);
-                                }
-                                None => {
-                                    ui.label("no call site selected");
-                                }
-                            }
-                        });
+                    if self.layout.tree {
+                        // Bounded when the inspector shares the column, or a long
+                        // figure pushes it off the bottom.
+                        let cap = match self.layout.inspector {
+                            true => (ui.available_height() * 0.45).max(120.0),
+                            false => f32::INFINITY,
+                        };
+                        egui::ScrollArea::vertical()
+                            .id_salt("tree-scroll")
+                            .max_height(cap)
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| self.call_list(ui));
+                    }
+                    if self.layout.inspector {
+                        ui.separator();
+                        events = self.inspector_ui(ui);
+                    }
                 });
         }
+
         if self.layout.source {
             egui::containers::Panel::bottom(egui::Id::new("source"))
                 .default_size(200.0)
                 .resizable(true)
                 .show(ui, |ui| {
+                    // Copy the whole figure to the clipboard. lilook is often used
+                    // to compose a figure that then lives in someone else's
+                    // manuscript, and for that the source *is* the deliverable --
+                    // there is no file to hand over.
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button("⧉")
+                            .on_hover_text("copy the Typst source to the clipboard")
+                            .clicked()
+                        {
+                            ui.ctx().copy_text(self.doc.text().to_string());
+                            self.status = format!(
+                                "copied {} lines of Typst to the clipboard",
+                                self.doc.text().lines().count()
+                            );
+                        }
+                        ui.weak("source");
+                    });
                     if !self.diagnostics.is_empty() {
                         self.diagnostics_ui(ui);
                         ui.separator();
@@ -495,6 +481,64 @@ impl Editor {
     /// The document as a tree of figures and the series inside them, which is
     /// the structure the canvas selects in. Calls that belong to no diagram
     /// (`lq.linspace`, a stray helper) come last rather than being hidden.
+    /// The inspector's contents, with no panel around them.
+    ///
+    /// Factored out because where it goes now depends on the window: under the
+    /// tree in the left column when there is room, and third in a single stack
+    /// when there is not. Tree, inspector, figure, source reads the same either
+    /// way -- what a thing is, what it can be set to, what it looks like, and
+    /// what that is in Typst.
+    fn inspector_ui(&mut self, ui: &mut egui::Ui) -> Vec<lilook_core::UiEvent> {
+        let mut events = vec![];
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let call = self.doc.call(self.selected).cloned();
+                match call {
+                    Some(call) => {
+                        // A set rule is an ordinary call site, so the
+                        // inspector renders it from the element's field
+                        // list with no special case.
+                        let element = self.schema.element_as_function(&call.callee);
+                        let f = element
+                            .as_ref()
+                            .or_else(|| self.schema.function_for_callee(&call.callee));
+                        let sources = self.slot_sources(&call);
+                        let context = lilook_ui::Context {
+                            recovered_points: self
+                                .scenes
+                                .iter()
+                                .flat_map(|s| &s.series)
+                                .find(|s| s.node == call.id)
+                                // Only a paired-point series has a
+                                // flat array to embed. A mesh has
+                                // axes, a rule has one coordinate per
+                                // argument, a distribution has whole
+                                // datasets -- and `points` is empty
+                                // for all three, so offering
+                                // "materialise" would write `()` into
+                                // the slot and break the figure. The
+                                // same shape of bug as seeding `xlim`
+                                // with an empty array.
+                                .filter(|s| {
+                                    s.shape == lilook_core::SeriesShape::Points
+                                        && !s.points.is_empty()
+                                })
+                                .map(|s| s.points.len()),
+                            slot_sources: &sources,
+                        };
+                        let mut insp = Inspector::new(f).with_context(context);
+                        insp.ui(ui, &call);
+                        events = std::mem::take(&mut insp.events);
+                    }
+                    None => {
+                        ui.label("no call site selected");
+                    }
+                }
+            });
+        events
+    }
+
     fn call_list(&mut self, ui: &mut egui::Ui) {
         let figures = self.doc.figures();
         let mut in_a_figure: Vec<usize> = vec![];

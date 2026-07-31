@@ -298,8 +298,21 @@ impl Server {
                 } else {
                     format!(" one of: {}", p.choices.join("|"))
                 };
+                // What lilook's own inspector would put here, and what it would
+                // start from. Same policy the GUI uses -- it lives beside the
+                // schema now precisely so the two cannot drift.
+                let control = lilook_core::widget_control(&p.widget);
+                let seed = control
+                    .and_then(|c| lilook_core::policy::seed(Some(p), c))
+                    .map(|v| format!(" [safe value: {v}]"))
+                    .unwrap_or_default();
+                let unset = if p.sentinels.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [unset: {}]", p.sentinels.join("|"))
+                };
                 out.push_str(&format!(
-                    "  {}: {}{}{}\n",
+                    "  {}: {}{}{}{seed}{unset}\n",
                     p.name,
                     p.types.join("|"),
                     p.default
