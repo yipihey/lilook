@@ -22,5 +22,5 @@ pub use inspector::{
     add_argument_choice_id, control_for, refine, widget_control, Context, Control, Inspector,
     SlotSource, UiEvent,
 };
-pub use value::{num, split_numeric};
+pub use value::{num, parse_color, parse_stroke, split_numeric, Stroke};
 pub use viewport::{stack_pages, stacked_size, PageBox, Viewport};

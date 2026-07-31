@@ -62,6 +62,12 @@ pub fn layout_job(
     font: FontId,
     visuals: &egui::Visuals,
     wrap_width: f32,
+    // What each series is actually drawn in, where the figure says so. A series
+    // with `stroke: 1pt + red` does not take its colour from the cycle, and a
+    // tint that claimed otherwise would assert a correspondence that is not
+    // there -- which is worse than no tint, because the whole point is that the
+    // line in the source and the curve on the canvas are the same thing.
+    series_color: &dyn Fn(usize) -> Option<Color32>,
 ) -> LayoutJob {
     let mut job = LayoutJob {
         wrap: egui::text::TextWrapping {
@@ -95,7 +101,12 @@ pub fn layout_job(
             0.0,
             TextFormat {
                 font_id: font.clone(),
-                color: token_color(*token, visuals),
+                color: match token {
+                    Token::Series(i) => {
+                        series_color(*i).unwrap_or_else(|| token_color(*token, visuals))
+                    }
+                    _ => token_color(*token, visuals),
+                },
                 ..Default::default()
             },
         );

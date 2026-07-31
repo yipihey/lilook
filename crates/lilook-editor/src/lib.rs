@@ -618,11 +618,38 @@ impl Editor {
                 // every layout pass, so the spans are computed once per frame
                 // outside it rather than per call.
                 let spans = self.doc.spans();
+                // What each series is really drawn in: its own `color:` or the
+                // colour out of its `stroke:`, falling back to the cycle.
+                let explicit: Vec<Option<egui::Color32>> = self
+                    .doc
+                    .figures()
+                    .iter()
+                    .flat_map(|f| f.series.clone())
+                    .map(|id| {
+                        let call = self.doc.call(id)?;
+                        let named = |n: &str| call.named.iter().find(|a| a.name == n);
+                        named("color")
+                            .and_then(|a| lilook_ui::parse_color(&a.text))
+                            .or_else(|| {
+                                named("stroke")
+                                    .and_then(|a| lilook_ui::parse_stroke(&a.text))
+                                    .and_then(|s| s.paint)
+                                    .and_then(|p| lilook_ui::parse_color(&p))
+                            })
+                    })
+                    .collect();
+                let series_color = move |i: usize| explicit.get(i).copied().flatten();
                 let font = egui::TextStyle::Monospace.resolve(ui.style());
                 let visuals = ui.visuals().clone();
                 let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap: f32| {
-                    let job =
-                        lilook_ui::layout_job(text.as_str(), &spans, font.clone(), &visuals, wrap);
+                    let job = lilook_ui::layout_job(
+                        text.as_str(),
+                        &spans,
+                        font.clone(),
+                        &visuals,
+                        wrap,
+                        &series_color,
+                    );
                     ui.fonts_mut(|f| f.layout_job(job))
                 };
                 let out = egui::TextEdit::multiline(&mut buf)
