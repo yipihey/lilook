@@ -1047,9 +1047,18 @@ fn a_json_object_links_its_arrays_and_not_its_metadata() {
 #[test]
 fn themes_can_be_switched_forked_and_renamed() {
     let Some(mut app) = app() else { return };
-    app.load(1);
+    // Example 0 deliberately: its first call is `lq.vec.add`, and taking the
+    // alias off the first call site made that `lq.vec` -- so the picker wrote
+    // `#show: lq.vec.theme.ocean` and lilaq answered "module `vec` does not
+    // contain `theme`". Caught on the deployed site, not by a test.
+    app.load(0);
     run(&mut app, 3);
     assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+    assert!(
+        app.editor().text().contains("lq.vec.add"),
+        "the fixture has to keep its nested call for this to test anything"
+    );
+    assert_eq!(app.editor().doc.lilaq_alias(), "lq");
     let original = app.editor().text().to_string();
     assert!(app.editor().active_theme().is_none(), "starts unthemed");
 

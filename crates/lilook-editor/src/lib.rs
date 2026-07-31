@@ -1906,13 +1906,7 @@ impl Editor {
             });
         let Some(element) = picked else { return };
 
-        let lq = self
-            .doc
-            .calls()
-            .iter()
-            .find_map(|c| c.module())
-            .unwrap_or("lq")
-            .to_string();
+        let lq = self.doc.lilaq_alias();
         let Some(at) = self.import_end() else {
             self.status = "no lilaq import to place a style rule after".into();
             return;
@@ -2023,7 +2017,7 @@ impl Editor {
     /// figure pasted into another manuscript stays themed.
     pub fn set_theme(&mut self, name: Option<&str>) {
         let current = self.active_theme();
-        let lq = self.lilaq_alias();
+        let lq = self.doc.lilaq_alias();
         let rule = name.map(|n| match self.doc.binding_of(n) {
             // A theme of the user's own is named directly; lilaq's live under
             // the module.
@@ -2082,7 +2076,7 @@ impl Editor {
     /// afterwards is an ordinary `set-*` rule the styles panel already edits.
     pub fn fork_theme(&mut self, name: &str) -> bool {
         let name = lilook_core::binding_name_for(name, |n| self.doc.binding_of(n).is_some());
-        let lq = self.lilaq_alias();
+        let lq = self.doc.lilaq_alias();
         let base = match self.active_theme() {
             Some(t) if t.local => format!("  show: {},\n", t.name),
             Some(t) => format!("  show: {lq}.theme.{},\n", t.name),
@@ -2148,16 +2142,6 @@ impl Editor {
         self.doc.commit();
         self.status = format!("theme renamed to {to}");
         true
-    }
-
-    /// Whatever the document calls lilaq -- `lq` by convention, but not always.
-    fn lilaq_alias(&self) -> String {
-        self.doc
-            .calls()
-            .iter()
-            .find_map(|c| c.module())
-            .unwrap_or("lq")
-            .to_string()
     }
 
     /// End of the line that imports lilaq: a set rule has to come after it, or

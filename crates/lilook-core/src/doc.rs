@@ -466,6 +466,44 @@ impl Document {
         out
     }
 
+    /// What this document calls lilaq: the alias on its `#import`.
+    ///
+    /// In the core rather than in a frontend because it is a fact about the
+    /// document, and every frontend that writes `lq.something` needs the same
+    /// answer. The obvious shortcut -- take the module off the first call site --
+    /// is wrong on any document whose first call is nested, and it shipped:
+    /// `lq.vec.add` made the alias `lq.vec`, and the theme picker wrote
+    /// `#show: lq.vec.theme.ocean`.
+    pub fn lilaq_alias(&self) -> String {
+        for line in self.text.lines() {
+            let line = line.trim();
+            let Some(rest) = line.strip_prefix("#import ") else {
+                continue;
+            };
+            if !rest.contains("lilaq") {
+                continue;
+            }
+            // `#import "@preview/lilaq:0.6.0" as lq`, and the bare form where the
+            // module takes the package's own name.
+            if let Some((_, alias)) = rest.rsplit_once(" as ") {
+                let alias = alias.trim().trim_end_matches(':').trim();
+                if !alias.is_empty() && !alias.contains(' ') {
+                    return alias.to_string();
+                }
+            }
+            return "lilaq".to_string();
+        }
+        // No import found: a fragment, or an unusual spelling. Fall back to the
+        // module of a call this document already makes, preferring the shallow
+        // ones -- `lq.plot` over `lq.vec.add`.
+        self.calls
+            .iter()
+            .filter(|c| c.is_xy_series() || c.short_name() == "diagram")
+            .find_map(|c| c.module())
+            .unwrap_or("lq")
+            .to_string()
+    }
+
     /// Every theme show rule in the document, in document order.
     ///
     /// A bare identifier counts only when the document also binds it to a
