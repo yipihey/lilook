@@ -1543,3 +1543,66 @@ fn a_broken_figure_can_be_diagnosed_and_fixed_from_the_ui() {
     app.editor_mut().doc.undo();
     assert_eq!(app.editor().text(), healthy);
 }
+
+/// The completion popup opens at the caret and its offers are usable.
+///
+/// Driven through the real editor with real focus, because the popup is gated on
+/// the source pane having it — a caret nobody is at should not open one.
+#[test]
+fn completion_offers_what_the_caret_can_take() {
+    let Some(mut app) = app() else { return };
+    app.load(1);
+    run(&mut app, 3);
+    assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+
+    // Position addressing is what the popup is built on: ask at a byte offset
+    // inside the diagram's argument list.
+    let text = app.editor().text().to_string();
+    let at = text.find("xlabel").expect("the example labels its axes");
+    let names: Vec<String> = app
+        .editor()
+        .completions(at - 1)
+        .into_iter()
+        .map(|c| c.label)
+        .collect();
+    assert!(!names.is_empty(), "between arguments, names are offered");
+    assert!(names.contains(&"title".to_string()), "{names:?}");
+
+    // Every insertion is a value that compiles — the policy's safe seed. This is
+    // the assertion that matters: accepting a completion must never leave a
+    // figure that does not build.
+    let diagram = app.editor().doc.figures()[0].node;
+    for c in app.editor().completions(at - 1).into_iter().take(8) {
+        let Some((param, value)) = c.insert.split_once(':') else {
+            continue;
+        };
+        let value = value.trim();
+        if value.is_empty() {
+            continue; // offered as a name to fill in, not a value
+        }
+        app.editor_mut().doc.begin("try");
+        app.editor_mut()
+            .apply_intent(lilook_core::Intent::InsertNamedArg {
+                node: diagram,
+                param: param.trim().into(),
+                value: value.into(),
+            });
+        app.editor_mut().doc.commit();
+        app.editor_mut().mark_dirty();
+        run(&mut app, 3);
+        assert!(
+            errors(&app).is_empty(),
+            "accepting `{}` broke the figure: {:?}",
+            c.insert,
+            errors(&app)
+        );
+        app.editor_mut().doc.undo();
+        app.editor_mut().mark_dirty();
+        run(&mut app, 2);
+    }
+
+    // And signature help names the call the caret is in.
+    let sig = app.editor().signature(at - 1).expect("inside the diagram");
+    assert_eq!(sig.name, "diagram");
+    assert!(sig.params.contains(&"xlim".to_string()));
+}

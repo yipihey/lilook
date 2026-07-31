@@ -686,6 +686,23 @@ impl Editor {
                         ui.visuals().weak_text_color(),
                     );
                 }
+                // Completion and signature help, at the caret.
+                //
+                // The popup is an `egui::Area` placed from the galley's cursor
+                // rect, which is why no new widget was needed: `TextEdit` already
+                // reports where the caret is and which character it sits at.
+                // Everything offered comes from `Session::completions`, which is
+                // schema and parse only -- a completion that waited on the
+                // compiler would arrive after the user had moved on.
+                if let Some(range) = out.cursor_range.filter(|_| has_focus(ui, id)) {
+                    let chars: usize = range.primary.index.into();
+                    let at = buf
+                        .char_indices()
+                        .nth(chars)
+                        .map(|(b, _)| b)
+                        .unwrap_or(buf.len());
+                    self.completion_ui(ui, &buf, at, &out);
+                }
                 let r = out.response;
                 if r.changed() {
                     // Typing is a direct text edit, not model
@@ -700,6 +717,95 @@ impl Editor {
                 ui.data_mut(|d| d.insert_temp(id, buf));
             });
         source_edit
+    }
+
+    /// The completion popup and the signature line.
+    ///
+    /// Filtered by whatever word is already typed, so the list narrows as the
+    /// user goes rather than making them read it. Accepting replaces that word,
+    /// which is why the prefix is measured rather than assumed.
+    fn completion_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        text: &str,
+        at: usize,
+        out: &egui::text_edit::TextEditOutput,
+    ) {
+        // The word being typed: what a lilaq parameter or a colour map is spelt
+        // with.
+        let start = text[..at]
+            .char_indices()
+            .rev()
+            .take_while(|(_, c)| c.is_alphanumeric() || *c == '-' || *c == '_')
+            .last()
+            .map(|(i, _)| i)
+            .unwrap_or(at);
+        let prefix = &text[start..at];
+
+        // What the caret is inside, always -- it costs a lookup, and it is the
+        // thing that stops someone leaving for the documentation.
+        if let Some(sig) = self.signature(at) {
+            let params = sig
+                .params
+                .iter()
+                .map(|p| match Some(p) == sig.active.as_ref() {
+                    true => format!("[{p}]"),
+                    false => p.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            ui.weak(format!("{}({params})", sig.name));
+            if !sig.doc.is_empty() {
+                ui.weak(&sig.doc);
+            }
+        }
+
+        let matching: Vec<lilook_core::Completion> = self
+            .completions(at)
+            .into_iter()
+            .filter(|c| prefix.is_empty() || c.label.starts_with(prefix))
+            .take(12)
+            .collect();
+        if matching.is_empty() {
+            return;
+        }
+        let anchor = out.galley_pos
+            + out
+                .galley
+                .pos_from_cursor(egui::text::CCursor::new(text[..at].chars().count()))
+                .left_bottom()
+                .to_vec2();
+        let mut accepted = None;
+        egui::Area::new(egui::Id::new("completions"))
+            .fixed_pos(anchor)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_max_width(300.0);
+                    for c in &matching {
+                        let row = ui
+                            .horizontal(|ui| {
+                                let r = ui.selectable_label(false, &c.label);
+                                ui.weak(&c.note);
+                                r
+                            })
+                            .inner;
+                        if row.clicked() {
+                            accepted = Some(c.clone());
+                        }
+                    }
+                });
+            });
+        if let Some(c) = accepted {
+            // Replace the word being typed rather than appending to it.
+            self.doc.begin("completion");
+            self.apply(Intent::ReplaceRange {
+                range: start..at,
+                value: c.insert,
+            });
+            self.doc.commit();
+            self.mark_dirty();
+        }
     }
 
     fn call_list(&mut self, ui: &mut egui::Ui) {
@@ -1354,4 +1460,11 @@ impl Editor {
             }
         }
     }
+}
+
+/// Does the source pane have keyboard focus?
+///
+/// A caret nobody is at should not open a popup.
+fn has_focus(ui: &egui::Ui, id: egui::Id) -> bool {
+    ui.memory(|m| m.has_focus(id))
 }

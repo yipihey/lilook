@@ -14,29 +14,56 @@ implore, or any host application — see `docs/plan.md` §5.
 
 ---
 
+## What it is
+
+**A language server for figures.** lilook syncs a document incrementally,
+publishes diagnostics, answers go-to-definition and serves an outline — over
+JSON-RPC, to four frontends — and it does the half that helps you write: what can
+go here, what a value resolved to, and an offer to fix what broke.
+
+Two things follow from that framing, and they are the reason the codebase looks
+the way it does.
+
+**Every capability is a pure function of `(document, schema, scene)` returning
+data.** It never renders and it never edits. So a desktop window, a browser tab,
+a SwiftUI view and an MCP server for agents all get each capability from one
+place — and when lilaq adds a function, no frontend changes.
+
+**It has two surfaces, not one.** A language server maps position to meaning.
+lilook maps position ⟷ meaning ⟷ *geometry*: clicking a curve selects a byte
+range, and editing a byte range moves a curve. That round trip is what the probe
+technique (ADR-0008) exists for, and it is the part no language server has.
+
 ## Status
 
-The figure renders, and you can click it, pan it, zoom it and drag its points;
-every gesture lands as a surgical edit in the `.typ` file and is one undo step.
-Every parameter in the lilaq schema has a control, document-level `lq.set-*`
-styling is editable from its own panel, and series copy and paste between
-figures carrying the bindings they need. 90 tests green.
+Editing: click, pan, zoom, drag points, resize by the frame — every gesture a
+surgical edit and one undo step. Every lilaq function and style element has a
+control, including pickers for colormaps and colourblind-safe palettes. Themes
+switch, fork and rename. Data links live to CSV, JSON, HDF5, npz, FITS and
+Veusz's descriptor ASCII, refreshing when the file changes. Export to PDF, SVG
+and PNG.
 
-| crate | what it is | state |
+Language-server capabilities: semantic colour, inlay hints for what `auto`
+resolved to, completion and signature help, and quick fixes. Errors that name no
+location — most of lilaq's, since it validates inside its own package — are
+located by recompiling variants at ~4 ms each, which produces the byte range the
+diagnostic was missing.
+
+229 tests. `scripts/check.sh` is the gate.
+
+| crate | what it is | GUI |
 | --- | --- | --- |
-| `lilook-core` | document, intents, history, scene, schema | working, 40 tests |
-| `lilook-compile` | in-process typst: World, compile actor, probes, raster | working, 21 tests |
-| `lilook-ui` | egui-only inspector and canvas | working, 29 tests |
-| `lilook-editor` | the editor itself: panels, gestures, transactions | working |
-| `lilook-app` | desktop shell: window, file, compile thread | working, renders (see `--screenshot`) |
-| `lilook-web` | browser shell: gallery of lilaq examples, wasm | working, 4 tests |
-| `lilook-ffi` | C ABI for Swift / Python / Julia | working |
-| `bindings/python` | ctypes wrapper | working |
-| `swift/` | SwiftUI package | working, 3 tests; iOS XCFramework builds |
+| `lilook-core` | document, intents, history, scene, schema, policy, session, capabilities | — |
+| `lilook-compile` | in-process typst: World, probes, actor, export, blame | — |
+| `lilook-data` | npz, FITS, HDF5, Veusz ASCII, CBOR sidecars | — |
+| `lilook-ffi` | C ABI for Swift / Python / Julia | — |
+| `lilook-ui` | egui inspector, canvas, highlighting | egui |
+| `lilook-editor` | panels and layout | egui |
+| `lilook-app` / `lilook-web` | desktop and browser shells | egui |
+| `lilook-compile/bin/lilook-mcp` | MCP server: five tools, hierarchical discovery | — |
 
-Done: M0–M10 of `docs/plan-1.0.md`, browser build included, and the Swift
-package now compiles and passes its tests. The same editor runs in a window and
-in a page; only the shell differs.
+About 70% of the code has no GUI dependency. `docs/plan-2.0.md` has the
+architecture; `docs/plan.md` §1 has the settled ADRs.
 
 Read `docs/findings.md` for what was actually measured versus assumed. Several
 early assumptions were overturned by measurement; the document records both.
@@ -70,6 +97,26 @@ cargo run -p lilook-app -- figure.typ --select 2 --screenshot out.png
 
 Draws until the first compile lands, writes a PNG of the window and exits. This
 exists because "it renders correctly" was unverifiable for a whole phase.
+
+### For an agent
+
+```sh
+cargo run -p lilook-compile --bin lilook-mcp -- /path/to/project
+```
+
+An MCP server over stdio: five tools, not one per lilaq function. That shape was
+measured — a tool per function costs ~18,000 tokens on *every* request, because
+tool definitions are re-sent each turn; a terse capability index costs 810 once
+and describing a single function 47. So discovery is hierarchical, and an agent
+spends about a thousand tokens learning what it needs instead of eighteen.
+
+It reports what actually happened, not just that something failed:
+
+```
+ERROR: unknown named field 'widht'
+  caused by `widht: 3cm` on #0 (bytes 118..121)
+  fix: rename `widht` to `width` — the nearest parameter this call takes
+```
 
 ### In the browser
 
