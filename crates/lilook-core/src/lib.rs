@@ -40,6 +40,6 @@ pub use render::{Blame, Diagnostic, Image, Page, Render, Severity};
 pub use scene::{Bounds, Scene, SceneHit, SeriesGeom};
 pub use schema::{ElementSchema, FunctionSchema, ParamSchema, Schema};
 pub use session::{
-    Action, Clip, Completion, Dropped, Hint, Link, Requests, Session, Signature, SlotSource,
-    IDLE_COMMIT_SECONDS,
+    Action, Clip, Completion, Dropped, Extraction, Hint, Link, Requests, Session, Signature,
+    SlotSource, IDLE_COMMIT_SECONDS,
 };

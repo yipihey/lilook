@@ -218,6 +218,12 @@ impl WebApp {
         for d in requests.adopt {
             self.adopt(d);
         }
+        if let Some(e) = requests.write_figure {
+            // In the browser the project is in memory, so the new file goes
+            // where every other file the page knows about lives.
+            self.insert_file(&e.path, e.contents.clone().into_bytes());
+            self.editor.status = format!("{} is part of this project", e.path);
+        }
         if !requests.blame.is_empty() {
             // In the frame, like the query: there is no thread to wait for, and
             // an error the user just asked about should be explained now.

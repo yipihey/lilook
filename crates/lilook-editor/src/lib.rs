@@ -363,6 +363,7 @@ impl Editor {
         self.want_compile(&ctx);
         self.requests.query = self.queued_query.take();
         self.requests.blame = std::mem::take(&mut self.queued_blame);
+        self.requests.write_figure = self.queued_write.take();
         std::mem::take(&mut self.requests)
     }
 
@@ -658,6 +659,49 @@ impl Editor {
                     .desired_width(f32::INFINITY)
                     .layouter(&mut layouter)
                     .show(ui);
+                // Where the error is, not just that there is one. A byte offset
+                // in a message is a number to go and count; a mark under the
+                // characters is the answer. Painted rather than styled through
+                // the layouter so it survives the buffer being mid-edit.
+                for d in self.diagnostics.clone() {
+                    let Some(range) = d.range.clone() else {
+                        continue;
+                    };
+                    if range.end > buf.len()
+                        || !buf.is_char_boundary(range.start)
+                        || !buf.is_char_boundary(range.end)
+                    {
+                        continue;
+                    }
+                    let color = match d.severity {
+                        Severity::Error => ui.visuals().error_fg_color,
+                        Severity::Warning => ui.visuals().warn_fg_color,
+                    };
+                    let ccursor = |b: usize| egui::text::CCursor::new(buf[..b].chars().count());
+                    let (from, to) = (
+                        out.galley.pos_from_cursor(ccursor(range.start)),
+                        out.galley.pos_from_cursor(ccursor(range.end)),
+                    );
+                    let same_row = (from.top() - to.top()).abs() < 0.5;
+                    let rect = egui::Rect::from_min_max(
+                        out.galley_pos + from.left_top().to_vec2(),
+                        out.galley_pos
+                            + match same_row {
+                                true => to.left_bottom().to_vec2(),
+                                // Spilling over a line break: mark the first row
+                                // to its end rather than boxing the whole
+                                // paragraph, which would obscure more than it
+                                // explains.
+                                false => egui::vec2(out.galley.rect.right(), from.bottom()),
+                            },
+                    );
+                    ui.painter()
+                        .rect_filled(rect, 2.0, color.gamma_multiply(0.18));
+                    ui.painter().line_segment(
+                        [rect.left_bottom(), rect.right_bottom()],
+                        egui::Stroke::new(1.5, color.gamma_multiply(0.8)),
+                    );
+                }
                 // What the compiler resolved, painted at the end of the line it
                 // belongs to. In the margin rather than inline: `TextEdit` lays
                 // out the buffer and nothing else, and a number the user cannot
@@ -702,6 +746,26 @@ impl Editor {
                         .map(|(b, _)| b)
                         .unwrap_or(buf.len());
                     self.completion_ui(ui, &buf, at, &out);
+                }
+                // Hovering a call explains it, so nobody has to go and find the
+                // documentation for a function they are looking straight at.
+                if let Some(pos) = ui.ctx().pointer_hover_pos() {
+                    if out.response.rect.contains(pos) {
+                        let rel = pos - out.galley_pos;
+                        let ccursor = out.galley.cursor_from_pos(rel);
+                        let chars: usize = ccursor.index.into();
+                        let at = buf
+                            .char_indices()
+                            .nth(chars)
+                            .map(|(b, _)| b)
+                            .unwrap_or(buf.len());
+                        if let Some(text) = self.describe_at(at) {
+                            out.response.clone().show_tooltip_ui(|ui| {
+                                ui.set_max_width(340.0);
+                                ui.label(egui::RichText::new(text).monospace().size(11.0));
+                            });
+                        }
+                    }
                 }
                 let r = out.response;
                 if r.changed() {
@@ -1259,6 +1323,38 @@ impl Editor {
                     }
                 });
         });
+        // A figure can live in its own file, so it is findable, reusable and
+        // openable on its own. Reversible, so it is a preference rather than a
+        // commitment.
+        if let Some(fig) = self.doc.figures().first().map(|f| f.node) {
+            let imported = self.doc.text().contains(".lil\"");
+            ui.horizontal(|ui| {
+                if !imported
+                    && ui
+                        .small_button("to its own file…")
+                        .on_hover_text(
+                            "Move this figure to a `.lil` beside the document and \
+                             import it. A `.lil` is a typst file -- the extension \
+                             is only so your system knows to open it here.",
+                        )
+                        .clicked()
+                {
+                    let name = format!(
+                        "{}.lil",
+                        self.doc
+                            .call(fig)
+                            .map(|_| "figure".to_string())
+                            .unwrap_or_default()
+                    );
+                    self.extract_figure(fig, &name);
+                    self.mark_dirty();
+                }
+                if imported {
+                    ui.weak("figure is in its own file")
+                        .on_hover_text("open the .lil to edit it");
+                }
+            });
+        }
         // Twin axis, offered where the series is: a second y-axis is a property
         // of one series, not of the diagram.
         if let Some(call) = self.doc.call(self.selected).cloned() {

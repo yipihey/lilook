@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=lilook
+Comment=Edit a lilaq figure
+Exec=lilook-app %f
+Terminal=false
+MimeType=text/x-lilook;
+Categories=Graphics;Science;

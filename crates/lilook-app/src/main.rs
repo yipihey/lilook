@@ -553,6 +553,18 @@ impl eframe::App for App {
         if !requests.adopt.is_empty() {
             self.adopt(requests.adopt);
         }
+        if let Some(e) = requests.write_figure {
+            let path = self
+                .path
+                .as_ref()
+                .and_then(|p| p.parent())
+                .map(|d| d.join(&e.path))
+                .unwrap_or_else(|| std::path::PathBuf::from(&e.path));
+            self.editor.status = match std::fs::write(&path, &e.contents) {
+                Ok(()) => format!("wrote {}", path.display()),
+                Err(err) => format!("could not write {}: {err}", path.display()),
+            };
+        }
         for message in requests.blame {
             self.actor.blame(self.editor.text().to_string(), message);
         }

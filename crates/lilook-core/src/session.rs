@@ -84,6 +84,9 @@ pub struct Requests {
     /// it costs ~4 ms a candidate -- worth doing when the user asks about an
     /// error, not on every frame that has one.
     pub blame: Vec<String>,
+    /// A figure to write out beside the manuscript, and the import that now
+    /// refers to it.
+    pub write_figure: Option<Extraction>,
 }
 
 /// Linking a file to a series, one step at a time.
@@ -132,6 +135,16 @@ pub struct Signature {
     pub active: Option<String>,
 }
 
+/// A figure moved out to its own file: what to write, and where.
+///
+/// Returned rather than written, because the session has no file system -- the
+/// shell puts it wherever it can, which in a browser is a download.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Extraction {
+    pub path: String,
+    pub contents: String,
+}
+
 /// Something lilook can offer to do about a diagnostic.
 ///
 /// A label, a reason, and the edit. Never applied on its own.
@@ -146,6 +159,48 @@ pub struct Action {
     /// intent for it would mean a new variant to teach the undo generator, for
     /// something the existing pair already expresses.
     pub intents: Vec<Intent>,
+}
+
+/// The concrete values worth offering beside a parameter's name.
+///
+/// Only where the set is small and fixed: a scale, a mark, a colour map, a
+/// palette. A length or a number has no useful list, and a menu of guesses is
+/// worse than a field to type in.
+fn values_for(
+    p: &crate::schema::ParamSchema,
+    control: Option<crate::Control>,
+) -> Vec<(String, String)> {
+    let quoted = |names: &[&str]| -> Vec<(String, String)> {
+        names
+            .iter()
+            .map(|n| ((*n).to_string(), format!("\"{n}\"")))
+            .collect()
+    };
+    if !p.choices.is_empty() && p.choices.len() <= 12 {
+        return quoted(&p.choices.iter().map(String::as_str).collect::<Vec<_>>());
+    }
+    match control {
+        Some(crate::Control::Scale) => quoted(crate::policy::SCALE_NAMES),
+        Some(crate::Control::Colormap) => crate::COLORMAPS
+            .iter()
+            .map(|(m, _)| ((*m).to_string(), format!("color.map.{m}")))
+            .collect(),
+        Some(crate::Control::Cycle) => crate::CYCLES
+            .iter()
+            .map(|(n, expr, _)| {
+                let v = match expr.starts_with('(') {
+                    true => (*expr).to_string(),
+                    false => format!("\"{expr}\""),
+                };
+                ((*n).to_string(), v)
+            })
+            .collect(),
+        Some(crate::Control::Toggle) => vec![
+            ("true".into(), "true".into()),
+            ("false".into(), "false".into()),
+        ],
+        _ => vec![],
+    }
 }
 
 /// Levenshtein distance, for "did you mean".
@@ -198,6 +253,8 @@ pub struct Session {
     pub queued_query: Option<String>,
     /// Blame asked for from inside a frame, emitted on the next one.
     pub queued_blame: Vec<String>,
+    /// A figure extracted from inside a frame, handed over on the next one.
+    pub queued_write: Option<Extraction>,
     pub changed_files: Vec<String>,
     pub follow_files: bool,
     pub link_path: String,
@@ -233,6 +290,7 @@ impl Session {
             link: None,
             queued_query: None,
             queued_blame: vec![],
+            queued_write: None,
             changed_files: vec![],
             follow_files: false,
             link_path: String::new(),
@@ -1312,6 +1370,7 @@ impl Session {
                     note: format!("a {} this takes", p.widget),
                 })
                 .collect();
+            let _ = &fallback;
             // The pickers' own tables, so the text pane offers what the
             // inspector does rather than a different, poorer list.
             match crate::widget_control(&p.widget) {
@@ -1346,26 +1405,75 @@ impl Session {
         if cursor.in_string {
             return vec![];
         }
-        // Otherwise a parameter name, minus the ones already written.
-        f.params
+        // Otherwise a parameter name. Each is offered once with its safe value,
+        // and again per choice where it has a small fixed set -- so picking
+        // `smooth` writes `interpolation: "smooth"` in one click instead of
+        // completing the name and then having to know the values.
+        let mut out = vec![];
+        for p in f
+            .params
             .iter()
             .filter(|p| !call.named.iter().any(|a| a.name == p.name))
-            .map(|p| {
-                let seed = crate::widget_control(&p.widget)
-                    .and_then(|c| crate::policy::seed(Some(p), c))
-                    .unwrap_or_default();
-                Completion {
-                    label: p.name.clone(),
-                    insert: match seed.is_empty() {
-                        true => format!("{}: ", p.name),
-                        // The policy's safe value, so accepting a completion
-                        // leaves a figure that still compiles.
-                        false => format!("{}: {seed}", p.name),
-                    },
-                    note: p.types.join("|"),
-                }
-            })
-            .collect()
+        {
+            let control = crate::widget_control(&p.widget);
+            let seed = control
+                .and_then(|c| crate::policy::seed(Some(p), c))
+                .unwrap_or_default();
+            out.push(Completion {
+                label: p.name.clone(),
+                insert: match seed.is_empty() {
+                    true => format!("{}: ", p.name),
+                    // The policy's safe value, so accepting a completion leaves
+                    // a figure that still compiles.
+                    false => format!("{}: {seed}", p.name),
+                },
+                note: p.types.join("|"),
+            });
+            for (label, value) in values_for(p, control) {
+                out.push(Completion {
+                    label: format!("{}: {label}", p.name),
+                    insert: format!("{}: {value}", p.name),
+                    note: p.name.clone(),
+                });
+            }
+        }
+        out
+    }
+
+    /// Everything worth knowing about what is at an offset, for a hover.
+    ///
+    /// The whole signature with its parameters, their types and defaults --
+    /// which is the thing someone otherwise opens a browser tab to read. Hovering
+    /// `lq.colormesh` should not require leaving the figure.
+    pub fn describe_at(&self, offset: usize) -> Option<String> {
+        let cursor = self.doc.at(offset);
+        let call = cursor.call.and_then(|id| self.doc.call(id))?;
+        let element = self.schema.element_as_function(&call.callee);
+        let f = element
+            .as_ref()
+            .or_else(|| self.schema.function_for_callee(&call.callee))?;
+        let mut out = format!("{}\n", call.short_name());
+        let summary = f.doc.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+        if !summary.trim().is_empty() {
+            out.push_str(&format!("{}\n", summary.trim()));
+        }
+        out.push('\n');
+        for p in &f.params {
+            // The one the caret is in, marked, so a long list still answers the
+            // question that was asked.
+            let here = cursor.argument.as_deref() == Some(p.name.as_str());
+            out.push_str(&format!(
+                "{} {}: {}{}\n",
+                if here { "▸" } else { " " },
+                p.name,
+                p.types.join("|"),
+                p.default
+                    .as_deref()
+                    .map(|d| format!(" = {d}"))
+                    .unwrap_or_default(),
+            ));
+        }
+        Some(out)
     }
 
     /// The call the caret is inside, described in one line.
@@ -1388,6 +1496,33 @@ impl Session {
             params: f.params.iter().map(|p| p.name.clone()).collect(),
             active: cursor.argument.clone(),
         })
+    }
+
+    /// Where an unknown name is written, so a fix can replace exactly it.
+    ///
+    /// The first standalone occurrence: a diagnostic for `ys-stacke` names the
+    /// identifier, not a position, and replacing every match would rewrite a
+    /// longer name that merely contains it.
+    fn find_name(&self, name: &str) -> Option<std::ops::Range<usize>> {
+        self.find_name_from(name, 0)
+    }
+
+    /// As [`find_name`](Self::find_name), searching from an offset -- so a name
+    /// can be found where it is *used* rather than where it is imported.
+    fn find_name_from(&self, name: &str, from: usize) -> Option<std::ops::Range<usize>> {
+        let text = self.doc.text();
+        let boundary = |c: Option<char>| !c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+        let mut from = from;
+        while let Some(i) = text[from..].find(name) {
+            let at = from + i;
+            let before = text[..at].chars().next_back();
+            let after = text[at + name.len()..].chars().next();
+            if boundary(before) && boundary(after) {
+                return Some(at..at + name.len());
+            }
+            from = at + name.len();
+        }
+        None
     }
 
     /// Apply an action, as one undoable step.
@@ -1484,6 +1619,46 @@ impl Session {
                             param,
                             value,
                         }],
+                    });
+                }
+            }
+
+            // An unknown name. typst's own hint guesses at subtraction --
+            // "if you meant to use subtraction, try `ys - stacke`" -- which is
+            // rarely what happened and never what was meant. lilook knows every
+            // name actually in scope: the document's own bindings and lilaq's
+            // functions. Comparing against those turns a puzzle into a click.
+            if let Some(wrong) = msg.strip_prefix("unknown variable: ") {
+                let wrong = wrong.trim();
+                let mut candidates: Vec<String> = self.doc.binding_names();
+                candidates.extend(self.schema.functions.keys().cloned());
+                let lq = self.doc.lilaq_alias();
+                let near: Vec<(usize, String)> = {
+                    let mut v: Vec<(usize, String)> = candidates
+                        .iter()
+                        .map(|c| (edit_distance(wrong, c), c.clone()))
+                        .filter(|(d, c)| *d <= 3 && *d < c.len().max(1))
+                        .collect();
+                    v.sort();
+                    v.dedup_by(|a, b| a.1 == b.1);
+                    v.truncate(3);
+                    v
+                };
+                for (_, right) in near {
+                    // A lilaq function needs its module; a binding does not.
+                    let text = match self.schema.functions.contains_key(&right)
+                        && !self.doc.binding_names().contains(&right)
+                    {
+                        true => format!("{lq}.{right}"),
+                        false => right.clone(),
+                    };
+                    let Some(range) = self.find_name(wrong) else {
+                        continue;
+                    };
+                    out.push(Action {
+                        label: format!("did you mean `{text}`?"),
+                        note: "the nearest name in scope".into(),
+                        intents: vec![Intent::ReplaceRange { range, value: text }],
                     });
                 }
             }
@@ -1628,6 +1803,140 @@ impl Session {
             }
         }
         out.sort_by_key(|h| h.at);
+        out
+    }
+
+    /// Move a figure into its own file, leaving an import behind.
+    ///
+    /// A `.lil` is **a typst file**. The extension exists so an operating system
+    /// knows which application opens it -- lilook cannot claim `.typ` without
+    /// taking every typst file from the editor the user already has -- and for
+    /// nothing else. Nothing lilook-only is ever written into one: no header, no
+    /// version marker, no metadata. The moment it needed one it would have become
+    /// a format, and not being a format is the reason lilook is worth using.
+    ///
+    /// `#import` rather than `#include`, deliberately: it names the figure, it
+    /// cannot splice stray content into the host, and it lets the file keep its
+    /// own `#set page` for standalone preview without that reaching the paper.
+    /// Verified -- an imported page rule does not leak.
+    ///
+    /// Reversible by [`inline_figure`](Self::inline_figure), so this is a
+    /// preference rather than a commitment.
+    pub fn extract_figure(&mut self, node: usize, path: &str) -> Option<Extraction> {
+        let call = self.doc.call(node)?.clone();
+        if call.short_name() != "diagram" {
+            self.status = "only a whole diagram can move to its own file".into();
+            return None;
+        }
+        let stem = path
+            .rsplit('/')
+            .next()?
+            .rsplit_once('.')
+            .map(|(s, _)| s)
+            .unwrap_or(path);
+        let name = crate::binding_name_for(stem, |n| self.doc.binding_of(n).is_some());
+        let lq = self.doc.lilaq_alias();
+
+        // Everything the figure needs to stand up on its own: the lilaq import,
+        // a page that fits it, and whatever bindings its arguments mention.
+        let body = self.doc.text()[call.range.clone()].to_string();
+        let mut carried = String::new();
+        for binding in self.figure_bindings(&call) {
+            carried.push_str(self.doc.text()[binding].trim_end());
+            carried.push('\n');
+        }
+        let file = format!(
+            "#import \"@preview/lilaq:0.6.0\" as {lq}\n\
+             // Previews at its own size; the page rule does not reach a document\n\
+             // that imports this file.\n\
+             #set page(width: auto, height: auto, margin: 4pt)\n\
+             {carried}\n\
+             #let {name} = {body}\n\
+             \n\
+             // Shown when this file is opened on its own.\n\
+             #{name}\n"
+        );
+
+        self.doc.begin("extract figure");
+        self.apply(Intent::ReplaceRange {
+            range: call.range.clone(),
+            value: name.clone(),
+        });
+        let at = self.import_end()?;
+        self.apply(Intent::ReplaceRange {
+            range: at..at,
+            value: format!("\n#import \"{path}\": {name}"),
+        });
+        self.doc.commit();
+        self.status = format!("moved to {path}");
+        let out = Extraction {
+            path: path.to_string(),
+            contents: file,
+        };
+        self.queued_write = Some(out.clone());
+        Some(out)
+    }
+
+    /// Bring an imported figure back into this document.
+    pub fn inline_figure(&mut self, path: &str, contents: &str) -> bool {
+        let text = self.doc.text().to_string();
+        let Some(line_at) = text.find(&format!("\"{path}\"")) else {
+            self.status = format!("nothing here imports {path}");
+            return false;
+        };
+        let start = text[..line_at].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let end = text[line_at..]
+            .find('\n')
+            .map(|i| line_at + i)
+            .unwrap_or(text.len());
+        // What the file bound, so the reference in the host can be replaced by it.
+        let other = Document::new(contents);
+        let Some(figure) = other
+            .figures()
+            .first()
+            .and_then(|f| other.call(f.node))
+            .map(|c| contents[c.range.clone()].to_string())
+        else {
+            self.status = format!("{path} holds no figure to inline");
+            return false;
+        };
+        let name = text[start..end]
+            .rsplit(": ")
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let Some(used) = self.find_name_from(&name, end) else {
+            self.status = format!("nothing in this document uses {name}");
+            return false;
+        };
+        self.doc.begin("inline figure");
+        // Later range first, so the earlier edit does not move it.
+        self.apply(Intent::ReplaceRange {
+            range: used,
+            value: figure,
+        });
+        self.apply(Intent::ReplaceRange {
+            range: start..end + 1,
+            value: String::new(),
+        });
+        self.doc.commit();
+        self.status = format!("{path} is part of this document now");
+        true
+    }
+
+    /// The `#let` bindings a figure's arguments mention, so an extracted file
+    /// carries what it needs rather than importing a name that is not there.
+    fn figure_bindings(&self, call: &crate::CallSite) -> Vec<std::ops::Range<usize>> {
+        let mut out = vec![];
+        for name in self.doc.free_identifiers(call.range.clone()) {
+            if let Some(r) = self.doc.binding_of(&name) {
+                if !out.contains(&r) {
+                    out.push(r);
+                }
+            }
+        }
+        out.sort_by_key(|r| r.start);
         out
     }
 

@@ -504,6 +504,18 @@ impl Document {
         })
     }
 
+    /// Every name the document binds with `#let`.
+    ///
+    /// Derived from the same spans the source pane colours, so there is one
+    /// answer to "what is a binding here" rather than two that can disagree.
+    pub fn binding_names(&self) -> Vec<String> {
+        self.spans()
+            .into_iter()
+            .filter(|(_, t)| *t == Token::Binding)
+            .map(|(r, _)| self.text[r].to_string())
+            .collect()
+    }
+
     /// Every `#show: lq.set-*(..)` in the document, with the region it governs.
     pub fn set_rules(&self) -> Vec<SetRule> {
         let mut out = vec![];

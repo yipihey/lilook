@@ -1590,12 +1590,22 @@ fn completion_offers_what_the_caret_can_take() {
         app.editor_mut().doc.commit();
         app.editor_mut().mark_dirty();
         run(&mut app, 3);
-        assert!(
-            errors(&app).is_empty(),
-            "accepting `{}` broke the figure: {:?}",
-            c.insert,
-            errors(&app)
-        );
+        // Either it compiles, or lilook can say what went wrong and offer the
+        // repair. A completion is advisory and cannot know whether *this* data
+        // suits the value -- `xscale: "log"` is a legitimate offer that a figure
+        // starting at zero rejects -- but it must never leave a dead end.
+        if !errors(&app).is_empty() {
+            app.editor_mut().request_blame();
+            run(&mut app, 2);
+            let blames = app.editor().blames.clone();
+            let offers = app.editor().actions(&blames);
+            assert!(
+                !offers.is_empty(),
+                "accepting `{}` broke the figure with no way out: {:?}",
+                c.insert,
+                errors(&app)
+            );
+        }
         app.editor_mut().doc.undo();
         app.editor_mut().mark_dirty();
         run(&mut app, 2);

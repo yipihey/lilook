@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A .lil is a typst file. The type exists so a desktop knows which
+     application opens a figure; lilook cannot claim .typ without taking every
+     typst file from the editor the user already has. -->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="text/x-lilook">
+    <comment>lilaq figure</comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.lil"/>
+  </mime-type>
+</mime-info>
