@@ -45,6 +45,9 @@ pub fn token_color(token: Token, visuals: &egui::Visuals) -> Color32 {
         Token::Keyword => Color32::from_rgb(0x7a, 0x3e, 0xa8),
         Token::Binding if dark => Color32::from_rgb(0x7d, 0xcf, 0xff),
         Token::Binding => Color32::from_rgb(0x00, 0x5f, 0x87),
+        Token::Math if dark => Color32::from_rgb(0x89, 0xdd, 0xff),
+        Token::Math => Color32::from_rgb(0x00, 0x6c, 0x8a),
+        Token::Markup => visuals.strong_text_color(),
         Token::Call => visuals.strong_text_color(),
         // The delight: a series call wears the colour it draws, so the line in
         // the source and the curve on the canvas are visibly the same thing.

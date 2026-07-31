@@ -303,6 +303,11 @@ pub enum Token {
     Call,
     /// A name bound by `#let`.
     Binding,
+    /// Maths between dollars. Figure labels are full of it -- `[$sqrt(x^2)$]` --
+    /// and it reads very differently from the prose around it.
+    Math,
+    /// Markup that changes how words look: bold, emphasis, raw.
+    Markup,
 }
 
 /// What sits at a byte offset in the source.
@@ -1531,6 +1536,8 @@ fn collect_tokens(node: &LinkedNode, out: &mut Vec<(Range<usize>, Token)>) {
     let token = match node.kind() {
         SyntaxKind::LineComment | SyntaxKind::BlockComment => Some(Token::Comment),
         SyntaxKind::Str => Some(Token::Str),
+        SyntaxKind::Equation => Some(Token::Math),
+        SyntaxKind::Strong | SyntaxKind::Emph | SyntaxKind::Raw => Some(Token::Markup),
         SyntaxKind::Int | SyntaxKind::Float | SyntaxKind::Numeric => Some(Token::Number),
         // The hash belongs with the keyword it introduces: `#let` reads as one
         // word, and colouring only the `let` looks like a mistake.
@@ -1551,7 +1558,9 @@ fn collect_tokens(node: &LinkedNode, out: &mut Vec<(Range<usize>, Token)>) {
         out.push((node.range(), t));
         // A comment or a string has nothing inside it worth colouring
         // separately, and descending would split it.
-        if matches!(t, Token::Comment | Token::Str) {
+        // An equation is one thing to the eye, and descending into it would
+        // split `x^2` into three colours for no gain.
+        if matches!(t, Token::Comment | Token::Str | Token::Math | Token::Markup) {
             return;
         }
     }

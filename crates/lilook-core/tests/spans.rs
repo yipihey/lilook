@@ -82,3 +82,34 @@ fn nothing_is_coloured_inside_a_comment_or_a_string() {
     assert_eq!(inside("#let x"), 1, "one span over the comment");
     assert_eq!(inside("#let y"), 1, "one span over the string");
 }
+
+/// Maths in a figure label is coloured as maths.
+///
+/// Axis labels are full of it -- `[$sqrt(x^2 + y^2)$]` -- and until this, every
+/// character inside `[..]` was flat text. lilook parses with typst's own parser
+/// rather than a reimplementation of it, so this follows the language exactly.
+#[test]
+fn maths_and_markup_inside_a_label_are_coloured() {
+    const SRC: &str =
+        "#lq.diagram(xlabel: [$t$ (s)], title: [*Bold* run], ylabel: [$sqrt(x^2)$])\n";
+    let doc = Document::new(SRC);
+    let spans = doc.spans();
+    let of = |kind: Token| -> Vec<&str> {
+        spans
+            .iter()
+            .filter(|(_, t)| *t == kind)
+            .map(|(r, _)| &SRC[r.clone()])
+            .collect()
+    };
+    assert_eq!(of(Token::Math), vec!["$t$", "$sqrt(x^2)$"]);
+    assert_eq!(of(Token::Markup), vec!["*Bold*"]);
+
+    // An equation is one thing to the eye: not split into three colours.
+    let inner = SRC.find("x^2").unwrap();
+    let covering: Vec<Token> = spans
+        .iter()
+        .filter(|(r, _)| r.contains(&inner))
+        .map(|(_, t)| *t)
+        .collect();
+    assert_eq!(covering, vec![Token::Math], "one span over the equation");
+}
