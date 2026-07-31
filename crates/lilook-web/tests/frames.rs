@@ -1036,3 +1036,92 @@ fn a_json_object_links_its_arrays_and_not_its_metadata() {
     assert_eq!(points[0], (19.0, 165.0));
     assert_eq!(points[2], (42.0, 178.0));
 }
+
+/// Themes: apply one, switch it, fork it, override it, rename it, undo it all.
+///
+/// lilaq's themes are show rules, so every step here is an ordinary text edit
+/// and lilook needs no theme format of its own. The step that decides the design
+/// is the fork: it *composes* the base theme rather than copying its body, so
+/// `schoolbook`'s `@preview/tiptoe` import and its local helpers never have to be
+/// chased, and a theme lilaq revises stays revised.
+#[test]
+fn themes_can_be_switched_forked_and_renamed() {
+    let Some(mut app) = app() else { return };
+    app.load(1);
+    run(&mut app, 3);
+    assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+    let original = app.editor().text().to_string();
+    assert!(app.editor().active_theme().is_none(), "starts unthemed");
+
+    // Every theme lilaq ships must apply and still compile. This is the check
+    // that a name in the schema is a name that works.
+    let themes = app.editor().schema.themes.clone();
+    assert_eq!(themes, ["misty", "moon", "ocean", "schoolbook", "skyline"]);
+    for t in &themes {
+        app.editor_mut().set_theme(Some(t));
+        app.editor_mut().mark_dirty();
+        run(&mut app, 3);
+        assert!(errors(&app).is_empty(), "{t}: {:?}", errors(&app));
+        let active = app.editor().active_theme().expect("a theme is in force");
+        assert_eq!(&active.name, t);
+        assert!(!active.local);
+        // Switching replaces rather than stacks.
+        assert_eq!(app.editor().doc.themes().len(), 1, "{t}");
+        assert!(!app.editor().scenes().is_empty(), "{t} drew nothing");
+    }
+
+    // Fork the last one into a theme of the user's own.
+    assert!(app.editor_mut().fork_theme("paper"));
+    app.editor_mut().mark_dirty();
+    run(&mut app, 3);
+    assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+    let text = app.editor().text().to_string();
+    assert!(text.contains("#let paper = it => {"), "{text}");
+    // Composed, not copied: the base theme is still the authority.
+    assert!(text.contains("show: lq.theme.skyline"), "{text}");
+    assert!(text.contains("#show: paper"), "{text}");
+    let active = app.editor().active_theme().expect("the fork is in force");
+    assert!(active.local && active.name == "paper");
+
+    // And now it is editable the ordinary way: a `set-*` rule inside it, which
+    // is the whole reason for composing rather than copying.
+    let before = app.editor().doc.set_rules().len();
+    app.editor_mut().doc.begin("override");
+    let at = text.find("  it\n}").expect("the theme body");
+    app.editor_mut()
+        .apply_intent(lilook_core::Intent::ReplaceRange {
+            range: at..at,
+            value: "  show: lq.set-tick(inset: 4pt)\n".into(),
+        });
+    app.editor_mut().doc.commit();
+    app.editor_mut().mark_dirty();
+    run(&mut app, 3);
+    assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+    assert_eq!(
+        app.editor().doc.set_rules().len(),
+        before + 1,
+        "the override is an ordinary set rule the panel already edits"
+    );
+
+    // Rename takes the binding and the show rule together.
+    assert!(app.editor_mut().rename_theme("house-style"));
+    app.editor_mut().mark_dirty();
+    run(&mut app, 3);
+    assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+    let text = app.editor().text().to_string();
+    assert!(text.contains("#let house-style = it => {"), "{text}");
+    assert!(text.contains("#show: house-style"), "{text}");
+    assert!(!text.contains("paper"), "the old name is gone: {text}");
+
+    // Remove it, then undo everything back to the byte.
+    app.editor_mut().set_theme(None);
+    app.editor_mut().mark_dirty();
+    run(&mut app, 3);
+    assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+    assert!(app.editor().active_theme().is_none());
+
+    while app.editor().doc.history_depth().0 > 0 {
+        app.editor_mut().doc.undo();
+    }
+    assert_eq!(app.editor().text(), original, "themes did not fully undo");
+}

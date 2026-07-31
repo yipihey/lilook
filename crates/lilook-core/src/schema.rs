@@ -57,6 +57,10 @@ pub struct Schema {
     pub functions: BTreeMap<String, FunctionSchema>,
     #[serde(default)]
     pub elements: BTreeMap<String, ElementSchema>,
+    /// The themes lilaq ships, by name. Names only: a theme is a show rule, and
+    /// lilook derives from one by composing it rather than copying its body.
+    #[serde(default)]
+    pub themes: Vec<String>,
 }
 
 impl Schema {

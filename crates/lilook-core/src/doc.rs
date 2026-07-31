@@ -277,6 +277,42 @@ pub struct SetRule {
     pub document_level: bool,
 }
 
+/// A theme applied to the document: `#show: lq.theme.ocean`.
+///
+/// lilaq's themes are *show rules*, not objects, which is why lilook needs no
+/// theme format of its own -- applying one is a text edit and nothing else.
+/// Deriving from one is a `#let` that composes it with `set-*` overrides the
+/// inspector already edits:
+///
+/// ```typst
+/// #let mine = it => { show: lq.theme.ocean; show: lq.set-tick(inset: 4pt); it }
+/// #show: mine
+/// ```
+///
+/// Composition rather than copying a theme's body, deliberately: `schoolbook`
+/// imports `@preview/tiptoe` and defines local helpers, and every theme's
+/// `set-*` calls are unqualified inside their own module. A copy would have to
+/// chase all of that and would go stale if lilaq revised a theme.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Theme {
+    /// The whole `#show: ..` rule, so it can be replaced or removed.
+    pub range: Range<usize>,
+    /// Just the transform, for repointing one theme at another.
+    pub transform: Range<usize>,
+    /// `ocean` for `lq.theme.ocean`; the binding's name for a local one.
+    pub name: String,
+    /// True when `name` is a `#let` in this document rather than one of lilaq's.
+    pub local: bool,
+    /// True when the rule is at the top level of the file rather than inside a
+    /// block.
+    ///
+    /// The same distinction `SetRule` draws, and for the same reason. A derived
+    /// theme contains `show: lq.theme.ocean` *inside* its own `#let` body -- that
+    /// is its definition, not the document's theme -- and treating it as the
+    /// latter meant removing a theme appeared to leave one in force.
+    pub document_level: bool,
+}
+
 /// One diagram and the series drawn inside it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Figure {
@@ -428,6 +464,36 @@ impl Document {
         collect_set_rules(&root, self.text.len(), &mut out, &self.calls);
         out.sort_by_key(|r| r.node);
         out
+    }
+
+    /// Every theme show rule in the document, in document order.
+    ///
+    /// A bare identifier counts only when the document also binds it to a
+    /// function of one argument -- the shape a theme has. Without that check
+    /// `#show: emph` and every other ordinary show rule would be offered as a
+    /// theme to switch away from.
+    pub fn themes(&self) -> Vec<Theme> {
+        let mut out = vec![];
+        let root = LinkedNode::new(&self.root);
+        collect_themes(&root, &mut out, self);
+        out.sort_by_key(|t| t.range.start);
+        out
+    }
+
+    /// Is this name bound to something theme-shaped -- `#let n = it => ..`?
+    fn binds_a_theme(&self, name: &str) -> bool {
+        let Some(range) = self.binding_of(name) else {
+            return false;
+        };
+        let text = &self.text[range];
+        // A closure of exactly one parameter. Enough to tell a theme from a
+        // value, and it is what every lilaq theme is.
+        text.split_once('=')
+            .map(|(_, rhs)| rhs.trim_start())
+            .is_some_and(|rhs| {
+                let head = rhs.split("=>").next().unwrap_or("");
+                rhs.contains("=>") && !head.contains(',') && head.len() < 40
+            })
     }
 
     /// The diagram a call site is drawn in, if any.
@@ -1014,6 +1080,59 @@ fn collect_bound(node: &LinkedNode, text: &str, bound: &mut Vec<String>) {
     }
     for child in node.children() {
         collect_bound(&child, text, bound);
+    }
+}
+
+/// Find `#show: <mod>.theme.<name>` and `#show: <ident>`.
+fn collect_themes(node: &LinkedNode, out: &mut Vec<Theme>, doc: &Document) {
+    if node.kind() == SyntaxKind::ShowRule {
+        // The transform is the last expression in the rule; anything before it
+        // is the `show`, the selector and the colon.
+        if let Some(t) = node.children().rfind(|c| !c.kind().is_trivia()) {
+            let text = doc.text[t.range()].trim().to_string();
+            // The `#` is not part of the `ShowRule` node, and both replacing a
+            // rule and removing one need it: without it a switch wrote `##show`
+            // and a removal left a stray hash behind.
+            let mut range = node.range();
+            if doc.text[..range.start].ends_with('#') {
+                range.start -= 1;
+            }
+            let mut document_level = true;
+            let mut at = node.parent();
+            while let Some(p) = at {
+                if matches!(p.kind(), SyntaxKind::CodeBlock | SyntaxKind::ContentBlock) {
+                    document_level = false;
+                    break;
+                }
+                at = p.parent();
+            }
+            let named = |n: &str| Theme {
+                document_level,
+                range: range.clone(),
+                transform: t.range(),
+                name: n.to_string(),
+                local: false,
+            };
+            match t.kind() {
+                // `lq.theme.ocean`, whatever the module is aliased to.
+                SyntaxKind::FieldAccess => {
+                    let mut parts = text.rsplit('.');
+                    if let (Some(name), Some("theme")) = (parts.next(), parts.next()) {
+                        out.push(named(name));
+                    }
+                }
+                SyntaxKind::Ident if doc.binds_a_theme(&text) => {
+                    out.push(Theme {
+                        local: true,
+                        ..named(&text)
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+    for child in node.children() {
+        collect_themes(&child, out, doc);
     }
 }
 

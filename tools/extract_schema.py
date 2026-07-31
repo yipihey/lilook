@@ -213,6 +213,27 @@ def public_surface(src_dir):
     return public
 
 
+def extract_themes(src_dir):
+    """The themes lilaq ships, by name.
+
+    Only the names. A theme is a show rule -- `#show: lq.theme.ocean` -- and
+    lilook derives from one by *composing* rather than by copying its body:
+
+        #let mine = it => { show: lq.theme.ocean; show: lq.set-tick(..); it }
+
+    which is why nothing here needs to understand what a theme contains. Copying
+    would have to: `schoolbook` imports `@preview/tiptoe` and defines local
+    helpers, and every theme's `set-*` calls are unqualified inside their own
+    module. Composition has none of that, and it stays correct if lilaq changes
+    a theme.
+    """
+    entry = os.path.join(src_dir, "theme", "theme.typ")
+    if not os.path.exists(entry):
+        return []
+    names = re.findall(r'^#import\s+"[^"]+"\s*:\s*([\w\-]+)', open(entry).read(), re.M)
+    return sorted(set(names))
+
+
 def extract_functions(src_dir, tidy):
     defs = {}
     for root, _, files in os.walk(src_dir):
@@ -315,6 +336,7 @@ def main():
         "lilaq_version": version,
         "functions": {},
         "elements": {},
+        "themes": extract_themes(src_dir),
         "stats": {},
     }
 

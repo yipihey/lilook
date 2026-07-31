@@ -8945,5 +8945,12 @@
    "toggle": 31,
    "variant": 32
   }
- }
+ },
+ "themes": [
+  "misty",
+  "moon",
+  "ocean",
+  "schoolbook",
+  "skyline"
+ ]
 }

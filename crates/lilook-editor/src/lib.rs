@@ -286,6 +286,7 @@ impl Editor {
                 lilaq_version: String::new(),
                 functions: Default::default(),
                 elements: Default::default(),
+                themes: Default::default(),
             },
         );
         let layout = self.layout;
@@ -671,6 +672,14 @@ impl Editor {
                 }
             }
         }
+    }
+
+    /// Apply one intent through the editor, so its bookkeeping stays in step.
+    ///
+    /// Public for the frontends that edit a theme's body directly -- a `set-*`
+    /// rule inside a `#let` is not reachable through any named-argument path.
+    pub fn apply_intent(&mut self, intent: Intent) {
+        self.apply(intent);
     }
 
     fn apply(&mut self, intent: Intent) {
@@ -1271,6 +1280,7 @@ impl Editor {
                 // from the figure tree, is what keeps the figure inspector
                 // honest about what it is editing.
                 ui.separator();
+                self.theme_ui(ui);
                 ui.horizontal(|ui| {
                     ui.label("document styles");
                     ui.weak("?").on_hover_text(
@@ -1923,6 +1933,231 @@ impl Editor {
         {
             self.selected = r.node;
         }
+    }
+
+    /// The theme picker: lilaq's own, plus any the user has made here.
+    fn theme_ui(&mut self, ui: &mut egui::Ui) {
+        let active = self.active_theme();
+        let current = active.as_ref().map(|t| t.name.clone());
+        let mine: Vec<String> = self
+            .doc
+            .themes()
+            .into_iter()
+            .filter(|t| t.local)
+            .map(|t| t.name)
+            .collect();
+        let mut pick: Option<Option<String>> = None;
+        ui.horizontal(|ui| {
+            ui.label("theme");
+            ui.weak("?").on_hover_text(
+                "A lilaq theme is a show rule -- `#show: lq.theme.ocean` -- so                  switching one is a single line in the document and nothing is                  stored outside it. Fork one to get a copy you can change.",
+            );
+            egui::ComboBox::from_id_salt("theme")
+                .selected_text(current.clone().unwrap_or_else(|| "none".into()))
+                .show_ui(ui, |ui| {
+                    if ui.selectable_label(current.is_none(), "none").clicked() {
+                        pick = Some(None);
+                    }
+                    for name in self.schema.themes.iter().chain(&mine) {
+                        let on = current.as_deref() == Some(name.as_str());
+                        if ui.selectable_label(on, name).clicked() {
+                            pick = Some(Some(name.clone()));
+                        }
+                    }
+                });
+        });
+        ui.horizontal(|ui| {
+            // Forking is how a theme becomes editable: lilaq's are functions in
+            // a package, and a copy here is a `#let` whose overrides are the
+            // same `set-*` rules listed below.
+            if ui
+                .small_button("fork…")
+                .on_hover_text(
+                    "Make a theme of your own that starts from this one. Its                      overrides appear below as ordinary style rules.",
+                )
+                .clicked()
+            {
+                let base = current.clone().unwrap_or_else(|| "theme".into());
+                self.fork_theme(&format!("my-{base}"));
+            }
+            let is_mine = active.as_ref().is_some_and(|t| t.local);
+            ui.add_enabled_ui(is_mine, |ui| {
+                let id = ui.id().with("rename");
+                let mut name = ui
+                    .data(|d| d.get_temp::<String>(id))
+                    .unwrap_or_else(|| current.clone().unwrap_or_default());
+                let edit = ui.add(
+                    egui::TextEdit::singleline(&mut name)
+                        .desired_width(90.0)
+                        .hint_text("rename"),
+                );
+                if edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    self.rename_theme(&name);
+                    ui.data_mut(|d| d.remove::<String>(id));
+                } else {
+                    ui.data_mut(|d| d.insert_temp(id, name));
+                }
+            })
+            .response
+            .on_disabled_hover_text("fork a theme first -- lilaq's own cannot be renamed");
+        });
+        if let Some(name) = pick {
+            self.set_theme(name.as_deref());
+            self.mark_dirty();
+        }
+    }
+
+    /// The theme in force, and where it is written.
+    ///
+    /// The *last* one, because show rules stack and the later transform wraps
+    /// the earlier: what the reader sees on top is what the panel should name.
+    pub fn active_theme(&self) -> Option<lilook_core::Theme> {
+        self.doc.themes().into_iter().rfind(|t| t.document_level)
+    }
+
+    /// Apply a theme, replace the one in force, or remove it.
+    ///
+    /// One transaction and one show rule: `#show: lq.theme.ocean` is the entire
+    /// representation, so switching is a byte-range replacement and removing is
+    /// a deletion. Nothing is stored outside the document, which is why a themed
+    /// figure pasted into another manuscript stays themed.
+    pub fn set_theme(&mut self, name: Option<&str>) {
+        let current = self.active_theme();
+        let lq = self.lilaq_alias();
+        let rule = name.map(|n| match self.doc.binding_of(n) {
+            // A theme of the user's own is named directly; lilaq's live under
+            // the module.
+            Some(_) => format!("#show: {n}"),
+            None => format!("#show: {lq}.theme.{n}"),
+        });
+        self.doc.begin("set theme");
+        match (current, rule) {
+            (Some(t), Some(rule)) => self.apply(Intent::ReplaceRange {
+                range: t.range,
+                value: rule,
+            }),
+            // Removing takes the newline with it, or an empty line is left.
+            (Some(t), None) => {
+                let mut range = t.range;
+                if self.doc.text()[..range.start].ends_with('\n') {
+                    range.start -= 1;
+                }
+                self.apply(Intent::ReplaceRange {
+                    range,
+                    value: String::new(),
+                })
+            }
+            (None, Some(rule)) => {
+                let Some(at) = self.import_end() else {
+                    self.status = "no lilaq import to place a theme after".into();
+                    self.doc.commit();
+                    return;
+                };
+                self.apply(Intent::ReplaceRange {
+                    range: at..at,
+                    value: format!("\n{rule}"),
+                })
+            }
+            (None, None) => {}
+        }
+        self.doc.commit();
+        self.status = match name {
+            Some(n) => format!("theme: {n}"),
+            None => "theme removed".into(),
+        };
+    }
+
+    /// Derive a theme of the user's own from the one in force, under `name`.
+    ///
+    /// The new theme *composes* rather than copies:
+    ///
+    /// ```typst
+    /// #let mine = it => { show: lq.theme.ocean; it }
+    /// #show: mine
+    /// ```
+    ///
+    /// Copying lilaq's body would mean chasing its imports -- `schoolbook` pulls
+    /// in `@preview/tiptoe` -- and would silently go stale when lilaq revised a
+    /// theme. Composing keeps the base authoritative, and every override added
+    /// afterwards is an ordinary `set-*` rule the styles panel already edits.
+    pub fn fork_theme(&mut self, name: &str) -> bool {
+        let name = lilook_core::binding_name_for(name, |n| self.doc.binding_of(n).is_some());
+        let lq = self.lilaq_alias();
+        let base = match self.active_theme() {
+            Some(t) if t.local => format!("  show: {},\n", t.name),
+            Some(t) => format!("  show: {lq}.theme.{},\n", t.name),
+            // Deriving from nothing is still a theme -- an empty one to fill in.
+            None => String::new(),
+        };
+        let base = base.replace(",\n", "\n");
+        let Some(at) = self.import_end() else {
+            self.status = "no lilaq import to place a theme after".into();
+            return false;
+        };
+        self.doc.begin("fork theme");
+        // The show rule first: inserting the binding above it would move the
+        // range the replacement is about to name.
+        match self.active_theme() {
+            Some(t) => self.apply(Intent::ReplaceRange {
+                range: t.range,
+                value: format!("#show: {name}"),
+            }),
+            None => self.apply(Intent::ReplaceRange {
+                range: at..at,
+                value: format!("\n#show: {name}"),
+            }),
+        }
+        self.apply(Intent::ReplaceRange {
+            range: at..at,
+            value: format!("\n#let {name} = it => {{\n{base}  it\n}}"),
+        });
+        self.doc.commit();
+        self.status = format!("theme {name} is yours to edit");
+        true
+    }
+
+    /// Rename a theme of the user's own, binding and show rule together.
+    pub fn rename_theme(&mut self, to: &str) -> bool {
+        let Some(theme) = self.active_theme().filter(|t| t.local) else {
+            self.status = "only a theme of your own can be renamed".into();
+            return false;
+        };
+        let to = lilook_core::binding_name_for(to, |n| {
+            n != theme.name && self.doc.binding_of(n).is_some()
+        });
+        let Some(binding) = self.doc.binding_of(&theme.name) else {
+            return false;
+        };
+        // The name inside the `#let`, found without touching anything else that
+        // happens to spell it the same way.
+        let text = self.doc.text();
+        let Some(off) = text[binding.clone()].find(&theme.name) else {
+            return false;
+        };
+        let at = binding.start + off;
+        self.doc.begin("rename theme");
+        // Later range first, so the earlier edit does not move it.
+        self.apply(Intent::ReplaceRange {
+            range: theme.transform.clone(),
+            value: to.clone(),
+        });
+        self.apply(Intent::ReplaceRange {
+            range: at..at + theme.name.len(),
+            value: to.clone(),
+        });
+        self.doc.commit();
+        self.status = format!("theme renamed to {to}");
+        true
+    }
+
+    /// Whatever the document calls lilaq -- `lq` by convention, but not always.
+    fn lilaq_alias(&self) -> String {
+        self.doc
+            .calls()
+            .iter()
+            .find_map(|c| c.module())
+            .unwrap_or("lq")
+            .to_string()
     }
 
     /// End of the line that imports lilaq: a set rule has to come after it, or

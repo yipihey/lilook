@@ -24,7 +24,7 @@ pub use data::{
 };
 pub use doc::{
     check_expr, Axis, CallSite, Document, Editability, Figure, NamedArg, PositionalArg,
-    SeriesShape, SetRule, XY_SERIES,
+    SeriesShape, SetRule, Theme, XY_SERIES,
 };
 pub use edit::{minimal_replacement, Anchor, AppliedEdit, CoalesceKey, History, Transaction};
 pub use intent::Intent;
