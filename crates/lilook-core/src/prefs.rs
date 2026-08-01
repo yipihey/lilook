@@ -92,6 +92,9 @@ pub struct Merged {
     pub renamed: Vec<(String, String)>,
     /// The same name and the same value -- already here, so nothing to do.
     pub already: usize,
+    /// Not taken in, and why: `(name, reason)`. A value that would not reparse
+    /// is refused on the way in rather than stored to fail later.
+    pub refused: Vec<(String, String)>,
 }
 
 impl Merged {
@@ -115,6 +118,14 @@ impl Merged {
         }
         if self.already > 0 {
             parts.push(format!("{} already here", self.already));
+        }
+        if !self.refused.is_empty() {
+            let names: Vec<&str> = self.refused.iter().map(|(n, _)| n.as_str()).collect();
+            parts.push(format!(
+                "{} refused as unwritable typst: {}",
+                self.refused.len(),
+                names.join(", ")
+            ));
         }
         match parts.is_empty() {
             true => "nothing in that library".into(),
@@ -301,6 +312,14 @@ impl Prefs {
     pub fn merge(&mut self, other: Prefs) -> Merged {
         let mut report = Merged::default();
         for incoming in other.saved {
+            // The same check the save path applies, because this is a save
+            // path -- it just starts in someone else's file. A library that can
+            // hold something unwritable is a library that breaks a figure
+            // later, at a moment nobody connects with having imported it.
+            if let Err(why) = crate::check_expr(&incoming.value) {
+                report.refused.push((incoming.name.clone(), why));
+                continue;
+            }
             match self.get(incoming.kind, &incoming.name) {
                 Some(mine) if mine.value == incoming.value => {
                     report.already += 1;
@@ -513,5 +532,44 @@ mod what_counts_as_a_library {
     fn an_empty_library_lilook_wrote_is_a_library() {
         let p = Prefs::from_toml(&Prefs::default().to_toml()).expect("a library");
         assert!(p.saved.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod importing_checks_values {
+    use super::*;
+
+    /// An imported value is checked exactly as a saved one is.
+    ///
+    /// `merge` used to push entries straight in, so a library file could carry
+    /// something `save` would have refused -- and lilook would then offer it in
+    /// a menu, where choosing it writes a figure typst cannot compile.
+    #[test]
+    fn an_unwritable_value_does_not_get_in() {
+        // Past `from_toml`, which reads strings, and stopped by the same check
+        // `save` applies.
+        let file = "version = 1\n\
+                    [[saved]]\nkind = \"cycle\"\nname = \"broken\"\nvalue = \"(((\"\n\
+                    [[saved]]\nkind = \"cycle\"\nname = \"fine\"\nvalue = \"(red, blue)\"\n";
+        let theirs = Prefs::from_toml(file).expect("a library");
+        let mut mine = Prefs::default();
+        let report = mine.merge(theirs);
+
+        assert_eq!(report.added, 1, "the good one");
+        assert!(mine.get(Kind::Cycle, "fine").is_some());
+        assert!(
+            mine.get(Kind::Cycle, "broken").is_none(),
+            "and only the good one"
+        );
+        assert_eq!(
+            report.refused.len(),
+            1,
+            "the other is refused, not dropped silently"
+        );
+        assert!(
+            report.summary().contains("broken"),
+            "and named: {}",
+            report.summary()
+        );
     }
 }

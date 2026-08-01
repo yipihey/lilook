@@ -2233,3 +2233,44 @@ Only a theme of the user's own can be kept. lilaq's are functions in a package,
 and storing a copy would go stale the moment lilaq revised one -- the same reason
 `fork_theme` composes rather than copies, decided once and now decided again for
 the same reason.
+
+## Storage's second obligation: never be the one who destroys the file
+
+2026-08-01. Adding a library was the first half. The second half is that a tool
+which keeps a file has to be trusted with it, and lilook was not.
+
+`load` reported an unreadable `prefs.toml` and started empty. The session then
+carried on, and the next `SavePref` wrote the empty-plus-one library straight
+over the user's file. A stray keystroke in a config file cost everything in it,
+one save later. The case that had been *explicitly* guarded was worse: `from_toml`
+refuses a library written by a newer lilook -- and then the older binary
+overwrote it anyway.
+
+The lesson generalises past this bug. **Reporting is not a remedy when the user's
+next ordinary action does the damage.** The report is read by a person; the
+overwrite is done by the program, sooner. So the unreadable text is now carried
+back out of the load as `rescue`, and neither shell will write until it has been
+put somewhere safe -- numbered, and never over an earlier rescue, because that
+copy may be the one that matters.
+
+Three more rules came out of building sharing on top of it:
+
+**A file has to say it is a library.** Every field had a default, so any TOML at
+all parsed as an empty library and a dropped `Cargo.toml` was answered with
+"nothing in that library". Found by writing the test for the refusal and
+watching it not refuse.
+
+**An import keeps both sides.** A name clash renames the *incoming* thing rather
+than replacing what is here. Someone else's `warm` is not yours, and an import
+that quietly overwrote it would lose a palette the same way the truncation did.
+
+**An import is a save path.** `merge` pushed entries straight in, skipping the
+`check_expr` that `save` applies -- so a library file could carry something
+lilook would then offer in a menu and write into a figure typst cannot compile.
+The check belongs at every door into the library, not at the one that happened to
+be built first.
+
+And a note on evidence: while chasing a preview that looked wrong in a
+screenshot, the *capture* turned out to be rotating colour channels. The previews
+are now gated on egui's own shapes, which are what the app actually asks for.
+A picture of the program is not the program.
