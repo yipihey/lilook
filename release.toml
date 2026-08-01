@@ -17,7 +17,12 @@ pre-release-commit-message = "release {{version}}"
 push = true
 publish = true
 
-# Dependency order. crates.io needs each one indexed before the next can verify
-# against it, which is why `--dry-run` cannot check the whole workspace at once.
+# Dependency order:
+#   lilook-core -> lilook-data -> lilook-ui -> lilook-compile -> lilook-editor -> lilook-app -> lilook-ffi
+#
+# crates.io needs each one indexed before the next can verify against it, which
+# is why `--dry-run` cannot check the whole workspace at once. `lilook-ui` comes
+# before `lilook-compile` because it is a *dev*-dependency of it, and publish
+# verifies those too -- a detail that cost a failed publish to learn.
 # lilook-web is `publish = false`: the browser shell is this repository's
 # deployment, not a library.

@@ -79,8 +79,9 @@ lilook-app` falls out for free, and it is the lowest-friction install for the
 audience most likely to have a Rust toolchain already.
 
 Needs first: `[workspace.package]` with version, repository, licence, keywords,
-categories and `rust-version`; a licence on `lilook-data`; and publish order
-(`core` → `data` → `compile` → `ui` → `editor` → `app`/`web`/`ffi`).
+categories and `rust-version`; a licence on `lilook-data`; and the publish order, which is
+`lilook-core` → `lilook-data` → `lilook-ui` → `lilook-compile` → `lilook-editor` → `lilook-app` → `lilook-ffi` — derived from the graph rather than
+guessed, after guessing it wrong cost a failed publish.
 
 Use `cargo-release` rather than a bot: one command, no third party in the loop,
 and it fails loudly rather than opening a pull request nobody reads.
