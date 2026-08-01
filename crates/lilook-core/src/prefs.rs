@@ -83,8 +83,60 @@ impl Default for Prefs {
     }
 }
 
+/// What a shell found where the library is kept.
+///
+/// More than the library itself, because "there is something here I cannot read"
+/// is a state a shell has to *act* on rather than merely report.
+pub struct Loaded {
+    /// What to work with -- empty when nothing could be read.
+    pub prefs: Prefs,
+    /// The text lilook could not read, carried back rather than dropped.
+    ///
+    /// `Some` is an instruction to the shell: **do not write over the original**
+    /// -- put this somewhere safe first. Reporting the problem is not enough on
+    /// its own, because the session carries on with an empty library and the
+    /// next thing the user saves would otherwise land on top of everything they
+    /// had.
+    ///
+    /// The case that matters most is a library written by a *newer* lilook. The
+    /// older binary understands less by definition, so left to itself it would
+    /// replace a format it cannot read with one it can.
+    pub rescue: Option<String>,
+    /// What to tell the user, in their own terms.
+    pub complaint: Option<String>,
+}
+
 impl Prefs {
     pub const VERSION: u32 = 1;
+
+    /// Read what a shell found where a library is kept: a file's contents, a
+    /// value out of the browser's storage, or `None` for nothing there yet.
+    ///
+    /// The one place that decides what an unreadable library means, so the
+    /// desktop and the browser cannot come to different conclusions about it.
+    pub fn load(found: Option<String>) -> Loaded {
+        // Nothing there is the ordinary case on a first run, not a problem to
+        // announce and nothing to rescue.
+        let Some(text) = found else {
+            return Loaded {
+                prefs: Prefs::default(),
+                rescue: None,
+                complaint: None,
+            };
+        };
+        match Prefs::from_toml(&text) {
+            Ok(prefs) => Loaded {
+                prefs,
+                rescue: None,
+                complaint: None,
+            },
+            Err(why) => Loaded {
+                prefs: Prefs::default(),
+                rescue: Some(text),
+                complaint: Some(why),
+            },
+        }
+    }
 
     /// Read a library. A file that cannot be parsed is reported, never
     /// discarded: silently starting empty is how someone loses a year of
@@ -163,5 +215,64 @@ impl Prefs {
             .map(|n| format!("{wanted} {n}"))
             .find(|n| self.get(kind, n).is_none())
             .unwrap_or_else(|| wanted.to_string())
+    }
+}
+
+#[cfg(test)]
+mod loading {
+    use super::*;
+
+    #[test]
+    fn nothing_yet_is_not_a_problem() {
+        let l = Prefs::load(None);
+        assert!(l.prefs.saved.is_empty());
+        assert!(l.rescue.is_none(), "nothing to rescue");
+        assert!(l.complaint.is_none(), "and nothing to complain about");
+    }
+
+    #[test]
+    fn an_unreadable_library_is_carried_back_whole() {
+        // A stray keystroke in a file someone edited by hand.
+        let text = "version = 1\n[[saved]]\nkind = \"cycle\"\nname = ";
+        let l = Prefs::load(Some(text.into()));
+        assert!(l.complaint.is_some(), "said so");
+        assert_eq!(
+            l.rescue.as_deref(),
+            Some(text),
+            "and handed back byte for byte, so the shell can set it aside"
+        );
+    }
+
+    /// The case the rescue exists for: an older lilook opening a newer library.
+    ///
+    /// It understands less by definition, so it must not be the one to decide
+    /// the file's fate.
+    #[test]
+    fn a_newer_library_is_never_written_over() {
+        let text = format!(
+            "version = {}\n[[saved]]\nkind = \"cycle\"\nname = \"a\"\nvalue = \"(red,)\"\n",
+            Prefs::VERSION + 1
+        );
+        let l = Prefs::load(Some(text.clone()));
+        assert!(l.prefs.saved.is_empty(), "nothing it can safely offer");
+        assert_eq!(l.rescue.as_deref(), Some(text.as_str()), "kept in full");
+        let complaint = l.complaint.expect("a reason");
+        assert!(
+            complaint.contains("newer lilook"),
+            "in plain words: {complaint}"
+        );
+    }
+
+    /// A library this lilook *can* read is stored over in the ordinary way --
+    /// otherwise every save would pile up rescue copies.
+    #[test]
+    fn a_good_library_needs_no_rescue() {
+        let mut prefs = Prefs::default();
+        prefs
+            .save(Kind::Cycle, "mine", "(red, blue)")
+            .expect("saved");
+        let l = Prefs::load(Some(prefs.to_toml()));
+        assert_eq!(l.prefs.saved.len(), 1);
+        assert!(l.rescue.is_none());
     }
 }

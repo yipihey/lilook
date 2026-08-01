@@ -87,26 +87,57 @@ mod library {
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub fn load() -> (lilook_core::Prefs, Option<String>) {
-        let Some(text) = storage().and_then(|s| s.get_item(KEY).ok().flatten()) else {
-            return (lilook_core::Prefs::default(), None);
-        };
-        match lilook_core::Prefs::from_toml(&text) {
-            Ok(prefs) => (prefs, None),
-            // Kept, not overwritten: the next save would replace a library the
-            // user may want to rescue by hand.
-            Err(why) => (lilook_core::Prefs::default(), Some(why)),
-        }
+    pub fn load() -> lilook_core::Loaded {
+        lilook_core::Prefs::load(storage().and_then(|s| s.get_item(KEY).ok().flatten()))
     }
 
+    /// Where an unreadable library goes. Numbered, and never over one already
+    /// there: the earlier rescue may be the copy that matters.
     #[cfg(target_arch = "wasm32")]
-    pub fn store(prefs: &lilook_core::Prefs) -> Result<(), String> {
+    fn free_rescue_key(storage: &web_sys::Storage) -> Option<String> {
+        (1..100).find_map(|n| {
+            let key = match n {
+                1 => format!("{KEY}.saved"),
+                n => format!("{KEY}.saved.{n}"),
+            };
+            storage
+                .get_item(&key)
+                .ok()
+                .flatten()
+                .is_none()
+                .then_some(key)
+        })
+    }
+
+    /// Write the library, first putting anything unreadable somewhere safe.
+    ///
+    /// The browser has no second file to fall back on, so this matters more here
+    /// than on the desktop: `localStorage` is the only copy, and there is no
+    /// directory for the user to go looking in.
+    #[cfg(target_arch = "wasm32")]
+    pub fn store(prefs: &lilook_core::Prefs, rescue: &mut Option<String>) -> Result<(), String> {
         let storage = storage().ok_or("this browser has no local storage")?;
+        let mut set_aside = None;
+        if let Some(text) = rescue.clone() {
+            let key = free_rescue_key(&storage)
+                .ok_or("no free key to set the old library aside under")?;
+            storage
+                .set_item(&key, &text)
+                .map_err(|_| "local storage refused to keep the old library".to_string())?;
+            *rescue = None;
+            set_aside = Some(key);
+        }
         storage
             .set_item(KEY, &prefs.to_toml())
             // Private browsing, or a full quota. Either way the user should hear
             // it once rather than lose palettes silently.
-            .map_err(|_| "local storage refused the write".to_string())
+            .map_err(|_| "local storage refused the write".to_string())?;
+        match set_aside {
+            Some(key) => Err(format!(
+                "your library could not be read, so it was kept under `{key}` and a new one started"
+            )),
+            None => Ok(()),
+        }
     }
 
     // This crate's own tests run natively -- they drive the browser app through
@@ -114,13 +145,13 @@ mod library {
     // stub. So the page's storage exists only where the page does, and a native
     // run starts from an empty library and keeps it in memory.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn load() -> (lilook_core::Prefs, Option<String>) {
+    pub fn load() -> lilook_core::Loaded {
         let _ = KEY;
-        (lilook_core::Prefs::default(), None)
+        lilook_core::Prefs::load(None)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn store(_prefs: &lilook_core::Prefs) -> Result<(), String> {
+    pub fn store(_prefs: &lilook_core::Prefs, _rescue: &mut Option<String>) -> Result<(), String> {
         Ok(())
     }
 }
@@ -133,6 +164,9 @@ pub struct WebApp {
     /// Set when the source pane should be the whole window: a phone has no room
     /// for three panels, and neither does a docs page in an iframe.
     narrow: bool,
+    /// A library that was found but could not be read, held until the first save
+    /// can put it somewhere safe.
+    rescue: Option<String>,
 }
 
 /// Where a transcoded file lands. The same `.lilook/` the desktop shell uses, so
@@ -166,8 +200,10 @@ impl WebApp {
         // The toolbar carries the name and the about menu behind it, so the
         // panel does not repeat them.
         editor.layout.about = false;
-        let (prefs, complaint) = library::load();
-        editor.prefs = prefs;
+        let loaded = library::load();
+        let rescue = loaded.rescue;
+        let complaint = loaded.complaint;
+        editor.prefs = loaded.prefs;
         if let Some(why) = complaint {
             editor.status = format!("your library could not be read -- {why}");
         }
@@ -175,6 +211,7 @@ impl WebApp {
         let backend = Backend::with_loader(files, "");
         WebApp {
             editor,
+            rescue,
             backend,
             hints: Hints::new(),
             example: 0,
@@ -265,7 +302,7 @@ impl WebApp {
             return;
         }
         self.editor.prefs_dirty = false;
-        if let Err(why) = library::store(&self.editor.prefs) {
+        if let Err(why) = library::store(&self.editor.prefs, &mut self.rescue) {
             self.editor.status = format!("your library could not be saved -- {why}");
         }
     }

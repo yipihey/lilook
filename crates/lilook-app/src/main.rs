@@ -46,30 +46,82 @@ mod library {
     }
 
     /// Read it, or start empty. A file that exists but cannot be read is
-    /// *reported*: losing a library quietly is worse than being told why.
-    pub fn load() -> (lilook_core::Prefs, Option<String>) {
+    /// *reported*, and carried back so that [`store`] can set it aside rather
+    /// than write over it: losing a library quietly is worse than being told
+    /// why, and being told why is no comfort if the next save destroys it
+    /// anyway.
+    pub fn load() -> lilook_core::Loaded {
         let Some(path) = path() else {
-            return (lilook_core::Prefs::default(), None);
+            return lilook_core::Prefs::load(None);
         };
-        match std::fs::read_to_string(&path) {
-            Ok(text) => match lilook_core::Prefs::from_toml(&text) {
-                Ok(prefs) => (prefs, None),
-                Err(why) => (
-                    lilook_core::Prefs::default(),
-                    Some(format!("{}: {why}", path.display())),
-                ),
-            },
-            // Not there yet is the ordinary case, not a problem to announce.
-            Err(_) => (lilook_core::Prefs::default(), None),
+        // Not there yet is the ordinary case, not a problem to announce.
+        let found = std::fs::read_to_string(&path).ok();
+        let mut loaded = lilook_core::Prefs::load(found);
+        if let Some(why) = &loaded.complaint {
+            loaded.complaint = Some(format!("{}: {why}", path.display()));
         }
+        loaded
     }
 
-    pub fn store(prefs: &lilook_core::Prefs) -> Result<(), String> {
+    /// Where an unreadable library goes, so that nothing is destroyed to make
+    /// room for its replacement.
+    ///
+    /// Numbered, and never over one that is already there: a second bad load
+    /// must not overwrite the rescue from the first, which may be the copy that
+    /// actually holds a year of palettes.
+    fn free_rescue_path(path: &std::path::Path) -> Option<PathBuf> {
+        (1..100).find_map(|n| {
+            let at = path.with_extension(match n {
+                1 => "toml.saved".to_string(),
+                n => format!("toml.saved.{n}"),
+            });
+            (!at.exists()).then_some(at)
+        })
+    }
+
+    /// Write the library, first putting anything unreadable somewhere safe.
+    ///
+    /// `rescue` is whatever [`load`] could not parse. Taking it by `&mut` is the
+    /// point: once it has been set aside it is cleared, so the next save is an
+    /// ordinary one and rescue copies do not pile up.
+    pub fn store(prefs: &lilook_core::Prefs, rescue: &mut Option<String>) -> Result<(), String> {
         let path = path().ok_or("no home directory to store a library in")?;
+        store_at(&path, prefs, rescue)
+    }
+
+    /// The part that touches the disk, with the location handed in.
+    ///
+    /// Split out so that a test can exercise the rescue on a directory of its
+    /// own -- the alternative is setting `XDG_CONFIG_HOME` from a test, which is
+    /// process-wide state and a race against every other test in the binary.
+    pub fn store_at(
+        path: &std::path::Path,
+        prefs: &lilook_core::Prefs,
+        rescue: &mut Option<String>,
+    ) -> Result<(), String> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         }
-        std::fs::write(&path, prefs.to_toml()).map_err(|e| format!("{}: {e}", path.display()))
+        // Nothing is written until the unreadable library is safely elsewhere:
+        // if setting it aside fails, the original is still the only copy and
+        // still on disk.
+        if let Some(text) = rescue.clone() {
+            let at = free_rescue_path(path).ok_or_else(|| {
+                format!(
+                    "{}: no free name to set the old library aside under",
+                    path.display()
+                )
+            })?;
+            std::fs::write(&at, text).map_err(|e| format!("{}: {e}", at.display()))?;
+            *rescue = None;
+            std::fs::write(path, prefs.to_toml())
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            return Err(format!(
+                "your library could not be read, so it was kept as {} and a new one started",
+                at.display()
+            ));
+        }
+        std::fs::write(path, prefs.to_toml()).map_err(|e| format!("{}: {e}", path.display()))
     }
 }
 
@@ -81,6 +133,10 @@ struct App {
     pending_export: Option<std::path::PathBuf>,
     /// Current window title, so it is only pushed when it changes.
     title: String,
+    /// A library that was found but could not be read, held until the first
+    /// save can put it somewhere safe. `Some` means the file on disk is *not*
+    /// ours to overwrite.
+    rescue: Option<String>,
     /// What was last written to (or read from) disk, so unsaved changes are a
     /// fact rather than a guess.
     saved_text: String,
@@ -123,13 +179,16 @@ impl App {
             text.clone(),
             Schema::from_json(SCHEMA).expect("bundled schema"),
         );
-        let (prefs, complaint) = library::load();
-        editor.prefs = prefs;
+        let loaded = library::load();
+        let rescue = loaded.rescue;
+        let complaint = loaded.complaint;
+        editor.prefs = loaded.prefs;
         if let Some(why) = complaint {
             editor.status = format!("your library could not be read -- {why}");
         }
         App {
             editor,
+            rescue,
             path: path.clone(),
             actor,
             pending_export: None,
@@ -589,7 +648,7 @@ impl App {
             return;
         }
         self.editor.prefs_dirty = false;
-        if let Err(why) = library::store(&self.editor.prefs) {
+        if let Err(why) = library::store(&self.editor.prefs, &mut self.rescue) {
             self.editor.status = format!("your library could not be saved -- {why}");
         }
     }
@@ -744,4 +803,96 @@ fn main() -> eframe::Result<()> {
             Ok(Box::new(app))
         }),
     )
+}
+
+#[cfg(test)]
+mod library_tests {
+    use super::library;
+    use lilook_core::{Kind, Prefs};
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("lilook-library-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        dir.join("prefs.toml")
+    }
+
+    /// The whole point of the rescue: a library lilook cannot read survives the
+    /// next save.
+    ///
+    /// Before this, a stray keystroke in the file cost the user everything in
+    /// it -- the bad file was *reported*, the session carried on with an empty
+    /// library, and the first thing saved afterwards was written straight over
+    /// the original.
+    #[test]
+    fn an_unreadable_library_survives_the_next_save() {
+        let path = scratch("unreadable");
+        let original = "version = 1\n[[saved]]\nkind = \"cycle\"\nname = ";
+        std::fs::write(&path, original).expect("a broken library");
+
+        let loaded = Prefs::load(std::fs::read_to_string(&path).ok());
+        let mut rescue = loaded.rescue;
+        assert!(rescue.is_some(), "unreadable, so held for rescue");
+
+        let mut prefs = loaded.prefs;
+        prefs
+            .save(Kind::Cycle, "new", "(red, blue)")
+            .expect("saved");
+        let told = library::store_at(&path, &prefs, &mut rescue)
+            .expect_err("the user is told what happened to their file");
+        assert!(told.contains("kept as"), "and where it went: {told}");
+        assert!(rescue.is_none(), "done once, not on every save after");
+
+        let kept = path.with_extension("toml.saved");
+        assert_eq!(
+            std::fs::read_to_string(&kept).ok().as_deref(),
+            Some(original),
+            "the original, byte for byte"
+        );
+        assert!(
+            std::fs::read_to_string(&path)
+                .expect("a new library")
+                .contains("new"),
+            "and the save the user asked for went through"
+        );
+    }
+
+    /// A second bad load must not overwrite the first rescue -- that copy may be
+    /// the one holding a year of palettes.
+    #[test]
+    fn a_rescue_never_lands_on_an_earlier_one() {
+        let path = scratch("twice");
+        std::fs::write(path.with_extension("toml.saved"), "the first rescue").expect("written");
+        let mut rescue = Some("the second".to_string());
+        let _ = library::store_at(&path, &Prefs::default(), &mut rescue);
+        assert_eq!(
+            std::fs::read_to_string(path.with_extension("toml.saved")).ok(),
+            Some("the first rescue".into()),
+            "left alone"
+        );
+        assert_eq!(
+            std::fs::read_to_string(path.with_extension("toml.saved.2")).ok(),
+            Some("the second".into()),
+            "and the new one beside it"
+        );
+    }
+
+    /// An ordinary save is still ordinary: no rescue copies pile up beside a
+    /// library that was read without trouble.
+    #[test]
+    fn a_good_library_is_written_in_place() {
+        let path = scratch("good");
+        let mut prefs = Prefs::default();
+        prefs
+            .save(Kind::Colormap, "mine", "(red, blue)")
+            .expect("saved");
+        library::store_at(&path, &prefs, &mut None).expect("stored");
+        library::store_at(&path, &prefs, &mut None).expect("stored again");
+        assert!(
+            !path.with_extension("toml.saved").exists(),
+            "nothing set aside"
+        );
+        let back = Prefs::load(std::fs::read_to_string(&path).ok());
+        assert_eq!(back.prefs.saved.len(), 1, "and it reads back");
+    }
 }
