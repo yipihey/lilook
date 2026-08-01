@@ -2311,3 +2311,36 @@ sketch, because a menu draws its ramps before anything has been asked.
 The shape of that fix is worth keeping: the honest way out of an approximation is
 usually to ask whoever owns the real answer, and the reason not to is usually an
 assumption about cost that nobody has checked.
+
+## A short shelf, and why the maps are not all named
+
+2026-08-01. Curated palettes and colour maps, offered beside typst's and lilaq's.
+
+**Kept short on purpose.** A menu of forty maps is a decision the reader has to
+make forty times, and the fortieth is not better than viridis. What was added
+fills gaps rather than lengthening the list: two more colourblind-safe palettes
+(Tol muted for many series, Tol high-contrast for three), and four maps typst
+does not carry -- cividis, and three diverging maps with a neutral middle, which
+is the shape an anomaly or a difference wants and the one typst's own set is
+thinnest on.
+
+**Two kinds of entry in one table, deliberately.** A map typst names stays a
+name: `color.map.viridis` is the map, and spelling out its nine stops here would
+be a copy that drifts the moment typst revises one. A map typst does not have is
+written out as colours, because there is nothing to name it by. So `COLORMAPS`
+carries an *expression* per entry, the same shape `CYCLES` has always had, and
+the menu decides how to draw a row by whether it can read colours out of it.
+
+That difference has a consequence worth stating: the curated maps are lilook's
+own data, so a mistyped stop is lilook's bug and nobody else's. They are gated
+twice -- every entry renders a mesh through real typst, and the diverging one is
+asserted to actually be blue at one end, near-white in the middle and red at the
+other, from the shapes the menu paints.
+
+The attribution belongs in the hover, where the person choosing can see it:
+ColorBrewer for the diverging three, Okabe--Ito and Paul Tol for the palettes.
+
+**On evidence, again.** The screenshot pipeline in this session mangles
+gradients -- it rotates colour channels, which is how a correct preview came to
+look wrong twice. Colour is now checked against egui's shapes, and pictures are
+kept for questions about *layout*, which they answer honestly.

@@ -386,20 +386,63 @@ pub fn cycle_source(expr: &str) -> String {
 /// here and in most of science. The diverging and categorical ones follow, and
 /// `rainbow` is last with a warning attached rather than omitted: people ask for
 /// it, and refusing to offer it just means they type it by hand.
-pub const COLORMAPS: &[(&str, &str)] = &[
-    ("viridis", "perceptually uniform — the safe default"),
-    ("magma", "perceptually uniform, dark"),
-    ("inferno", "perceptually uniform, warm"),
-    ("plasma", "perceptually uniform, bright"),
-    ("rocket", "perceptually uniform, red"),
-    ("mako", "perceptually uniform, blue-green"),
-    ("turbo", "high contrast, not uniform"),
-    ("crest", "sequential, blue-green"),
-    ("flare", "sequential, warm"),
-    ("vlag", "diverging, blue to red"),
-    ("icefire", "diverging, dark centre"),
-    ("spectral", "diverging, full hue range"),
-    ("rainbow", "not perceptually uniform — invents banding"),
+pub const COLORMAPS: &[(&str, &str, &str)] = &[
+    // Typst's own, named rather than spelt out: `color.map.viridis` is the map
+    // itself, and writing nine stops in its place would be a copy that drifts
+    // the moment typst revises one.
+    (
+        "viridis",
+        "color.map.viridis",
+        "perceptually uniform — the safe default",
+    ),
+    ("magma", "color.map.magma", "perceptually uniform, dark"),
+    ("inferno", "color.map.inferno", "perceptually uniform, warm"),
+    ("plasma", "color.map.plasma", "perceptually uniform, bright"),
+    ("rocket", "color.map.rocket", "perceptually uniform, red"),
+    ("mako", "color.map.mako", "perceptually uniform, blue-green"),
+    ("turbo", "color.map.turbo", "high contrast, not uniform"),
+    ("crest", "color.map.crest", "sequential, blue-green"),
+    ("flare", "color.map.flare", "sequential, warm"),
+    ("vlag", "color.map.vlag", "diverging, blue to red"),
+    ("icefire", "color.map.icefire", "diverging, dark centre"),
+    (
+        "spectral",
+        "color.map.spectral",
+        "diverging, full hue range — not colourblind-safe",
+    ),
+    (
+        "rainbow",
+        "color.map.rainbow",
+        "not perceptually uniform — invents banding",
+    ),
+    // And the ones typst does not have, written out as stops because there is
+    // nothing to name them by. Kept few on purpose: a menu of forty maps is a
+    // decision the reader has to make forty times.
+    (
+        "cividis",
+        r##"(rgb("#00224e"), rgb("#123570"), rgb("#3b496c"), rgb("#575d6d"), rgb("#707173"), rgb("#8a8678"), rgb("#a59c74"), rgb("#c3b369"), rgb("#e1cc55"), rgb("#fee838"))"##,
+        "sequential, built for colour-blind readers",
+    ),
+    (
+        "blue–white–red",
+        r##"(rgb("#2166ac"), rgb("#4393c3"), rgb("#92c5de"), rgb("#d1e5f0"), rgb("#f7f7f7"), rgb("#fddbc7"), rgb("#f4a582"), rgb("#d6604d"), rgb("#b2182b"))"##,
+        "diverging about zero — anomalies, differences (ColorBrewer RdBu)",
+    ),
+    (
+        "brown–teal",
+        r##"(rgb("#8c510a"), rgb("#bf812d"), rgb("#dfc27d"), rgb("#f6e8c3"), rgb("#f5f5f5"), rgb("#c7eae5"), rgb("#80cdc1"), rgb("#35978f"), rgb("#01665e"))"##,
+        "diverging, colourblind-safe — when red and blue would mean the wrong thing (ColorBrewer BrBG)",
+    ),
+    (
+        "purple–orange",
+        r##"(rgb("#542788"), rgb("#8073ac"), rgb("#b2abd2"), rgb("#d8daeb"), rgb("#f7f7f7"), rgb("#fee0b6"), rgb("#fdb863"), rgb("#e08214"), rgb("#b35806"))"##,
+        "diverging, colourblind-safe (ColorBrewer PuOr)",
+    ),
+    (
+        "greyscale",
+        r##"(luma(0%), luma(100%))"##,
+        "survives a black-and-white printout",
+    ),
 ];
 
 /// Palettes for a diagram's series, as `(name, expression, note)`.
@@ -442,6 +485,16 @@ pub const CYCLES: &[(&str, &str, &str)] = &[
         "Tol bright",
         r##"(rgb("#4477aa"), rgb("#ee6677"), rgb("#228833"), rgb("#ccbb44"), rgb("#66ccee"), rgb("#aa3377"), rgb("#bbbbbb"))"##,
         "colourblind-safe, lighter",
+    ),
+    (
+        "Tol muted",
+        r##"(rgb("#cc6677"), rgb("#332288"), rgb("#ddcc77"), rgb("#117733"), rgb("#88ccee"), rgb("#882255"), rgb("#44aa99"), rgb("#999933"), rgb("#aa4499"))"##,
+        "colourblind-safe, 9 — the most series you can tell apart",
+    ),
+    (
+        "Tol high-contrast",
+        r##"(rgb("#004488"), rgb("#ddaa33"), rgb("#bb5566"))"##,
+        "3 series, legible in greyscale and to colour-blind readers",
     ),
     (
         "greyscale",

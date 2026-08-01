@@ -1236,16 +1236,18 @@ fn the_visual_controls_write_typst_that_compiles() {
         .map(|f| f.node)
         .expect("a diagram");
 
-    // Every colour map lilook offers has to be a real one. A name that is not in
-    // `color.map` compiles to "unknown field", which is exactly the failure a
-    // picker is supposed to make impossible.
-    for (map, _) in lilook_core::COLORMAPS {
+    // Every colour map lilook offers has to be a real one, and each is now
+    // written the way the picker writes it. A name that is not in `color.map`
+    // compiles to "unknown field", and a curated map spelt out here fails if a
+    // stop was mistyped -- both are exactly the failure a picker is supposed to
+    // make impossible.
+    for (map, expr, _) in lilook_core::COLORMAPS {
         app.editor_mut().doc.begin("map");
         app.editor_mut()
             .apply_intent(lilook_core::Intent::SetNamedArg {
                 node: mesh,
                 param: "map".into(),
-                value: format!("color.map.{map}"),
+                value: (*expr).to_string(),
             });
         app.editor_mut().doc.commit();
         app.editor_mut().mark_dirty();

@@ -1607,9 +1607,9 @@ impl Session {
             // inspector does rather than a different, poorer list.
             match crate::widget_control(&p.widget) {
                 Some(crate::Control::Colormap) => {
-                    out.extend(crate::COLORMAPS.iter().map(|(m, note)| Completion {
+                    out.extend(crate::COLORMAPS.iter().map(|(m, expr, note)| Completion {
                         label: (*m).into(),
-                        insert: format!("color.map.{m}"),
+                        insert: (*expr).to_string(),
                         note: (*note).into(),
                         doc: String::new(),
                         choices: vec![],

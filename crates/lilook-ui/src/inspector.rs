@@ -383,14 +383,22 @@ impl<'a> Inspector<'a> {
                         .filter(|s| s.kind == lilook_core::Kind::Colormap)
                         .map(|s| (s.name.as_str(), s.value.as_str()))
                         .collect();
-                    // A map of the user's own is matched by its value, a typst
-                    // one by its name -- `color.map.viridis` is a name lilook
-                    // never sees the colours of.
+                    // Yours first, then a curated one written out in lilook's own
+                    // table, then the name typst knows it by. All three are
+                    // matched the same way -- against what is actually written
+                    // in the document, which is the only thing that decides how
+                    // the figure draws.
                     let plain = pick::reverse(&current);
                     let short = mine
                         .iter()
                         .find(|(_, expr)| **expr == current || **expr == plain)
                         .map(|(n, _)| n.to_string())
+                        .or_else(|| {
+                            lilook_core::COLORMAPS
+                                .iter()
+                                .find(|(_, expr, _)| **expr == current || **expr == plain)
+                                .map(|(n, _, _)| (*n).to_string())
+                        })
                         .unwrap_or_else(|| pick::map_name(&current).to_string());
                     // Said in the box, because a reversed map is the same map
                     // and the strip beside it is easy to read the wrong way
@@ -425,7 +433,7 @@ impl<'a> Inspector<'a> {
                                     picked = Some(expr.to_string());
                                 }
                             }
-                            for (map, note) in lilook_core::COLORMAPS {
+                            for (map, expr, note) in lilook_core::COLORMAPS {
                                 // The whole row, ramp included: the gradient is
                                 // what the choice *is*, and it used to be the one
                                 // part of the row that could not be clicked.
@@ -434,31 +442,35 @@ impl<'a> Inspector<'a> {
                                     ui.id().with(("colormap", map)),
                                     short == *map,
                                     |ui| {
-                                        ramp(ui, map);
+                                        // A map typst names is drawn from
+                                        // lilook's sketch of it; one written out
+                                        // here is drawn from its own colours,
+                                        // which *are* the map.
+                                        match pick::cycle_parts(expr) {
+                                            parts if parts.is_empty() => ramp(ui, map),
+                                            parts => pick::ramp_of(ui, &parts),
+                                        }
                                         ui.label(*map);
                                     },
                                 );
                                 if r.on_hover_text(*note).clicked() {
-                                    picked = Some(format!("color.map.{map}"));
+                                    picked = Some((*expr).to_string());
                                 }
                             }
                         });
                     // The strip beside the box, so the current choice reads
-                    // without opening anything -- from the user's own colours
-                    // where they are the user's, and from lilook's preview of a
-                    // typst map where they are not.
-                    match mine
-                        .iter()
-                        .find(|(_, expr)| **expr == current || **expr == plain)
-                    {
-                        Some((_, expr)) => {
-                            let mut parts = pick::cycle_parts(expr);
+                    // without opening anything. Anything written out as colours
+                    // -- yours or curated -- draws from those; a map typst names
+                    // draws from lilook's sketch of it.
+                    match pick::cycle_parts(&plain) {
+                        parts if !parts.is_empty() => {
+                            let mut parts = parts;
                             if pick::is_reversed(&current) {
                                 parts.reverse();
                             }
                             pick::ramp_of(ui, &parts)
                         }
-                        None => ramp(ui, &current),
+                        _ => ramp(ui, &current),
                     }
                     // Exact, for a map lilook cannot read: `.rev()` is typst's
                     // own, so reversing viridis gives viridis backwards rather

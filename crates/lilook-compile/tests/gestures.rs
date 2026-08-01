@@ -1456,3 +1456,70 @@ fn a_map_of_your_own_starts_from_the_real_map() {
         r.errors().map(|d| d.message.clone()).collect::<Vec<_>>()
     );
 }
+
+/// Every map and every palette lilook offers, drawn.
+///
+/// The web frames test already sets each one through the editor; this is the
+/// narrower question the curated entries introduced: are the colours *typst*?
+/// A map lilook names is typst's own and cannot be mistyped, but one written out
+/// here is nine hex literals somebody typed, and a single bad one is a figure
+/// that fails for whoever picks it.
+#[test]
+fn every_offer_is_writable_typst() {
+    let mut b = Backend::new(std::env::temp_dir(), "");
+
+    for (name, expr, _) in lilook_core::COLORMAPS {
+        let src = format!(
+            r#"#import "@preview/lilaq:0.6.0" as lq
+#set page(width: auto, height: auto, margin: 5pt)
+#let xs = lq.linspace(0, 4, num: 5)
+#lq.diagram(lq.colormesh(xs, xs, (x, y) => x * y, map: {expr}))
+"#
+        );
+        let r = b.render(&src, 1.0);
+        if skip(&r) {
+            return;
+        }
+        assert!(
+            !r.failed(),
+            "the map {name} does not draw: {:?}",
+            r.errors().map(|d| d.message.clone()).collect::<Vec<_>>()
+        );
+    }
+
+    for (name, expr, _) in lilook_core::CYCLES {
+        let value = lilook_core::cycle_source(expr);
+        let src = format!(
+            r#"#import "@preview/lilaq:0.6.0" as lq
+#set page(width: auto, height: auto, margin: 5pt)
+#lq.diagram(cycle: {value}, lq.plot((1, 2, 3), (1, 2, 4)))
+"#
+        );
+        let r = b.render(&src, 1.0);
+        assert!(
+            !r.failed(),
+            "the palette {name} does not draw: {:?}",
+            r.errors().map(|d| d.message.clone()).collect::<Vec<_>>()
+        );
+    }
+
+    // A curated map is offered by name and written as colours, so lilook must be
+    // able to read its own table back -- that is what puts the name in the box
+    // rather than the whole expression.
+    for (name, expr, _) in lilook_core::COLORMAPS {
+        if expr.starts_with("color.map.") {
+            continue;
+        }
+        let stops = lilook_ui::pick::cycle_parts(expr);
+        assert!(
+            stops.len() >= 2,
+            "{name} is written out, so it needs stops lilook can read: {expr}"
+        );
+        for stop in &stops {
+            assert!(
+                lilook_core::check_expr(stop).is_ok(),
+                "{name} has a stop that is not an expression: {stop}"
+            );
+        }
+    }
+}

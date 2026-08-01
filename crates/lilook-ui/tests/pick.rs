@@ -230,3 +230,59 @@ fn fills(add: impl FnOnce(&mut egui::Ui)) -> Vec<egui::Color32> {
         })
         .collect()
 }
+
+/// A curated map paints the map, not a sketch of it.
+///
+/// The table gained entries written out as colours rather than named for typst,
+/// and those are the ones a typo can break: `blue–white–red` has to be blue at
+/// one end, near-white in the middle and red at the other, or the name is a lie.
+#[test]
+fn a_curated_map_paints_what_its_name_says() {
+    let (_, expr, _) = lilook_core::COLORMAPS
+        .iter()
+        .find(|(n, _, _)| *n == "blue–white–red")
+        .expect("a diverging map in the table");
+    let painted = fills(|ui| pick::ramp_of(ui, &pick::cycle_parts(expr)));
+    let first = painted.first().copied().expect("a strip");
+    let last = painted.last().copied().expect("a strip");
+    assert!(first.b() > first.r() + 40, "blue end: {first:?}");
+    assert!(last.r() > last.b() + 40, "red end: {last:?}");
+    let middle = painted[painted.len() / 2];
+    assert!(
+        middle.r() > 200 && middle.g() > 200 && middle.b() > 200,
+        "and near-white where the values cross zero: {middle:?}"
+    );
+
+    // Greyscale means grey: the one offer whose whole purpose is that it has no
+    // hue at all.
+    let (_, grey, _) = lilook_core::COLORMAPS
+        .iter()
+        .find(|(n, _, _)| *n == "greyscale")
+        .expect("a greyscale map");
+    for c in fills(|ui| pick::ramp_of(ui, &pick::cycle_parts(grey))) {
+        assert!(
+            c.r() == c.g() && c.g() == c.b(),
+            "a grey ramp has no hue in it: {c:?}"
+        );
+    }
+}
+
+/// Every palette in the table is a list of colours lilook can read back.
+///
+/// The menu paints each one from its own expression, so a palette lilook cannot
+/// parse is one that shows an empty swatch and reads as broken.
+#[test]
+fn every_palette_reads_back_as_colours() {
+    for (name, expr, _) in lilook_core::CYCLES {
+        let colors = pick::cycle_colors(expr);
+        assert!(
+            colors.len() >= 3,
+            "{name} should be a list of colours, got {}",
+            colors.len()
+        );
+        assert!(
+            !fills(|ui| pick::swatches(ui, expr)).is_empty(),
+            "{name} paints nothing"
+        );
+    }
+}
