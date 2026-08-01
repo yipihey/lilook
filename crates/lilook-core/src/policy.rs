@@ -204,6 +204,142 @@ pub fn placeholder(widget: &str) -> String {
     }
 }
 
+/// One argument a call does not have yet, ready to be written in a single act.
+///
+/// Both places lilook offers to add an argument -- the source pane's completion
+/// popup and the inspector's add field -- build their list from
+/// [`argument_offers`], because two lists that disagree is worse than either one
+/// alone: the same figure would grow a different `interpolation` depending on
+/// which pane you were looking at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArgumentOffer {
+    /// The parameter this writes.
+    pub param: String,
+    /// What to show: the name alone, or `name: value` where a value is chosen.
+    pub label: String,
+    /// The value to write, where there is one lilook is sure of. `None` where it
+    /// knows the shape but not the contents -- see [`seed`]. The source pane
+    /// writes the name and leaves the caret after the colon; the inspector has
+    /// no caret to leave, so it falls back to [`ArgumentOffer::written`].
+    pub value: Option<String>,
+    /// What to write instead when there is no value to be sure of: the
+    /// documented default where it reparses, and the shape's placeholder
+    /// otherwise. The default comes first even when it is `auto` or `none`,
+    /// because for a `scale` or a `variant` that *is* the value -- and
+    /// `xscale: none` is a figure lilaq refuses to draw.
+    pub fallback: String,
+    /// The types, or the parameter this value belongs to.
+    pub note: String,
+    /// One line of what the parameter is for, to be shown on hover. The old
+    /// combo box had this and a list of bare names does not deserve to lose it:
+    /// `bounds` and `margin` are not self-explanatory.
+    pub doc: String,
+}
+
+impl ArgumentOffer {
+    /// The value to write where an argument cannot be left half-finished.
+    ///
+    /// An inspector row is a control, not a caret: `xlim: ` is not something it
+    /// can render, so the fallback stands in and the row's source editor shows
+    /// the shape as a hint.
+    pub fn written(&self) -> String {
+        self.value.clone().unwrap_or_else(|| self.fallback.clone())
+    }
+}
+
+/// Every argument this call is missing, each offered once with a safe value and
+/// again per choice where it has a small fixed set.
+///
+/// The per-choice rows are what make adding an argument one act rather than
+/// three: picking `interpolation: "smooth"` writes it, instead of writing
+/// `interpolation: auto` and leaving the user to find the menu and the value.
+///
+/// Positional parameters are left out on purpose. typst refuses one passed by
+/// name -- `lq.plot(x: xs)` is "unexpected argument: x" -- so offering it is
+/// offering a broken figure.
+pub fn argument_offers(params: &[ParamSchema], call: &crate::CallSite) -> Vec<ArgumentOffer> {
+    let mut out = vec![];
+    for p in params
+        .iter()
+        .filter(|p| p.kind != "positional" && !call.named.iter().any(|a| a.name == p.name))
+    {
+        let control = control_for(Some(p));
+        let fallback = p
+            .default
+            .clone()
+            .filter(|d| crate::check_expr(d).is_ok())
+            .unwrap_or_else(|| placeholder(&p.widget));
+        let doc = p
+            .doc
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        out.push(ArgumentOffer {
+            param: p.name.clone(),
+            label: p.name.clone(),
+            value: seed(Some(p), control),
+            fallback: fallback.clone(),
+            note: p.types.join("|"),
+            doc: doc.clone(),
+        });
+        for (label, value) in values_for(p, control) {
+            out.push(ArgumentOffer {
+                param: p.name.clone(),
+                label: format!("{}: {label}", p.name),
+                value: Some(value),
+                fallback: fallback.clone(),
+                note: p.name.clone(),
+                doc: doc.clone(),
+            });
+        }
+    }
+    out
+}
+
+/// The concrete values worth offering beside a parameter's name.
+///
+/// Only where the set is small and fixed: a scale, a colour map, a palette. A
+/// length or a number has no useful list, and a menu of guesses is worse than a
+/// field to type in.
+fn values_for(p: &ParamSchema, control: Control) -> Vec<(String, String)> {
+    let quoted = |names: &[&str]| -> Vec<(String, String)> {
+        names
+            .iter()
+            .map(|n| ((*n).to_string(), format!("\"{n}\"")))
+            .collect()
+    };
+    if !p.choices.is_empty() && p.choices.len() <= 12 {
+        return quoted(&p.choices.iter().map(String::as_str).collect::<Vec<_>>());
+    }
+    match control {
+        Control::Scale => quoted(SCALE_NAMES),
+        Control::Colormap => COLORMAPS
+            .iter()
+            .map(|(m, _)| ((*m).to_string(), format!("color.map.{m}")))
+            .collect(),
+        Control::Cycle => CYCLES
+            .iter()
+            .map(|(n, expr, _)| ((*n).to_string(), cycle_source(expr)))
+            .collect(),
+        Control::Toggle => vec![
+            ("true".into(), "true".into()),
+            ("false".into(), "false".into()),
+        ],
+        _ => vec![],
+    }
+}
+
+/// A cycle as typst wants it: a named palette is a string, a list of colours is
+/// an array and must not be quoted.
+pub fn cycle_source(expr: &str) -> String {
+    match expr.starts_with('(') {
+        true => expr.to_string(),
+        false => format!("\"{expr}\""),
+    }
+}
+
 /// typst's named colour maps, in the order a chooser should list them.
 ///
 /// Perceptually uniform first -- viridis and its family are the ones that do not

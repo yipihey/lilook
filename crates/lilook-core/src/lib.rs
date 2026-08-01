@@ -33,8 +33,8 @@ pub use edit::{minimal_replacement, Anchor, AppliedEdit, CoalesceKey, History, T
 pub use events::{CanvasEvent, UiEvent};
 pub use intent::Intent;
 pub use policy::{
-    seed_for_test, sentinel_of, widget_control, Control, COLORMAPS, CYCLES, FIGURE_TEXT_SIZES,
-    FIGURE_WIDTHS, TYPST_HELPERS,
+    argument_offers, cycle_source, seed_for_test, sentinel_of, widget_control, ArgumentOffer,
+    Control, COLORMAPS, CYCLES, FIGURE_TEXT_SIZES, FIGURE_WIDTHS, TYPST_HELPERS,
 };
 pub use render::{Blame, Diagnostic, Image, Page, Render, Severity};
 pub use scene::{Bounds, Scene, SceneHit, SeriesGeom};

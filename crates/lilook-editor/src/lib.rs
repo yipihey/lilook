@@ -765,14 +765,45 @@ impl Editor {
                 // Everything offered comes from `Session::completions`, which is
                 // schema and parse only -- a completion that waited on the
                 // compiler would arrive after the user had moved on.
-                if let Some(range) = out.cursor_range.filter(|_| has_focus(ui, id)) {
+                //
+                // The caret is remembered rather than only read, because clicking
+                // an offer takes the pane's focus -- and with it `cursor_range`,
+                // which egui only reports for a focused field -- in the frame
+                // between the press and the release. Without the memory the popup
+                // vanishes mid-click and nothing in it can be chosen.
+                let caret = out.cursor_range.filter(|_| has_focus(ui, id)).map(|range| {
                     let chars: usize = range.primary.index.into();
-                    let at = buf
-                        .char_indices()
+                    buf.char_indices()
                         .nth(chars)
                         .map(|(b, _)| b)
-                        .unwrap_or(buf.len());
-                    self.completion_ui(ui, &buf, at, &out);
+                        .unwrap_or(buf.len())
+                });
+                let caret_id = id.with("caret");
+                if let Some(at) = caret {
+                    ui.data_mut(|d| d.insert_temp(caret_id, at));
+                }
+                let last = ui.data(|d| d.get_temp::<usize>(caret_id));
+                let accepted = caret
+                    .or(last)
+                    .filter(|a| *a <= buf.len())
+                    .and_then(|at| self.completion_ui(ui, &buf, at, &out, caret.is_some()));
+                // An accepted offer changed the document, and this pane shows its
+                // own copy of the text while it has focus -- so the copy has to be
+                // brought along, with the caret after what was written. Without
+                // this the argument is in the document and the source pane still
+                // shows the half-typed word that asked for it.
+                if let Some(at) = accepted {
+                    buf = self.doc.text().to_string();
+                    ui.data_mut(|d| d.insert_temp(caret_id, at.min(buf.len())));
+                    if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id) {
+                        let chars = buf[..at.min(buf.len())].chars().count();
+                        state
+                            .cursor
+                            .set_char_range(Some(egui::text::CCursorRange::one(
+                                egui::text::CCursor::new(chars),
+                            )));
+                        state.store(ui.ctx(), id);
+                    }
                 }
                 // Hovering a call explains it, so nobody has to go and find the
                 // documentation for a function they are looking straight at.
@@ -830,13 +861,21 @@ impl Editor {
     /// Filtered by whatever word is already typed, so the list narrows as the
     /// user goes rather than making them read it. Accepting replaces that word,
     /// which is why the prefix is measured rather than assumed.
+    ///
+    /// `focused` is the caret's own gate: the signature line belongs to a pane
+    /// someone is typing in, while the popup outlives focus by a frame so that a
+    /// click on it can land -- see `lilook_ui::pick::popup`.
+    ///
+    /// Returns where the caret belongs when an offer was taken: after the text it
+    /// wrote, so typing carries on from there.
     fn completion_ui(
         &mut self,
         ui: &mut egui::Ui,
         text: &str,
         at: usize,
         out: &egui::text_edit::TextEditOutput,
-    ) {
+        focused: bool,
+    ) -> Option<usize> {
         // The word being typed: what a lilaq parameter or a colour map is spelt
         // with.
         let start = text[..at]
@@ -850,7 +889,7 @@ impl Editor {
 
         // What the caret is inside, always -- it costs a lookup, and it is the
         // thing that stops someone leaving for the documentation.
-        if let Some(sig) = self.signature(at) {
+        if let Some(sig) = self.signature(at).filter(|_| focused) {
             let params = sig
                 .params
                 .iter()
@@ -866,52 +905,43 @@ impl Editor {
             }
         }
 
-        let matching: Vec<lilook_core::Completion> = self
-            .completions(at)
-            .into_iter()
-            .filter(|c| prefix.is_empty() || c.label.starts_with(prefix))
-            .take(12)
+        // The same list, the same filter and the same popup the inspector's "add
+        // argument" field uses -- see `lilook_ui::pick`. Two implementations of
+        // one interaction is how they came to behave differently.
+        let offers = self.completions(at);
+        let matching = lilook_ui::pick::matching(&offers, prefix, |c| c.label.as_str());
+        let rows: Vec<lilook_ui::pick::Offer> = matching
+            .iter()
+            .map(|c| lilook_ui::pick::Offer::new(&c.label, &c.note, &c.insert))
             .collect();
-        if matching.is_empty() {
-            return;
-        }
         let anchor = out.galley_pos
             + out
                 .galley
                 .pos_from_cursor(egui::text::CCursor::new(text[..at].chars().count()))
                 .left_bottom()
                 .to_vec2();
-        let mut accepted = None;
-        egui::Area::new(egui::Id::new("completions"))
-            .fixed_pos(anchor)
-            .order(egui::Order::Foreground)
-            .show(ui.ctx(), |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.set_max_width(300.0);
-                    for c in &matching {
-                        let row = ui
-                            .horizontal(|ui| {
-                                let r = ui.selectable_label(false, &c.label);
-                                ui.weak(&c.note);
-                                r
-                            })
-                            .inner;
-                        if row.clicked() {
-                            accepted = Some(c.clone());
-                        }
-                    }
-                });
-            });
-        if let Some(c) = accepted {
-            // Replace the word being typed rather than appending to it.
-            self.doc.begin("completion");
-            self.apply(Intent::ReplaceRange {
-                range: start..at,
-                value: c.insert,
-            });
-            self.doc.commit();
-            self.mark_dirty();
-        }
+        let accepted = lilook_ui::pick::popup(
+            ui.ctx(),
+            egui::Id::new("completions"),
+            anchor,
+            &rows,
+            focused,
+        )
+        .map(|i| matching[i].clone());
+        let c = accepted?;
+        // Replace the word being typed rather than appending to it.
+        let written = c.insert.len();
+        self.doc.begin("completion");
+        self.apply(Intent::ReplaceRange {
+            range: start..at,
+            value: c.insert,
+        });
+        self.doc.commit();
+        self.mark_dirty();
+        // Back to the buffer: accepting an offer is the middle of typing, not the
+        // end of it, and the click that accepted it took the focus.
+        ui.memory_mut(|m| m.request_focus(out.response.id));
+        Some(start + written)
     }
 
     fn call_list(&mut self, ui: &mut egui::Ui) {

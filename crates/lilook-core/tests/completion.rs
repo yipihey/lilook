@@ -44,6 +44,76 @@ fn parameter_names_are_offered_where_a_name_goes() {
     assert!(title.insert.starts_with("xlabel:"), "{}", title.insert);
 }
 
+/// One table behind both panes.
+///
+/// The source pane's popup and the inspector's add field are the same list built
+/// by `argument_offers`, so an argument is added in one act wherever it is added
+/// from: the offer carries the value, not just the name. The inspector used to
+/// build its own list -- choose a name, press `add`, then go and find the value
+/// -- and the two disagreed about what adding an argument even meant.
+#[test]
+fn an_offer_carries_the_value_as_well_as_the_name() {
+    let s = session();
+    let call = s
+        .doc
+        .calls()
+        .iter()
+        .find(|c| c.short_name() == "diagram")
+        .expect("the diagram");
+    let f = s
+        .schema
+        .function_for_callee(&call.callee)
+        .expect("its schema");
+    let offers = lilook_core::argument_offers(&f.params, call);
+
+    // A parameter with a small fixed set is offered per value, so picking
+    // `xscale: log` is one act rather than three.
+    let scale = offers
+        .iter()
+        .find(|o| o.label == "xscale: log")
+        .expect("a scale's own values");
+    assert_eq!(scale.param, "xscale");
+    assert_eq!(scale.value.as_deref(), Some("\"log\""));
+
+    // A parameter lilook cannot name a value for still writes something the
+    // figure survives: the documented default, sentinel or not. `xscale: none`
+    // parses and does not compile, and this is the assertion that says so.
+    let bare = offers
+        .iter()
+        .find(|o| o.label == "xscale")
+        .expect("the name on its own");
+    assert_eq!(bare.written(), "auto");
+
+    // Already written, so not offered again -- and a positional is never offered
+    // at all, because typst refuses one passed by name.
+    assert!(!offers.iter().any(|o| o.param == "yscale"), "already set");
+    assert!(
+        !offers.iter().any(|o| o.param.contains("children")),
+        "positional: {:?}",
+        offers.iter().map(|o| &o.param).collect::<Vec<_>>()
+    );
+
+    // Every value an offer would write is a value that reparses -- including the
+    // placeholder the inspector falls back to, which is the one the source pane
+    // never has to produce.
+    for o in &offers {
+        assert!(
+            lilook_core::check_expr(&o.written()).is_ok(),
+            "{} offers {:?}",
+            o.label,
+            o.written()
+        );
+    }
+
+    // And the popup says the same thing, because it is built from this.
+    let names: Vec<String> = s
+        .completions(at("yscale") - 1)
+        .into_iter()
+        .map(|c| c.label)
+        .collect();
+    assert!(names.contains(&"xscale: log".to_string()), "{names:?}");
+}
+
 #[test]
 fn a_parameters_own_values_are_offered_on_its_value() {
     let s = session();

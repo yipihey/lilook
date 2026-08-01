@@ -13,14 +13,16 @@
 pub mod canvas;
 pub mod highlight;
 pub mod inspector;
+pub mod pick;
 pub mod value;
 pub mod viewport;
 
 pub use canvas::{Canvas, CanvasEvent, CanvasInput, CanvasOutput, PageTexture};
 pub use highlight::{layout_job, token_color};
 pub use inspector::{
-    add_argument_choice_id, control_for, refine, widget_control, Context, Control, Inspector,
+    add_argument_filter_id, control_for, refine, widget_control, Context, Control, Inspector,
     SlotSource, UiEvent,
 };
+pub use pick::{click_row, matching, popup, Offer};
 pub use value::{num, parse_color, parse_stroke, split_numeric, Stroke};
 pub use viewport::{stack_pages, stacked_size, PageBox, Viewport};

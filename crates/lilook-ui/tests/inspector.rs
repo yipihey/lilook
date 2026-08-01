@@ -259,20 +259,17 @@ fn a_data_slot_renders_in_every_link_state() {
     }
 }
 
-/// The "add argument" choice has to outlive the `Inspector` that made it.
+/// The "add argument" field has to outlive the `Inspector` that drew it.
 ///
 /// This is the test that was missing, and the shape of the gap is worth keeping:
-/// the chosen parameter used to be a field on `Inspector`, while the shell builds
-/// a **fresh `Inspector` every frame**. Every other test in this file holds one in
-/// a `RefCell` across frames, so the state the app threw away was exactly the
-/// state the tests preserved -- they could not have caught it. In the app the pick
-/// was dropped between the click that made it and the frame that would have acted
-/// on it: the combo snapped back to "add argument..." and "add" never appeared.
-///
-/// This asserts the seam only. Whether a *click* on "add" lands is a matter of
-/// pixels and egui's private layout records, and is checked in a browser instead.
+/// what the user was part-way through choosing used to be a field on
+/// `Inspector`, while the shell builds a **fresh `Inspector` every frame**. Every
+/// other test in this file holds one in a `RefCell` across frames, so the state
+/// the app threw away was exactly the state the tests preserved -- they could not
+/// have caught it. In the app it was dropped between the keystroke that made it
+/// and the frame that would have acted on it.
 #[test]
-fn the_add_argument_choice_outlives_the_inspector_that_made_it() {
+fn what_is_typed_into_add_argument_outlives_the_inspector_that_drew_it() {
     let schema = schema();
     let doc = Document::new(SRC);
     let call = doc
@@ -283,13 +280,6 @@ fn the_add_argument_choice_outlives_the_inspector_that_made_it() {
     let f = schema
         .function_for_callee(&call.callee)
         .expect("its schema");
-    let param = f
-        .params
-        .iter()
-        .find(|p| p.kind != "positional" && !call.named.iter().any(|a| a.name == p.name))
-        .expect("a parameter the call does not have yet")
-        .name
-        .clone();
 
     // One context across frames, as a real app has; a new inspector each frame,
     // as the shell builds.
@@ -299,30 +289,160 @@ fn the_add_argument_choice_outlives_the_inspector_that_made_it() {
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| insp.ui(ui, call));
         insp.events
     };
-    let id = lilook_ui::add_argument_choice_id(call.id);
+    let id = lilook_ui::add_argument_filter_id(call.id);
 
-    assert!(frame(&ctx).is_empty(), "nothing chosen, nothing to do");
+    assert!(frame(&ctx).is_empty(), "nothing typed, nothing to do");
 
-    // Choose a parameter, the way the combo does.
-    ctx.data_mut(|d| d.insert_temp(id, param.clone()));
+    // Type, the way the field does.
+    ctx.data_mut(|d| d.insert_temp(id, "xsc".to_string()));
 
     // A later frame with a different inspector still sees it. Before the fix this
     // read back `None`: it had never left the inspector that was dropped.
-    assert!(
-        frame(&ctx).is_empty(),
-        "showing a choice must not be an edit"
-    );
+    assert!(frame(&ctx).is_empty(), "narrowing a list is not an edit");
     let stored: Option<String> = ctx.data(|d| d.get_temp(id));
     assert_eq!(
         stored.as_deref(),
-        Some(param.as_str()),
-        "the choice has to outlive the inspector that made it"
+        Some("xsc"),
+        "what was typed has to outlive the inspector that drew it"
     );
 
     // The id is derived from the call site alone -- not from the inspector, and
     // not from the enclosing `Ui`, whose hash moves as the panel above it grows.
-    assert_eq!(id, lilook_ui::add_argument_choice_id(call.id));
-    assert_ne!(id, lilook_ui::add_argument_choice_id(call.id + 1));
+    assert_eq!(id, lilook_ui::add_argument_filter_id(call.id));
+    assert_ne!(id, lilook_ui::add_argument_filter_id(call.id + 1));
+}
+
+/// One click adds the whole argument, value included.
+///
+/// The behaviour the source pane always had and the inspector did not: its combo
+/// made you pick a name, press `add`, and then find the value -- three acts for
+/// something the other pane did in one, over the same list. Driven through real
+/// pointer input, because "the row is a click target" is exactly the claim that
+/// cannot be made by calling a function.
+#[test]
+fn one_click_on_an_offer_adds_the_whole_argument() {
+    let schema = schema();
+    let doc = Document::new(SRC);
+    let call = doc
+        .calls()
+        .iter()
+        .find(|c| c.short_name() == "diagram")
+        .expect("a diagram");
+    let f = schema
+        .function_for_callee(&call.callee)
+        .expect("its schema");
+    let offers = lilook_core::argument_offers(&f.params, call);
+    // The row the popup will show second, which is a value row for a scale on
+    // this call: `xscale: log`, written whole.
+    let wanted = offers
+        .iter()
+        .position(|o| o.label == "xscale: log")
+        .expect("a scale's own values");
+
+    let ctx = egui::Context::default();
+    let frame = |input: egui::RawInput| {
+        let mut insp = Inspector::new(Some(f));
+        let _ = ctx.run_ui(input, |ui| insp.ui(ui, call));
+        insp.events
+    };
+
+    // The popup is gated on the field having focus, the way the source pane's is
+    // gated on the caret being in the buffer.
+    let field = lilook_ui::add_argument_filter_id(call.id).with("field");
+    ctx.memory_mut(|m| m.request_focus(field));
+
+    // Where that row landed. Row ids are derived from the popup's id so that a
+    // test can aim at a chosen part of one. Several frames, because an `Area`
+    // that has never been laid out does not know its own height and is placed
+    // again once it does -- aiming at the first frame's rect misses by a row.
+    let row = lilook_ui::add_argument_filter_id(call.id)
+        .with("popup")
+        .with(("row", wanted));
+    let mut rect = egui::Rect::NOTHING;
+    for _ in 0..5 {
+        assert!(frame(egui::RawInput::default()).is_empty(), "just looking");
+        rect = ctx.read_response(row).expect("the row was laid out").rect;
+    }
+
+    let mut input = egui::RawInput::default();
+    let at = rect.center();
+    input.events.push(egui::Event::PointerMoved(at));
+    input.events.push(egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::default(),
+    });
+    input.events.push(egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::default(),
+    });
+    let events = frame(input);
+
+    assert_eq!(
+        events,
+        vec![UiEvent::Insert {
+            node: call.id,
+            param: "xscale".into(),
+            value: "\"log\"".into(),
+        }],
+        "one click, one whole argument"
+    );
+    // And the field lets go of what was typed, so the popup does not stay open
+    // offering the argument that was just added.
+    let left: Option<String> = ctx.data(|d| d.get_temp(lilook_ui::add_argument_filter_id(call.id)));
+    assert_eq!(left.unwrap_or_default(), "");
+}
+
+/// Enter takes the first match, so a name that is known can be typed straight in.
+#[test]
+fn enter_takes_the_first_match_in_the_add_field() {
+    let schema = schema();
+    let doc = Document::new(SRC);
+    let call = doc
+        .calls()
+        .iter()
+        .find(|c| c.short_name() == "diagram")
+        .expect("a diagram");
+    let f = schema
+        .function_for_callee(&call.callee)
+        .expect("its schema");
+
+    let ctx = egui::Context::default();
+    let frame = |input: egui::RawInput| {
+        let mut insp = Inspector::new(Some(f));
+        let _ = ctx.run_ui(input, |ui| insp.ui(ui, call));
+        insp.events
+    };
+    ctx.memory_mut(|m| m.request_focus(lilook_ui::add_argument_filter_id(call.id).with("field")));
+    ctx.data_mut(|d| {
+        d.insert_temp(
+            lilook_ui::add_argument_filter_id(call.id),
+            "xsc".to_string(),
+        )
+    });
+    assert!(frame(egui::RawInput::default()).is_empty(), "just typing");
+
+    let mut input = egui::RawInput::default();
+    input.events.push(egui::Event::Key {
+        key: egui::Key::Enter,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::default(),
+    });
+    assert_eq!(
+        frame(input),
+        vec![UiEvent::Insert {
+            node: call.id,
+            param: "xscale".into(),
+            // `auto`, the documented default: what the parameter is set to when
+            // the user has named it but not yet said what they want.
+            value: "auto".into(),
+        }],
+    );
 }
 
 /// The promise, over every parameter in the schema: **you never type the syntax

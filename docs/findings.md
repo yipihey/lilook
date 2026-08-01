@@ -1985,3 +1985,65 @@ This is the second time this question has come out the same way. `typstyle-core`
 was worth linking because it is a small library with a narrow contract;
 `tinymist-query` is not because it dictates the compiler. **Borrow a library, not
 a foundation.**
+
+## Two panes offered the same list and disagreed about what picking one meant
+
+2026-08-01. The source pane's completion popup wrote a whole argument on one
+click: `interpolation: "smooth"`, name and value together. The inspector's "add
+argument" combo, over the same parameters, took three acts — choose a name from
+the menu, press `add`, then find the control and set the value — and the value it
+started from was chosen by different code. Same list, same job, two behaviours,
+because there were two implementations.
+
+There is one now, in two pieces.
+
+**`policy::argument_offers` is the list.** Every argument a call is missing,
+offered once with a safe value and again per choice where it has a small fixed
+set. `Session::completions` maps it into `Completion`s for the text pane; the
+inspector maps it into `UiEvent::Insert`. Making it one function moved two
+decisions out of the frontends and settled them:
+
+- **Positional parameters are not offered.** The popup used to list them, and
+  `lq.plot(x: xs)` is "unexpected argument: x" — an offer that cannot work.
+- **The value falls back to the documented default, sentinel or not.** The seed
+  policy skips `auto` and `none` deliberately, which is right for `set` on a
+  parameter the user is looking at and wrong for adding one blind: `xscale` has
+  no seed, and the shape placeholder for a scale is `none`, which parses and does
+  not compile. `ArgumentOffer::written` prefers the default it was given.
+
+**`lilook_ui::pick` is the popup.** One `Area`, one filter, one row. Three things
+the shared version had to fix that neither copy had right:
+
+- **A row is one click target, picture included.** `selectable_label` senses only
+  the text it painted, so the colour ramp beside a colormap's name — the widest
+  thing in the row and the only part that says what the map looks like — was
+  inert. So were the cycle swatches. `pick::click_row` interacts with the whole
+  row and paints the hover highlight under it, and labels inside a row are made
+  non-selectable, because draggable text in the middle of a row is a hole in it.
+- **Focus is not enough to keep a popup open.** egui surrenders a text field's
+  focus the moment the pointer clicks anywhere else — the popup included — and a
+  click is a press in one frame and a release in the next. A popup gated on focus
+  alone disappears *between the two*, so every row in it is unclickable. It is
+  gated on focus **or** the pointer being inside the popup drawn last pass. The
+  source pane needed the same fix from the other end: egui only reports
+  `cursor_range` for a focused field, so the caret is now remembered across that
+  frame. **This was not a regression to guard against — it was the state of the
+  source pane.** Clicking a completion did nothing at all, in a popup whose
+  offers were tested through `Session` rather than through the pointer — the list
+  was right, and nothing in it could be taken.
+- **A pane that shows its own copy of the text has to be told.** With the click
+  landing, the next defect was visible: the source pane reads the document only
+  while it does *not* have focus, so an accepted completion reached the document
+  and the pane went on showing the half-typed word that asked for it. The copy
+  and the caret are carried across the accept, which is also what lets typing
+  continue where it left off.
+- **A popup is a fixed width.** An `Area` sized to its longest label leaves the
+  rest of every shorter row hanging outside the frame: painted as part of the
+  row, hit-tested as background. Found by a click that landed on the row's own
+  rectangle and did nothing.
+
+Tested by driving real pointer input at a chosen part of a row — `pick::popup`
+derives each row's id from its own, so a test can aim at the ramp rather than the
+name. Aiming needs a settled layout: an `Area` that has never been laid out does
+not know its height and is placed again once it does, so the first frame's rect
+is a row out.

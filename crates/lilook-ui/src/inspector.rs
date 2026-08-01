@@ -16,10 +16,13 @@ pub use lilook_core::policy::{
     shape_hint, takes_text, widget_control, Control,
 };
 
-use egui::Color32;
 use lilook_core::schema::{FunctionSchema, ParamSchema};
 use lilook_core::{CallSite, Editability, NamedArg};
 
+use crate::pick;
+// The pictures and the popup are shared with the source pane, so a colormap
+// reads the same wherever lilook offers one.
+use crate::pick::{ramp, swatches};
 use crate::value::{
     alignment_source, color_source, num, parse_alignment, parse_color, parse_stroke, parse_text,
     split_numeric, stroke_source, text_source, Stroke, TextShape, DASH_NAMES, H_ALIGN, MARK_NAMES,
@@ -370,13 +373,18 @@ impl<'a> Inspector<'a> {
                         .width(190.0)
                         .show_ui(ui, |ui| {
                             for (map, note) in lilook_core::COLORMAPS {
-                                let on = short == *map;
-                                let r = ui
-                                    .horizontal(|ui| {
+                                // The whole row, ramp included: the gradient is
+                                // what the choice *is*, and it used to be the one
+                                // part of the row that could not be clicked.
+                                let r = pick::click_row(
+                                    ui,
+                                    ui.id().with(("colormap", map)),
+                                    short == *map,
+                                    |ui| {
                                         ramp(ui, map);
-                                        ui.selectable_label(on, *map)
-                                    })
-                                    .inner;
+                                        ui.label(*map);
+                                    },
+                                );
                                 if r.on_hover_text(*note).clicked() {
                                     picked = Some(format!("color.map.{map}"));
                                 }
@@ -406,12 +414,17 @@ impl<'a> Inspector<'a> {
                         .width(210.0)
                         .show_ui(ui, |ui| {
                             for (n, expr, note) in lilook_core::CYCLES {
-                                let r = ui
-                                    .horizontal(|ui| {
+                                // Swatches included, for the same reason the
+                                // colormap ramp is.
+                                let r = pick::click_row(
+                                    ui,
+                                    ui.id().with(("cycle", n)),
+                                    label == *n,
+                                    |ui| {
                                         swatches(ui, expr);
-                                        ui.selectable_label(label == *n, *n)
-                                    })
-                                    .inner;
+                                        ui.label(*n);
+                                    },
+                                );
                                 if r.on_hover_text(*note).clicked() {
                                     picked = Some(expr.to_string());
                                 }
@@ -420,11 +433,7 @@ impl<'a> Inspector<'a> {
                     if let Some(v) = picked {
                         // A named cycle is a string; a list of colours is an
                         // array and must not be quoted.
-                        let value = match v.starts_with('(') {
-                            true => v,
-                            false => format!("\"{v}\""),
-                        };
-                        ev.push(set(node, &name, value));
+                        ev.push(set(node, &name, lilook_core::cycle_source(&v)));
                     }
                 }
                 Control::Mark | Control::Scale => {
@@ -576,94 +585,99 @@ impl<'a> Inspector<'a> {
 
     // ---------------------------------------------------------- add argument
 
+    /// Add an argument: type to narrow, one click to write it.
+    ///
+    /// The same popup the source pane opens at the caret, over the same offers,
+    /// accepted the same way -- see `pick`. It used to be a combo box and an
+    /// `add` button, which made adding `interpolation: "smooth"` three acts
+    /// (choose the name, press add, then find the value) where typing it was one.
     fn add_argument(&mut self, ui: &mut egui::Ui, call: &CallSite) {
         let Some(schema) = self.schema else { return };
         let all = match self.effective.is_empty() {
             true => &schema.params,
             false => &self.effective,
         };
-        let missing: Vec<ParamSchema> = all
-            .iter()
-            .filter(|p| p.kind != "positional" && !call.named.iter().any(|a| a.name == p.name))
-            .cloned()
-            .collect();
-        if missing.is_empty() {
+        let offers = lilook_core::argument_offers(all, call);
+        if offers.is_empty() {
             return;
         }
 
-        // The chosen parameter lives in egui's own per-widget store, keyed by the
-        // combo's id, *not* in a field on `Inspector`.
+        // What has been typed lives in egui's own store, keyed by the call site,
+        // *not* in a field on `Inspector`.
         //
         // It used to be a field, and the field was useless: the shell builds a
-        // fresh `Inspector` every frame, so the choice was dropped between the
+        // fresh `Inspector` every frame, so the state was dropped between the
         // click that made it and the frame that would have acted on it -- the
         // combo reset to "add argument…" and the "add" button never appeared. Two
         // frames of state cannot live on a one-frame object.
-        let choice_id = add_argument_choice_id(call.id);
-        let chosen: Option<String> = ui.data(|d| d.get_temp::<String>(choice_id));
+        let filter_id = add_argument_filter_id(call.id);
+        let mut typed: String = ui
+            .data(|d| d.get_temp::<String>(filter_id))
+            .unwrap_or_default();
 
         ui.separator();
-        ui.horizontal(|ui| {
-            let selected = chosen
-                .clone()
-                .unwrap_or_else(|| "add argument…".to_string());
-            let mut picked = None;
-            egui::ComboBox::from_id_salt((call.id, "add-argument"))
-                .selected_text(selected)
-                .show_ui(ui, |ui| {
-                    for p in &missing {
-                        let is = chosen.as_deref() == Some(p.name.as_str());
-                        if ui
-                            .selectable_label(is, &p.name)
-                            .on_hover_text(first_line(&p.doc))
-                            .clicked()
-                        {
-                            picked = Some(p.name.clone());
-                        }
-                    }
-                });
-            if let Some(name) = picked.clone() {
-                ui.data_mut(|d| d.insert_temp(choice_id, name));
-            }
+        let field = ui
+            .horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut typed)
+                        .id(filter_id.with("field"))
+                        .hint_text("add argument…")
+                        .desired_width(190.0),
+                )
+            })
+            .inner;
 
-            // This frame's pick counts immediately, so the "add" button appears
-            // as soon as something is chosen rather than a frame later.
-            let current = picked.or(chosen);
-            let ready = current
-                .as_ref()
-                .and_then(|n| missing.iter().find(|p| &p.name == n));
-            if let Some(p) = ready {
-                if ui.button("add").clicked() {
-                    // Start from the documented default, so adding an argument
-                    // changes nothing until the user edits it.
-                    let value = p
-                        .default
-                        .clone()
-                        .filter(|d| lilook_core::check_expr(d).is_ok())
-                        .unwrap_or_else(|| placeholder(&p.widget));
-                    self.events.push(UiEvent::Insert {
-                        node: call.id,
-                        param: p.name.clone(),
-                        value,
-                    });
-                    ui.data_mut(|d| d.remove::<String>(choice_id));
-                }
-            }
-        });
+        // Gated on focus, like the source pane's: a field nobody is in should not
+        // cover the arguments below it. `pick::popup` keeps it up across the
+        // press and release of a click, which is the part focus alone cannot do.
+        let open = field.has_focus();
+        let matching = pick::matching(&offers, &typed, |o| o.label.as_str());
+        // The values outlive the borrowed rows they are shown in.
+        let values: Vec<String> = matching.iter().map(|o| o.written()).collect();
+        let rows: Vec<pick::Offer> = matching
+            .iter()
+            .zip(&values)
+            .map(|(o, v)| pick::Offer::new(&o.label, &o.note, v).hint(&o.doc))
+            .collect();
+
+        let popup_id = filter_id.with("popup");
+        let clicked = pick::popup(ui.ctx(), popup_id, field.rect.left_bottom(), &rows, open);
+        // Enter takes the first match, which is what a field you type a name into
+        // is for. The source pane has no equivalent: there, Enter is a newline.
+        //
+        // `lost_focus`, not `open`: a single-line field gives up focus on Enter,
+        // so by the time the key is visible here the field is no longer focused.
+        let entered = field.lost_focus()
+            && !rows.is_empty()
+            && !typed.trim().is_empty()
+            && ui.input(|i| i.key_pressed(egui::Key::Enter));
+
+        if let Some(i) = clicked.or(entered.then_some(0)) {
+            self.events.push(UiEvent::Insert {
+                node: call.id,
+                param: matching[i].param.clone(),
+                value: values[i].clone(),
+            });
+            // Done: the field empties and lets go, so the popup closes rather
+            // than offering the argument that was just added.
+            typed.clear();
+            ui.memory_mut(|m| m.surrender_focus(filter_id.with("field")));
+        }
+        ui.data_mut(|d| d.insert_temp(filter_id, typed));
     }
 }
 
 // ------------------------------------------------------------------ helpers
 
-/// Where the "add argument" combo keeps the parameter you picked.
+/// Where the "add argument" field keeps what has been typed into it.
 ///
 /// Derived from the call site alone, deliberately. It must not depend on the
 /// `Inspector` (the shell builds a new one every frame) and it must not depend on
 /// the enclosing `Ui` either -- `make_persistent_id` mixes that in, and the panel
 /// the inspector draws into is not guaranteed to hash the same across frames as
 /// the tree above it grows and shrinks.
-pub fn add_argument_choice_id(node: usize) -> egui::Id {
-    egui::Id::new((node, "add-argument-choice"))
+pub fn add_argument_filter_id(node: usize) -> egui::Id {
+    egui::Id::new((node, "add-argument-filter"))
 }
 
 fn set(node: usize, param: &str, value: String) -> UiEvent {
@@ -812,111 +826,4 @@ fn stroke_row(ui: &mut egui::Ui, id: (usize, &str), s: &Stroke) -> Option<Stroke
     }
 
     changed.then_some(next)
-}
-
-/// A colour-map preview strip.
-///
-/// The stops are typst's own, sampled coarsely: enough to tell viridis from
-/// magma at a glance, which is all a chooser needs. Painted rather than
-/// described, because "perceptually uniform, warm" is not a thing anyone can
-/// picture and a two-centimetre gradient is.
-fn ramp(ui: &mut egui::Ui, map: &str) {
-    let stops = colormap_stops(map);
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(48.0, 12.0), egui::Sense::hover());
-    if stops.is_empty() {
-        return;
-    }
-    let n = stops.len();
-    let w = rect.width() / n as f32;
-    for (i, c) in stops.iter().enumerate() {
-        let x = rect.left() + i as f32 * w;
-        ui.painter().rect_filled(
-            egui::Rect::from_min_size(
-                egui::pos2(x, rect.top()),
-                egui::vec2(w + 0.5, rect.height()),
-            ),
-            0.0,
-            *c,
-        );
-    }
-}
-
-/// A palette preview: one square per colour.
-fn swatches(ui: &mut egui::Ui, expr: &str) {
-    let colors = cycle_colors(expr);
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(56.0, 12.0), egui::Sense::hover());
-    if colors.is_empty() {
-        return;
-    }
-    let w = rect.width() / colors.len() as f32;
-    for (i, c) in colors.iter().enumerate() {
-        let x = rect.left() + i as f32 * w;
-        ui.painter().rect_filled(
-            egui::Rect::from_min_size(
-                egui::pos2(x, rect.top()),
-                egui::vec2(w - 1.0, rect.height()),
-            ),
-            1.0,
-            *c,
-        );
-    }
-}
-
-/// Five stops per map, eyeballed from typst's own gradients.
-///
-/// Approximate on purpose: this is a preview, and carrying the real 256-entry
-/// tables would be kilobytes of data to answer a question the eye settles in a
-/// glance. The figure itself is drawn by typst from the true map.
-fn colormap_stops(map: &str) -> Vec<Color32> {
-    let hex = |s: &str| {
-        let v = u32::from_str_radix(s, 16).unwrap_or(0);
-        Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)
-    };
-    let stops: &[&str] = match map {
-        "viridis" => &["440154", "3b528b", "21918c", "5ec962", "fde725"],
-        "magma" => &["000004", "3b0f70", "8c2981", "de4968", "fcfdbf"],
-        "inferno" => &["000004", "420a68", "932667", "dd513a", "fcffa4"],
-        "plasma" => &["0d0887", "6a00a8", "b12a90", "e16462", "f0f921"],
-        "rocket" => &["03051a", "541f3f", "a41e50", "e05c3a", "faebdd"],
-        "mako" => &["0b0405", "382a54", "3e6d8a", "3ebcaa", "def5e5"],
-        "turbo" => &["30123b", "1fa8d8", "a5fd3d", "fb8022", "7a0403"],
-        "crest" => &["a5cd90", "5aa96f", "24837b", "1f5f8b", "39366a"],
-        "flare" => &["edb081", "e7876f", "d75c68", "b13e64", "7d1d67"],
-        "vlag" => &["2369bd", "8fb9d8", "f2f2f2", "d99c92", "a11a2b"],
-        "icefire" => &["bde7f0", "4a86b8", "191a1a", "b8452e", "f0d9a8"],
-        "spectral" => &["9e0142", "f98e52", "ffffbf", "88cfa4", "5e4fa2"],
-        "rainbow" => &["6e40aa", "1ab0d0", "8fea52", "ff8c38", "d9335a"],
-        _ => &[],
-    };
-    stops.iter().map(|s| hex(s)).collect()
-}
-
-/// The colours of a cycle, for its swatch row.
-///
-/// Parsed out of the expression when it is a literal array -- which every palette
-/// offered here is -- and looked up for lilaq's named ones, whose values live in
-/// the package rather than in lilook.
-fn cycle_colors(expr: &str) -> Vec<Color32> {
-    if expr.starts_with('(') {
-        return expr
-            .split(',')
-            .filter_map(|part| parse_color(part.trim()))
-            .collect();
-    }
-    let hex = |s: &str| {
-        let v = u32::from_str_radix(s, 16).unwrap_or(0);
-        Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)
-    };
-    let named: &[&str] = match expr.trim_matches('"') {
-        "petroff10" => &[
-            "3f90da", "ffa90e", "bd1f01", "94a4a2", "832db6", "a96b59", "e76300", "b9ac70",
-            "717581", "92dadd",
-        ],
-        "petroff8" => &[
-            "1845fb", "ff5e02", "c91f16", "c849a9", "adad7d", "86c8dd", "578dff", "656364",
-        ],
-        "petroff6" => &["5790fc", "f89c20", "e42536", "964a8b", "9c9ca1", "7a21dd"],
-        _ => &[],
-    };
-    named.iter().map(|s| hex(s)).collect()
 }

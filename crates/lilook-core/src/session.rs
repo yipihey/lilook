@@ -161,48 +161,6 @@ pub struct Action {
     pub intents: Vec<Intent>,
 }
 
-/// The concrete values worth offering beside a parameter's name.
-///
-/// Only where the set is small and fixed: a scale, a mark, a colour map, a
-/// palette. A length or a number has no useful list, and a menu of guesses is
-/// worse than a field to type in.
-fn values_for(
-    p: &crate::schema::ParamSchema,
-    control: Option<crate::Control>,
-) -> Vec<(String, String)> {
-    let quoted = |names: &[&str]| -> Vec<(String, String)> {
-        names
-            .iter()
-            .map(|n| ((*n).to_string(), format!("\"{n}\"")))
-            .collect()
-    };
-    if !p.choices.is_empty() && p.choices.len() <= 12 {
-        return quoted(&p.choices.iter().map(String::as_str).collect::<Vec<_>>());
-    }
-    match control {
-        Some(crate::Control::Scale) => quoted(crate::policy::SCALE_NAMES),
-        Some(crate::Control::Colormap) => crate::COLORMAPS
-            .iter()
-            .map(|(m, _)| ((*m).to_string(), format!("color.map.{m}")))
-            .collect(),
-        Some(crate::Control::Cycle) => crate::CYCLES
-            .iter()
-            .map(|(n, expr, _)| {
-                let v = match expr.starts_with('(') {
-                    true => (*expr).to_string(),
-                    false => format!("\"{expr}\""),
-                };
-                ((*n).to_string(), v)
-            })
-            .collect(),
-        Some(crate::Control::Toggle) => vec![
-            ("true".into(), "true".into()),
-            ("false".into(), "false".into()),
-        ],
-        _ => vec![],
-    }
-}
-
 /// Levenshtein distance, for "did you mean".
 fn edit_distance(a: &str, b: &str) -> usize {
     let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
@@ -1387,10 +1345,7 @@ impl Session {
                 Some(crate::Control::Cycle) => {
                     out.extend(crate::CYCLES.iter().map(|(n, expr, note)| Completion {
                         label: (*n).into(),
-                        insert: match expr.starts_with('(') {
-                            true => (*expr).into(),
-                            false => format!("\"{expr}\""),
-                        },
+                        insert: crate::policy::cycle_source(expr),
                         note: (*note).into(),
                     }))
                 }
@@ -1438,39 +1393,23 @@ impl Session {
                 })
                 .collect();
         }
-        // Otherwise a parameter name. Each is offered once with its safe value,
-        // and again per choice where it has a small fixed set -- so picking
-        // `smooth` writes `interpolation: "smooth"` in one click instead of
-        // completing the name and then having to know the values.
-        let mut out = vec![];
-        for p in f
-            .params
-            .iter()
-            .filter(|p| !call.named.iter().any(|a| a.name == p.name))
-        {
-            let control = crate::widget_control(&p.widget);
-            let seed = control
-                .and_then(|c| crate::policy::seed(Some(p), c))
-                .unwrap_or_default();
-            out.push(Completion {
-                label: p.name.clone(),
-                insert: match seed.is_empty() {
-                    true => format!("{}: ", p.name),
-                    // The policy's safe value, so accepting a completion leaves
-                    // a figure that still compiles.
-                    false => format!("{}: {seed}", p.name),
+        // Otherwise a parameter name, from the one table the inspector's add
+        // field also reads: each offered once with its safe value, and again per
+        // choice where it has a small fixed set. The value comes with the name
+        // so that accepting a completion leaves a figure that still compiles.
+        crate::policy::argument_offers(&f.params, call)
+            .into_iter()
+            .map(|o| Completion {
+                insert: match &o.value {
+                    Some(v) => format!("{}: {v}", o.param),
+                    // lilook knows the shape but not the contents, so it writes
+                    // the name and leaves the caret where the value goes.
+                    None => format!("{}: ", o.param),
                 },
-                note: p.types.join("|"),
-            });
-            for (label, value) in values_for(p, control) {
-                out.push(Completion {
-                    label: format!("{}: {label}", p.name),
-                    insert: format!("{}: {value}", p.name),
-                    note: p.name.clone(),
-                });
-            }
-        }
-        out
+                label: o.label,
+                note: o.note,
+            })
+            .collect()
     }
 
     /// Everything worth knowing about what is at an offset, for a hover.
