@@ -1187,6 +1187,83 @@ impl Session {
     /// in `@preview/tiptoe` -- and would silently go stale when lilaq revised a
     /// theme. Composing keeps the base authoritative, and every override added
     /// afterwards is an ordinary `set-*` rule the styles panel already edits.
+    /// Keep the theme in force in the user's library, so another document can
+    /// start from it.
+    ///
+    /// What is stored is the closure -- `it => {..}` -- and not the `#let` that
+    /// binds it, for two reasons that are really one. An expression is what
+    /// [`crate::Prefs`] can check before it stores anything, and a name is the
+    /// receiving document's business: a theme called `my-ocean` there may
+    /// already be taken here.
+    ///
+    /// Only a theme of the user's own. lilaq's are functions in a package, and
+    /// "saving" one would store a copy that goes stale the moment lilaq revises
+    /// it -- the same reason `fork_theme` composes rather than copies.
+    pub fn save_theme(&mut self) -> bool {
+        let Some(theme) = self.active_theme().filter(|t| t.local) else {
+            self.status = "fork a theme first -- lilaq's own are not yours to keep".into();
+            return false;
+        };
+        let Some(binding) = self.doc.binding_of(&theme.name) else {
+            return false;
+        };
+        let text = self.doc.text();
+        // Everything after the first `=`, which is the closure the binding names.
+        let Some(body) = text[binding.clone()].split_once('=').map(|(_, b)| b.trim()) else {
+            self.status = format!("`{}` is not a binding lilook can read", theme.name);
+            return false;
+        };
+        self.status = match self.prefs.save(crate::Kind::Theme, &theme.name, body) {
+            Ok(()) => {
+                self.prefs_dirty = true;
+                format!("theme {} saved to your library", theme.name)
+            }
+            Err(why) => format!("cannot save {}: {why}", theme.name),
+        };
+        true
+    }
+
+    /// Bring a saved theme into this document and switch to it.
+    ///
+    /// The theme arrives as a `#let` of its own, exactly like a forked one, and
+    /// the document then carries it in full -- so it travels with the file to
+    /// someone who has never seen this library. That is the whole point of
+    /// storing the closure rather than a reference to it.
+    pub fn use_saved_theme(&mut self, name: &str) -> bool {
+        let Some(saved) = self.prefs.get(crate::Kind::Theme, name).cloned() else {
+            return false;
+        };
+        // Already here under this name? Then it is only a matter of the show
+        // rule -- rebinding it would shadow whatever the user has since edited.
+        if self.doc.binding_of(&saved.name).is_some() {
+            self.set_theme(Some(&saved.name));
+            return true;
+        }
+        let name = crate::binding_name_for(&saved.name, |n| self.doc.binding_of(n).is_some());
+        let Some(at) = self.import_end() else {
+            self.status = "no lilaq import to place a theme after".into();
+            return false;
+        };
+        self.doc.begin("use saved theme");
+        match self.active_theme() {
+            Some(t) => self.apply(Intent::ReplaceRange {
+                range: t.range,
+                value: format!("#show: {name}"),
+            }),
+            None => self.apply(Intent::ReplaceRange {
+                range: at..at,
+                value: format!("\n#show: {name}"),
+            }),
+        }
+        self.apply(Intent::ReplaceRange {
+            range: at..at,
+            value: format!("\n#let {name} = {}", saved.value),
+        });
+        self.doc.commit();
+        self.status = format!("theme {name} is in this document now");
+        true
+    }
+
     pub fn fork_theme(&mut self, name: &str) -> bool {
         let name = crate::binding_name_for(name, |n| self.doc.binding_of(n).is_some());
         let lq = self.doc.lilaq_alias();

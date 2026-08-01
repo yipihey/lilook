@@ -653,6 +653,7 @@ fn the_cycle_editor_saves_a_palette_and_applies_it() {
                 // Exactly what the cycle menu does.
                 lilook_ui::inspector::open_cycle_editor(
                     ui,
+                    Kind::Cycle,
                     call.id,
                     "cycle",
                     "my palette",

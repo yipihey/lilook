@@ -2199,3 +2199,37 @@ to guess the meaning of. And `web_sys` off wasm is a panic rather than a stub, s
 the browser's storage is behind `cfg(target_arch = "wasm32")` with a native
 fallback: this crate's own tests run natively, and they start from an empty
 library rather than from a panic.
+
+## The other two kinds, and the one honest thing a colour map editor must say
+
+2026-08-01. The library grew its remaining two editors, and each turned out to
+be a different shape of the same problem.
+
+**A colour map is the palette editor with a different preview.** Both are an
+array of colours; lilaq reads one as the series to draw with and the other as
+stops to interpolate between. So there is one editor, and it differs in what it
+paints under the row -- blocks for a palette, an interpolated ramp for a map --
+and in which argument the result goes to.
+
+The one thing it must not do is pretend. Opening `new…` while the figure uses
+`color.map.viridis` starts from **lilook's five-stop preview of viridis, not
+viridis**: the real map is 256 entries inside typst and lilook has never had
+them, which is exactly why `colormap_stops` says "approximate on purpose" at the
+top. Five stops is a fine place to start a map of your own and a lie if it were
+handed back as viridis, so it opens already named as yours and the hover says
+where the colours came from. (Reading the true stops is possible -- the probe
+machinery evaluates expressions in the user's own scope -- but that is a compile,
+and it belongs to `lilook-compile` rather than to a menu.)
+
+**A theme is a function, so what gets stored is the closure.** `#let mine = it
+=> {..}` cannot be checked by `check_expr` and cannot be pasted into another
+document under a name that may already be taken there. So the library keeps the
+`it => {..}` and `use_saved_theme` writes the `#let` itself, choosing a free
+name -- which means the receiving document ends up carrying the whole theme, and
+that is the point: it travels with the file to someone who has no library at
+all.
+
+Only a theme of the user's own can be kept. lilaq's are functions in a package,
+and storing a copy would go stale the moment lilaq revised one -- the same reason
+`fork_theme` composes rather than copies, decided once and now decided again for
+the same reason.

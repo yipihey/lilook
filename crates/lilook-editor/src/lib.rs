@@ -1569,6 +1569,7 @@ impl Editor {
             .map(|t| t.name)
             .collect();
         let mut pick: Option<Option<String>> = None;
+        let mut use_saved: Option<String> = None;
         ui.horizontal(|ui| {
             ui.label("theme");
             ui.weak("?").on_hover_text(
@@ -1584,6 +1585,28 @@ impl Editor {
                         let on = current.as_deref() == Some(name.as_str());
                         if ui.selectable_label(on, name).clicked() {
                             pick = Some(Some(name.clone()));
+                        }
+                    }
+                    // The user's own, from the library rather than from this
+                    // document. Choosing one *brings it in* -- see
+                    // `use_saved_theme` -- so the document still carries the
+                    // whole theme afterwards.
+                    let saved: Vec<String> = self
+                        .prefs
+                        .of(lilook_core::Kind::Theme)
+                        .map(|s| s.name.clone())
+                        .filter(|n| !mine.contains(n))
+                        .collect();
+                    if !saved.is_empty() {
+                        ui.separator();
+                        for name in saved {
+                            if ui
+                                .selectable_label(false, &name)
+                                .on_hover_text("yours -- adding it writes it into this document")
+                                .clicked()
+                            {
+                                use_saved = Some(name.clone());
+                            }
                         }
                     }
                 });
@@ -1603,6 +1626,17 @@ impl Editor {
                 self.fork_theme(&format!("my-{base}"));
             }
             let is_mine = active.as_ref().is_some_and(|t| t.local);
+            if ui
+                .add_enabled(is_mine, egui::Button::new("keep").small())
+                .on_hover_text(
+                    "Keep this theme in your library, so another document can start \
+                     from it. The document keeps its own copy either way.",
+                )
+                .on_disabled_hover_text("fork a theme first -- lilaq's own are not yours to keep")
+                .clicked()
+            {
+                self.save_theme();
+            }
             ui.add_enabled_ui(is_mine, |ui| {
                 let id = ui.id().with("rename");
                 let mut name = ui
@@ -1625,6 +1659,10 @@ impl Editor {
         });
         if let Some(name) = pick {
             self.set_theme(name.as_deref());
+            self.mark_dirty();
+        }
+        if let Some(name) = use_saved {
+            self.use_saved_theme(&name);
             self.mark_dirty();
         }
     }

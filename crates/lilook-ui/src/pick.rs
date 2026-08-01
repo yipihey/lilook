@@ -414,6 +414,57 @@ pub fn cycle_parts(expr: &str) -> Vec<String> {
         .collect()
 }
 
+/// The map a value names, for looking its preview up: `color.map.viridis` is
+/// `viridis`, and anything else is itself.
+pub fn map_name(value: &str) -> &str {
+    value
+        .trim()
+        .rsplit_once("color.map.")
+        .map(|(_, n)| n)
+        .unwrap_or(value.trim())
+}
+
+/// A colour as typst source, for an editor that starts from painted stops
+/// rather than from text.
+pub fn color_source_of(c: &Color32) -> String {
+    let [r, g, b, _] = c.to_srgba_unmultiplied();
+    format!("rgb(\"#{r:02x}{g:02x}{b:02x}\")")
+}
+
+/// A ramp painted from stops given as source text, for a map being edited.
+///
+/// Interpolated, unlike [`swatches`]: a colour map is read as a gradient between
+/// its entries, and drawing it as blocks would show something the figure will
+/// not do.
+pub fn ramp_of(ui: &mut egui::Ui, parts: &[String]) {
+    let stops: Vec<Color32> = parts.iter().filter_map(|p| parse_color(p)).collect();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(120.0, 12.0), egui::Sense::hover());
+    if stops.len() < 2 {
+        if let Some(c) = stops.first() {
+            ui.painter().rect_filled(rect, 0.0, *c);
+        }
+        return;
+    }
+    // One thin column per pixel of width, so the eye sees a gradient rather than
+    // the handful of stops it was built from.
+    let steps = rect.width().round().max(1.0) as usize;
+    let w = rect.width() / steps as f32;
+    for i in 0..steps {
+        let t = i as f32 / (steps - 1).max(1) as f32 * (stops.len() - 1) as f32;
+        let lo = t.floor() as usize;
+        let hi = (lo + 1).min(stops.len() - 1);
+        let c = stops[lo].lerp_to_gamma(stops[hi], t - lo as f32);
+        ui.painter().rect_filled(
+            egui::Rect::from_min_size(
+                egui::pos2(rect.left() + i as f32 * w, rect.top()),
+                egui::vec2(w + 0.5, rect.height()),
+            ),
+            0.0,
+            c,
+        );
+    }
+}
+
 /// A palette written back as typst: an array, and a one-element array in typst
 /// keeps its comma -- `(red)` is a colour in brackets, `(red,)` is a list of one.
 pub fn cycle_array(parts: &[String]) -> String {

@@ -183,7 +183,7 @@ impl<'a> Inspector<'a> {
             self.argument(ui, call, arg);
         }
 
-        self.cycle_editor(ui, call);
+        self.palette_editor(ui, call);
         self.add_argument(ui, call);
     }
 
@@ -368,15 +368,47 @@ impl<'a> Inspector<'a> {
                 // on a heatmap.
                 Control::Colormap => {
                     let current = arg.text.trim().to_string();
-                    let short = current
-                        .rsplit_once('.')
-                        .map(|(_, n)| n.to_string())
-                        .unwrap_or_else(|| current.clone());
+                    let mine: Vec<(&str, &str)> = self
+                        .context
+                        .saved
+                        .iter()
+                        .filter(|s| s.kind == lilook_core::Kind::Colormap)
+                        .map(|s| (s.name.as_str(), s.value.as_str()))
+                        .collect();
+                    // A map of the user's own is matched by its value, a typst
+                    // one by its name -- `color.map.viridis` is a name lilook
+                    // never sees the colours of.
+                    let short = mine
+                        .iter()
+                        .find(|(_, expr)| *expr == current)
+                        .map(|(n, _)| n.to_string())
+                        .unwrap_or_else(|| pick::map_name(&current).to_string());
                     let mut picked = None;
+                    let mut edit = None;
                     egui::ComboBox::from_id_salt((node, &name))
                         .selected_text(&short)
                         .width(190.0)
                         .show_ui(ui, |ui| {
+                            for (i, (n, expr)) in mine.iter().enumerate() {
+                                let r = pick::click_row(
+                                    ui,
+                                    ui.id().with(("mine-map", i)),
+                                    short == *n,
+                                    |ui| {
+                                        pick::ramp_of(ui, &pick::cycle_parts(expr));
+                                        ui.label(*n);
+                                        if pick::chip(ui, ui.id().with(("forget-map", i)), "×")
+                                            .on_hover_text("remove from your library")
+                                            .clicked()
+                                        {
+                                            edit = Some(Edit::Forget(n.to_string()));
+                                        }
+                                    },
+                                );
+                                if r.on_hover_text("yours").clicked() {
+                                    picked = Some(expr.to_string());
+                                }
+                            }
                             for (map, note) in lilook_core::COLORMAPS {
                                 // The whole row, ramp included: the gradient is
                                 // what the choice *is*, and it used to be the one
@@ -396,10 +428,37 @@ impl<'a> Inspector<'a> {
                             }
                         });
                     // The strip beside the box, so the current choice reads
-                    // without opening anything.
-                    ramp(ui, &short);
+                    // without opening anything -- from the user's own colours
+                    // where they are the user's, and from lilook's preview of a
+                    // typst map where they are not.
+                    match mine.iter().find(|(_, expr)| *expr == current) {
+                        Some((_, expr)) => pick::ramp_of(ui, &pick::cycle_parts(expr)),
+                        None => ramp(ui, &short),
+                    }
+                    if pick::chip(ui, ui.id().with((node, "new-map")), "new…")
+                        .on_hover_text("build a colour map of your own, starting from this one")
+                        .clicked()
+                    {
+                        edit = Some(Edit::Open(current.clone()));
+                    }
                     if let Some(v) = picked {
                         ev.push(set(node, &name, v));
+                    }
+                    match edit {
+                        Some(Edit::Open(from)) => {
+                            let kind = lilook_core::Kind::Colormap;
+                            let taken = lilook_core::Prefs {
+                                version: lilook_core::Prefs::VERSION,
+                                saved: self.context.saved.to_vec(),
+                            };
+                            let suggested = taken.free_name(kind, "my map");
+                            open_cycle_editor(ui, kind, node, &name, &suggested, &from)
+                        }
+                        Some(Edit::Forget(n)) => ev.push(UiEvent::RemovePref {
+                            kind: lilook_core::Kind::Colormap,
+                            name: n,
+                        }),
+                        None => {}
                     }
                 }
                 // The palette every series in this diagram draws from: the
@@ -474,6 +533,7 @@ impl<'a> Inspector<'a> {
                     }
                     match edit {
                         Some(Edit::Open(from)) => {
+                            let kind = lilook_core::Kind::Cycle;
                             // Named before it is opened, so `save` is never
                             // refused for a field the user has not reached yet.
                             // The rule for a free name lives with the library.
@@ -482,7 +542,7 @@ impl<'a> Inspector<'a> {
                                 saved: self.context.saved.to_vec(),
                             };
                             let suggested = taken.free_name(lilook_core::Kind::Cycle, "my palette");
-                            open_cycle_editor(ui, node, &name, &suggested, &from)
+                            open_cycle_editor(ui, kind, node, &name, &suggested, &from)
                         }
                         Some(Edit::Forget(n)) => ev.push(UiEvent::RemovePref {
                             kind: lilook_core::Kind::Cycle,
@@ -640,7 +700,7 @@ impl<'a> Inspector<'a> {
 
     // ----------------------------------------------------------- palettes
 
-    /// Build a palette of your own, from the one in force.
+    /// Build a palette or a colour map of your own, from the one in force.
     ///
     /// Open only when the cycle menu asked for it, and it edits *source text*
     /// rather than colours: `rgb("#4477aa")` comes back out the way it went in,
@@ -651,9 +711,9 @@ impl<'a> Inspector<'a> {
     /// it to the figure. Building a palette to look at is not a thing anyone
     /// wants, and having to pick it from the menu afterwards is a step with no
     /// question in it.
-    fn cycle_editor(&mut self, ui: &mut egui::Ui, call: &CallSite) {
+    fn palette_editor(&mut self, ui: &mut egui::Ui, call: &CallSite) {
         let id = cycle_editor_id(call.id);
-        let Some(mut state) = ui.data(|d| d.get_temp::<CycleEdit>(id)) else {
+        let Some(mut state) = ui.data(|d| d.get_temp::<PaletteEdit>(id)) else {
             return;
         };
         let mut close = false;
@@ -671,7 +731,7 @@ impl<'a> Inspector<'a> {
             {
                 let value = pick::cycle_array(&state.colors);
                 self.events.push(UiEvent::SavePref {
-                    kind: lilook_core::Kind::Cycle,
+                    kind: state.kind,
                     name: state.name.clone(),
                     value: value.clone(),
                 });
@@ -711,11 +771,15 @@ impl<'a> Inspector<'a> {
         if let Some(i) = remove {
             state.colors.remove(i);
         }
-        // What it will look like, from the same painter the menu uses.
-        swatches(ui, &pick::cycle_array(&state.colors));
+        // What it will look like, from the same painter its menu uses: a
+        // palette is distinct colours and a map is a ramp between them.
+        match state.kind {
+            lilook_core::Kind::Colormap => pick::ramp_of(ui, &state.colors),
+            _ => swatches(ui, &pick::cycle_array(&state.colors)),
+        }
 
         match close {
-            true => ui.data_mut(|d| d.remove::<CycleEdit>(id)),
+            true => ui.data_mut(|d| d.remove::<PaletteEdit>(id)),
             false => ui.data_mut(|d| {
                 d.insert_temp(id, state);
             }),
@@ -848,42 +912,71 @@ enum Edit {
     Forget(String),
 }
 
-/// The palette being built, between frames.
+/// The list of colours being built, between frames.
 ///
 /// In egui's store keyed by the call site, for the same reason the
 /// add-argument field's text is: the shell builds a fresh `Inspector` every
 /// frame, so anything that outlives a frame cannot live on it.
+///
+/// One editor for two kinds. A palette and a colour map are both an array of
+/// colours -- lilaq reads the first as the series to draw with and the second as
+/// stops to interpolate between -- so they differ in what the preview draws and
+/// in which argument the result goes to, and in nothing else.
 #[derive(Clone)]
-struct CycleEdit {
-    /// The argument it will be applied to -- `cycle` on a diagram, and named
-    /// rather than assumed because a forwarded parameter can carry it too.
+struct PaletteEdit {
+    kind: lilook_core::Kind,
+    /// The argument it will be applied to -- `cycle` on a diagram, `map` on a
+    /// mesh -- named rather than assumed, because a forwarded parameter can
+    /// carry either.
     param: String,
     name: String,
     /// Each colour as *source text*, not as pixels.
     colors: Vec<String>,
 }
 
-/// Where the palette being built lives. Derived from the call site alone, like
+/// Where the list being built lives. Derived from the call site alone, like
 /// every other piece of two-frame state here.
 pub fn cycle_editor_id(node: usize) -> egui::Id {
-    egui::Id::new((node, "cycle-editor"))
+    egui::Id::new((node, "palette-editor"))
 }
 
 /// Seed the editor from whatever the figure is using now.
 ///
-/// A palette that is already an array opens as its own colours; anything else --
-/// unset, or a name -- opens as lilaq's own, which is what the figure is drawn
-/// with when nothing else is said. Starting from an empty row would make the
-/// first act of every palette "put back what was already there".
-pub fn open_cycle_editor(ui: &mut egui::Ui, node: usize, param: &str, name: &str, from: &str) {
+/// A value that is already an array of colours opens as its own colours --
+/// exactly, from its source text. Anything else opens from what lilook can say
+/// about it, and the two cases differ in an important way:
+///
+/// - a palette falls back to lilaq's own, which is what a diagram draws with
+///   when nothing else is said, so the editor starts from what is on screen;
+/// - a **colour map named by typst** -- `color.map.viridis` -- falls back to
+///   lilook's *five-stop preview* of it, because the real map is 256 entries
+///   inside typst and lilook has never had them. That is a fine place to start
+///   a map of your own and a lie if it were presented as viridis, so it is
+///   named as yours from the moment it opens and the hover says where the
+///   colours came from.
+pub fn open_cycle_editor(
+    ui: &mut egui::Ui,
+    kind: lilook_core::Kind,
+    node: usize,
+    param: &str,
+    name: &str,
+    from: &str,
+) {
     let mut colors = pick::cycle_parts(from);
     if colors.is_empty() {
-        colors = lilook_core::CYCLES
-            .first()
-            .map(|(_, expr, _)| pick::cycle_parts(expr))
-            .unwrap_or_default();
+        colors = match kind {
+            lilook_core::Kind::Colormap => pick::colormap_stops(pick::map_name(from))
+                .iter()
+                .map(pick::color_source_of)
+                .collect(),
+            _ => lilook_core::CYCLES
+                .first()
+                .map(|(_, expr, _)| pick::cycle_parts(expr))
+                .unwrap_or_default(),
+        };
     }
-    let state = CycleEdit {
+    let state = PaletteEdit {
+        kind,
         param: param.to_string(),
         name: name.to_string(),
         colors,

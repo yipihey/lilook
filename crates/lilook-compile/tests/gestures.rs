@@ -1140,3 +1140,83 @@ fn a_saved_palette_draws() {
         "a palette of one colour does not draw:\n{src}"
     );
 }
+
+/// A colour map and a theme of the user's own, kept and used.
+///
+/// The same promise `a_saved_palette_draws` makes, for the two kinds that were
+/// added after it -- and for the theme it is the more interesting one, because a
+/// theme is a *function* rather than a value. The library stores the closure and
+/// the document gets its own `#let`, so the figure below carries the whole theme
+/// and would look the same to someone who has never seen the library.
+#[test]
+fn a_saved_map_and_a_saved_theme_draw() {
+    use lilook_core::{Kind, Prefs, Schema, Session};
+
+    let mut b = Backend::new(std::env::temp_dir(), "");
+    let schema = Schema::from_json(lilook_core::schema::BUNDLED).expect("bundled schema");
+
+    // A map built the way the editor builds one: stops as source text.
+    let stops = [
+        "rgb(\"#000004\")".to_string(),
+        "rgb(\"#8c2981\")".to_string(),
+        "rgb(\"#fcfdbf\")".to_string(),
+    ];
+    let map = lilook_ui::pick::cycle_array(&stops);
+    let mut prefs = Prefs::default();
+    prefs.save(Kind::Colormap, "mine", &map).expect("a map");
+
+    let src = format!(
+        r#"#import "@preview/lilaq:0.6.0" as lq
+#set page(width: auto, height: auto, margin: 5pt)
+#let xs = lq.linspace(0, 4, num: 5)
+#lq.diagram(lq.colormesh(xs, xs, (x, y) => x * y, map: {map}))
+"#
+    );
+    let r = b.render(&src, 1.0);
+    if skip(&r) {
+        return;
+    }
+    assert!(
+        !r.failed(),
+        "a colour map from the library does not draw: {:?}\n{src}",
+        r.errors().map(|d| d.message.clone()).collect::<Vec<_>>()
+    );
+
+    // A theme: forked in one document, kept, then used in another.
+    let first = r#"#import "@preview/lilaq:0.6.0" as lq
+#set page(width: auto, height: auto, margin: 5pt)
+#lq.diagram(lq.plot((1, 2, 3), (1, 2, 4)))
+"#;
+    let mut s = Session::new(first, schema.clone());
+    assert!(s.fork_theme("my-theme"), "a theme of my own");
+    assert!(s.save_theme(), "kept in the library");
+    let saved = s.prefs.get(Kind::Theme, "my-theme").cloned().expect("kept");
+    assert!(
+        !saved.value.contains("#let"),
+        "the closure, not the binding: {}",
+        saved.value
+    );
+    assert!(
+        !b.render(s.doc.text(), 1.0).failed(),
+        "the document it came from stopped compiling:\n{}",
+        s.doc.text()
+    );
+
+    // Another document, another session, the same library.
+    let mut other = Session::new(first, schema);
+    other.prefs = s.prefs.clone();
+    assert!(other.use_saved_theme("my-theme"), "brought in");
+    let text = other.doc.text().to_string();
+    assert!(text.contains("#let my-theme ="), "written in full:\n{text}");
+    assert!(text.contains("#show: my-theme"), "and switched to:\n{text}");
+    let r = b.render(&text, 1.0);
+    assert!(
+        !r.failed(),
+        "a theme from the library does not draw: {:?}\n{text}",
+        r.errors().map(|d| d.message.clone()).collect::<Vec<_>>()
+    );
+
+    // And it is one undo step, like every other edit lilook makes.
+    other.doc.undo();
+    assert_eq!(other.doc.text(), first, "one step, fully undone");
+}
