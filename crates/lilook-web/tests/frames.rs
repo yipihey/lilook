@@ -1253,13 +1253,13 @@ fn the_visual_controls_write_typst_that_compiles() {
         assert!(errors(&app).is_empty(), "{map}: {:?}", errors(&app));
     }
 
-    // And every palette. The named ones are strings; the explicit ones arrays,
-    // and quoting an array is the mistake this asserts against.
+    // And every palette, written the way the pickers write one -- `cycle_source`
+    // rather than a third copy of the rule. This is where a palette that cannot
+    // be set has to fail: `cycle` takes an array, so lilaq's own `petroff10` is
+    // its colours and not its name, and offering the name wrote three palettes
+    // that no figure would build with.
     for (name, expr, _) in lilook_core::CYCLES {
-        let value = match expr.starts_with('(') {
-            true => expr.to_string(),
-            false => format!("\"{expr}\""),
-        };
+        let value = lilook_core::cycle_source(expr);
         app.editor_mut().doc.begin("cycle");
         app.editor_mut()
             .apply_intent(lilook_core::Intent::SetNamedArg {

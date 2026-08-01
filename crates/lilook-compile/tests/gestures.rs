@@ -631,6 +631,83 @@ fn seeded_arguments_compile() {
     assert!(checked >= 10, "only {checked} seeds were checked");
 }
 
+/// Every argument the "add argument" popup offers has to **compile**.
+///
+/// The sibling of `seeded_arguments_compile`, for the other value-writing path:
+/// `set` writes a seed, and adding an argument writes `ArgumentOffer::written`,
+/// which is the seed where there is one and the documented default where there
+/// is not. The two disagree exactly where it matters -- `seed` skips a default
+/// that is `auto` or `none` on purpose, and for a `scale` that sentinel *is* the
+/// value, so the offer must not fall through to the shape's placeholder. Both
+/// panes write these: the popup at the caret and the inspector's field.
+///
+/// **What lilook chose, not what the user chose.** The rows that name a value --
+/// `xscale: log` -- are excluded, because whether one suits *this* data is not
+/// something any list can know and not something lilook decided. `"log"` needs
+/// data above zero and `"symlog"` needs data spanning it, so no single figure
+/// can hold both: measured here, on the fixtures this test started with. An
+/// offer with a value in it is advisory; a value lilook writes on the user's
+/// behalf when they add a bare name is a promise, and this is the promise.
+#[test]
+fn offered_arguments_compile() {
+    const SCHEMA: &str = lilook_core::schema::BUNDLED;
+    let schema = lilook_core::Schema::from_json(SCHEMA).expect("bundled schema");
+    let mut b = Backend::new(std::env::temp_dir(), "");
+
+    let mut checked = 0;
+    for (callee, slots) in [("lq.diagram", ""), ("lq.plot", "(1, 2, 3), (1, 2, 4)")] {
+        let f = schema
+            .function_for_callee(callee)
+            .unwrap_or_else(|| panic!("{callee} in the schema"));
+        // A call with nothing set, so every named parameter is still on offer.
+        let doc = Document::new(format!(
+            "#import \"@preview/lilaq:0.6.0\" as lq\n#{callee}({slots})\n"
+        ));
+        let call = doc
+            .calls()
+            .iter()
+            .find(|c| c.callee == callee)
+            .unwrap_or_else(|| panic!("{callee} is a call site"));
+
+        for o in lilook_core::argument_offers(&f.params, call) {
+            if o.label != o.param {
+                continue; // a value the user picked, not one lilook chose
+            }
+            let value = o.written();
+            let src = format!(
+                r#"#import "@preview/lilaq:0.6.0" as lq
+#set page(width: auto, height: auto, margin: 5pt)
+#lq.diagram(
+  {}
+)
+"#,
+                match callee == "lq.diagram" {
+                    true => format!("{}: {value},\n  lq.plot((1, 2, 3), (1, 2, 4))", o.param),
+                    false => format!("lq.plot({slots}, {}: {value})", o.param),
+                }
+            );
+            let r = b.render(&src, 1.0);
+            if skip(&r) {
+                return;
+            }
+            assert!(
+                !r.failed(),
+                "adding {callee}.{} writes `{value}`, which does not compile: {:?}",
+                o.param,
+                r.errors().map(|d| d.message.clone()).collect::<Vec<_>>()
+            );
+            checked += 1;
+        }
+    }
+    eprintln!("{checked} offered arguments compiled");
+    // One per named parameter of both calls, which is dozens: forty at the time
+    // of writing. The floor is well under it so that a change which quietly
+    // stops offering most of them fails here rather than passing vacuously --
+    // `seeded_arguments_compile` reaches twelve, and this path reaches the ones
+    // it declines.
+    assert!(checked >= 30, "only {checked} offers were checked");
+}
+
 /// Panning a log-log figure as far as the pointer can go, and the result still
 /// compiles.
 ///

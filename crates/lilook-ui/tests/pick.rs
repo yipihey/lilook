@@ -86,12 +86,7 @@ fn a_click_on_the_picture_selects_the_row() {
 fn a_palette_previews_every_colour_in_it() {
     for (name, expr, _) in lilook_core::CYCLES {
         let colors = pick::cycle_colors(expr);
-        let wanted = match expr.starts_with('(') {
-            true => expr.matches("rgb(").count() + expr.matches("luma(").count(),
-            // A named palette's colours live in lilaq, and lilook carries the
-            // ones it can draw.
-            false => colors.len(),
-        };
+        let wanted = expr.matches("rgb(").count() + expr.matches("luma(").count();
         assert_eq!(colors.len(), wanted, "{name} previews {colors:?}");
         assert!(!colors.is_empty(), "{name} previews nothing");
     }

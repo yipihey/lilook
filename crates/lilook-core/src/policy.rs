@@ -111,10 +111,7 @@ pub fn sentinel_of<'a>(text: &str, param: Option<&'a ParamSchema>) -> Option<&'a
 /// pressing `set` changes nothing about how the figure looks and simply makes the
 /// control editable.
 pub fn seed(param: Option<&ParamSchema>, control: Control) -> Option<String> {
-    let default = param
-        .and_then(|p| p.default.as_deref())
-        .filter(|d| sentinel_of(d, param).is_none() && crate::check_expr(d).is_ok());
-    if let Some(d) = default {
+    if let Some(d) = usable_default(param).filter(|d| sentinel_of(d, param).is_none()) {
         return Some(d.to_string());
     }
     match control {
@@ -136,7 +133,12 @@ pub fn seed(param: Option<&ParamSchema>, control: Control) -> Option<String> {
         // The defaults lilaq itself uses, so pressing `set` changes nothing about
         // the figure and simply makes the control editable.
         Control::Colormap => Some("color.map.viridis".into()),
-        Control::Cycle => Some("petroff10".into()),
+        // The first palette in the table, which is lilaq's own -- written out as
+        // the array `cycle` actually takes. It used to write the bare name
+        // `petroff10`, which is a binding inside the package: "unknown variable"
+        // in the user's document. `cycle` has no sentinel, so the gate that
+        // covers `set` never tried it and the one for adding an argument did.
+        Control::Cycle => CYCLES.first().map(|(_, expr, _)| cycle_source(expr)),
         Control::Enum | Control::Mark | Control::Scale => param
             .and_then(|p| p.choices.first().cloned())
             .map(|c| format!("\"{c}\"")),
@@ -146,6 +148,21 @@ pub fn seed(param: Option<&ParamSchema>, control: Control) -> Option<String> {
         Control::Source | Control::ReadOnly | Control::Unset => None,
     }
 }
+/// The documented default, where writing it into the user's document means what
+/// it meant in lilaq's.
+///
+/// Two filters, and the second was paid for: the value has to parse, *and* it
+/// has to name nothing that only lilaq can see. `diagram`'s cycle defaults to
+/// `petroff10` -- a binding inside the package, syntactically a perfect
+/// identifier -- and adding the argument wrote "unknown variable: petroff10"
+/// into a figure. `check_expr` cannot see that; [`crate::resolves_anywhere`]
+/// can.
+fn usable_default(param: Option<&ParamSchema>) -> Option<&str> {
+    param
+        .and_then(|p| p.default.as_deref())
+        .filter(|d| crate::check_expr(d).is_ok() && crate::resolves_anywhere(d))
+}
+
 /// The shape a parameter wants, as placeholder text, so an unset structure is a
 /// prompt rather than a puzzle.
 pub fn shape_hint(param: Option<&ParamSchema>) -> &'static str {
@@ -264,10 +281,8 @@ pub fn argument_offers(params: &[ParamSchema], call: &crate::CallSite) -> Vec<Ar
         .filter(|p| p.kind != "positional" && !call.named.iter().any(|a| a.name == p.name))
     {
         let control = control_for(Some(p));
-        let fallback = p
-            .default
-            .clone()
-            .filter(|d| crate::check_expr(d).is_ok())
+        let fallback = usable_default(Some(p))
+            .map(str::to_string)
             .unwrap_or_else(|| placeholder(&p.widget));
         let doc = p
             .doc
@@ -331,10 +346,15 @@ fn values_for(p: &ParamSchema, control: Control) -> Vec<(String, String)> {
     }
 }
 
-/// A cycle as typst wants it: a named palette is a string, a list of colours is
-/// an array and must not be quoted.
+/// A cycle as typst wants it: an array of colours goes in as it is, anything
+/// else is a name and a name is a string.
+///
+/// Every palette in [`CYCLES`] is an array, so this quotes nothing today. It
+/// stays because the *value* it guards is the user's: a cycle written by hand
+/// can be either, and the quoting rule is the one thing both panes must agree
+/// on when they write one.
 pub fn cycle_source(expr: &str) -> String {
-    match expr.starts_with('(') {
+    match expr.trim_start().starts_with('(') {
         true => expr.to_string(),
         false => format!("\"{expr}\""),
     }
@@ -370,14 +390,30 @@ pub const COLORMAPS: &[(&str, &str)] = &[
 /// rest are here because a scientific figure has two audiences it is easy to
 /// forget -- readers who cannot distinguish red from green, and readers holding a
 /// greyscale printout.
+///
+/// **Every expression is an array, including lilaq's own palettes.** `cycle`
+/// takes a list of colours -- "expected array, found string" for anything else
+/// -- and `petroff10` is a binding inside the package that its entry point does
+/// not export, so there is no name a user's document could write. Offering one
+/// wrote three palettes that no figure would compile with. The colours are
+/// lilaq's, from `src/style/map.typ` in 0.6.0, so picking `petroff10` still
+/// means exactly what lilaq means by it.
 pub const CYCLES: &[(&str, &str, &str)] = &[
     (
         "petroff10",
-        "petroff10",
+        r##"(rgb("#3f90da"), rgb("#ffa90e"), rgb("#bd1f01"), rgb("#94a4a2"), rgb("#832db6"), rgb("#a96b59"), rgb("#e76300"), rgb("#b9ac70"), rgb("#717581"), rgb("#92dadd"))"##,
         "lilaq's default — 10 distinct hues",
     ),
-    ("petroff6", "petroff6", "6 hues, for fewer series"),
-    ("petroff8", "petroff8", "8 hues"),
+    (
+        "petroff6",
+        r##"(rgb("#5790fc"), rgb("#f89c20"), rgb("#e42536"), rgb("#964a8b"), rgb("#9c9ca1"), rgb("#7a21dd"))"##,
+        "6 hues, for fewer series",
+    ),
+    (
+        "petroff8",
+        r##"(rgb("#1845fb"), rgb("#ff5e02"), rgb("#c91f16"), rgb("#c849a9"), rgb("#adad7d"), rgb("#86c8dd"), rgb("#578dff"), rgb("#656364"))"##,
+        "8 hues",
+    ),
     (
         "Okabe–Ito",
         r##"(rgb("#e69f00"), rgb("#56b4e9"), rgb("#009e73"), rgb("#f0e442"), rgb("#0072b2"), rgb("#d55e00"), rgb("#cc79a7"), rgb("#000000"))"##,

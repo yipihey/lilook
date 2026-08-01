@@ -1061,6 +1061,31 @@ pub fn check_expr(value: &str) -> Result<(), String> {
     }
 }
 
+/// Does this value mean the same thing in the user's document as where it was
+/// written?
+///
+/// A schema default is lilaq's own source, and lilaq's source is written in
+/// lilaq's scope: `diagram`'s cycle defaults to `petroff10`, a binding inside
+/// the package. Copied into a user's figure it is "unknown variable:
+/// petroff10" -- syntactically perfect and semantically empty, which is exactly
+/// the gap [`check_expr`] does not close.
+///
+/// True when the value names nothing it cannot see: a literal, a builtin like
+/// `red` or `center`, `auto`, or an expression over `color.map` and friends.
+/// The same `BUILTIN_IDENTS` table that tells a colour swatch from a
+/// jump-to-definition decides it, because it is the same question.
+pub fn resolves_anywhere(value: &str) -> bool {
+    let text = value.trim();
+    if text.is_empty() {
+        return false;
+    }
+    let root = typst_syntax::parse_code(text);
+    let node = LinkedNode::new(&root);
+    let (mut bound, mut out) = (vec![], vec![]);
+    free_idents(&node, text, &mut bound, &mut out);
+    out.is_empty()
+}
+
 /// Element ranges of a literal array node, or empty for anything else.
 ///
 /// Typst writes a one-element array as `(1,)`, so the trailing comma is part of

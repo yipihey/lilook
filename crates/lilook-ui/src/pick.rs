@@ -302,37 +302,27 @@ pub fn colormap_stops(map: &str) -> Vec<Color32> {
 
 /// The colours of a cycle, for its swatch row.
 ///
-/// Parsed out of the expression when it is a literal array -- which every palette
-/// offered here is -- and looked up for lilaq's named ones, whose values live in
-/// the package rather than in lilook.
+/// Read out of the expression itself, which for every palette lilook offers is a
+/// literal array -- lilaq's own included, because `cycle` takes an array and the
+/// package exports no name for one. There is no second table of colours here to
+/// drift from the first.
 ///
 /// The array's own parentheses come off before the split, which they did not
 /// before: `(rgb("#e69f00"), .., rgb("#000000"))` split on commas leaves the
 /// first and last entries carrying a bracket, neither parses, and Okabe-Ito
 /// showed six of its eight colours.
 pub fn cycle_colors(expr: &str) -> Vec<Color32> {
-    if let Some(inner) = expr
+    let Some(inner) = expr
         .trim()
         .strip_prefix('(')
         .and_then(|e| e.strip_suffix(')'))
-    {
-        return inner
-            .split(',')
-            .filter_map(|part| parse_color(part.trim()))
-            .collect();
-    }
-    let named: &[&str] = match expr.trim_matches('"') {
-        "petroff10" => &[
-            "3f90da", "ffa90e", "bd1f01", "94a4a2", "832db6", "a96b59", "e76300", "b9ac70",
-            "717581", "92dadd",
-        ],
-        "petroff8" => &[
-            "1845fb", "ff5e02", "c91f16", "c849a9", "adad7d", "86c8dd", "578dff", "656364",
-        ],
-        "petroff6" => &["5790fc", "f89c20", "e42536", "964a8b", "9c9ca1", "7a21dd"],
-        _ => &[],
+    else {
+        return vec![];
     };
-    named.iter().map(|s| hex(s)).collect()
+    inner
+        .split(',')
+        .filter_map(|part| parse_color(part.trim()))
+        .collect()
 }
 
 fn hex(s: &str) -> Color32 {

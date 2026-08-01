@@ -2047,3 +2047,36 @@ derives each row's id from its own, so a test can aim at the ramp rather than th
 name. Aiming needs a settled layout: an `Area` that has never been laid out does
 not know its height and is placed again once it does, so the first frame's rect
 is a row out.
+
+## A recompile gate on what "add argument" writes found two values that never compiled
+
+2026-08-01. `seeded_arguments_compile` exists because `set` once wrote `()` into
+`xlim` and reached a browser: reparsing is not the gate, the compiler is. Adding
+an argument is the *other* value-writing path and had no such gate, so it got
+one — `offered_arguments_compile`, over every name `argument_offers` offers for
+`lq.diagram` and `lq.plot`. Thirty-three values, and two of them did not compile.
+
+**A documented default is written in lilaq's scope, not the user's.**
+`diagram`'s cycle defaults to `petroff10`, which is a binding inside the package.
+Copied into a figure it is "unknown variable: petroff10" — syntactically a
+perfect identifier, semantically nothing, which is precisely the gap `check_expr`
+cannot close. `resolves_anywhere` closes it, over the same `BUILTIN_IDENTS` table
+that tells a colour swatch from a jump-to-definition: it is the same question
+asked at the other end. Any default that names something only its own module can
+see is now declined, and the typed fallback stands in.
+
+**`cycle` takes an array, and lilaq exports no name for one.** With the default
+declined, the seed wrote `"petroff10"` — and lilaq answered "expected array,
+found string". The three named palettes in `CYCLES` had never been settable: the
+picker offered them, and every one of them produced a figure that would not
+build. They carry lilaq's own colours now, read out of `src/style/map.typ` in
+0.6.0, so the offer means what its name says and the swatch row parses the same
+array it writes. lilook no longer keeps a second table of those colours.
+
+Both were reachable from the inspector's cycle menu *and* the source pane's
+completion popup, and neither was reachable by any test: `cycle` has no sentinel,
+and `seeded_arguments_compile` only walks parameters that have one. The lesson is
+not about cycles. **A gate that skips silently when its fixture is unavailable
+reports green from an empty run** — every compile-backed test here returns early
+when the lilaq package cannot be fetched, which is exactly the state a sandboxed
+agent works in, and it is indistinguishable from a pass in the output.
