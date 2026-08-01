@@ -1053,6 +1053,7 @@ impl Editor {
                 ui.separator();
                 self.figure_ui(ui);
                 self.theme_ui(ui);
+                self.library_ui(ui);
                 ui.horizontal(|ui| {
                     ui.label("document styles");
                     ui.weak("?").on_hover_text(
@@ -1312,6 +1313,26 @@ impl Editor {
                 .unwrap_or_else(|| "dropped".into());
             if name.ends_with(".typ") {
                 self.status = "dropping a document is not linking data".into();
+                continue;
+            }
+            // A library, not data. Dropping the file is the whole import
+            // gesture -- there is no file dialog in either shell, and this one
+            // works the same in the browser, where the alternative would be a
+            // second way of getting bytes in.
+            if name.ends_with(".toml") {
+                let text = f
+                    .bytes
+                    .as_ref()
+                    .map(|b| String::from_utf8_lossy(b).into_owned())
+                    .or_else(|| {
+                        f.path
+                            .as_ref()
+                            .and_then(|p| std::fs::read_to_string(p).ok())
+                    });
+                self.status = match text {
+                    Some(text) => self.import_library(&text),
+                    None => format!("could not read {name}"),
+                };
                 continue;
             }
             self.requests.adopt.push(Dropped {
@@ -1665,6 +1686,121 @@ impl Editor {
             self.use_saved_theme(&name);
             self.mark_dirty();
         }
+    }
+
+    /// Take in another library, from a file someone sent or a copy of your own.
+    ///
+    /// Public because the gesture that reaches it is the shell's: a file dropped
+    /// on the window. Merging rather than replacing, and keeping what is here on
+    /// a clash -- see `Prefs::merge`.
+    pub fn import_library(&mut self, text: &str) -> String {
+        match lilook_core::Prefs::from_toml(text) {
+            Ok(other) => {
+                let report = self.prefs.merge(other);
+                if report.added > 0 || !report.renamed.is_empty() {
+                    self.prefs_dirty = true;
+                }
+                format!("from that library: {}", report.summary())
+            }
+            Err(why) => format!("that is not a lilook library -- {why}"),
+        }
+    }
+
+    /// Everything you have saved, in one place.
+    ///
+    /// The menus that offer these are attached to a parameter, so without this
+    /// there is no way to see a palette without first selecting something that
+    /// takes one -- and no way at all to rename one. Collapsed by default: it is
+    /// a cupboard, not something to read while drawing.
+    fn library_ui(&mut self, ui: &mut egui::Ui) {
+        let kinds = [
+            (lilook_core::Kind::Cycle, "palettes"),
+            (lilook_core::Kind::Colormap, "colour maps"),
+            (lilook_core::Kind::Theme, "themes"),
+        ];
+        let total = self.prefs.saved.len();
+        egui::CollapsingHeader::new(format!("your library ({total})"))
+            .id_salt("library")
+            .show(ui, |ui| {
+                if total == 0 {
+                    ui.weak("Nothing saved yet. Build a palette or a colour map with");
+                    ui.weak("`new…` beside its menu, or keep a theme you forked.");
+                }
+                let mut rename: Option<(lilook_core::Kind, String, String)> = None;
+                let mut forget: Option<(lilook_core::Kind, String)> = None;
+                for (kind, label) in kinds {
+                    let mine: Vec<lilook_core::Saved> = self.prefs.of(kind).cloned().collect();
+                    if mine.is_empty() {
+                        continue;
+                    }
+                    ui.weak(label);
+                    for s in mine {
+                        ui.horizontal(|ui| {
+                            // The same painters the menus use, so a thing looks
+                            // here exactly as it does where it is chosen.
+                            match kind {
+                                lilook_core::Kind::Cycle => lilook_ui::pick::swatches(ui, &s.value),
+                                lilook_core::Kind::Colormap => lilook_ui::pick::ramp_of(
+                                    ui,
+                                    &lilook_ui::pick::cycle_parts(&s.value),
+                                ),
+                                lilook_core::Kind::Theme => {
+                                    ui.weak("show rule");
+                                }
+                            }
+                            let id = ui.id().with(("rename", kind, &s.name));
+                            let mut name = ui
+                                .data(|d| d.get_temp::<String>(id))
+                                .unwrap_or_else(|| s.name.clone());
+                            let edit =
+                                ui.add(egui::TextEdit::singleline(&mut name).desired_width(110.0));
+                            if edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                rename = Some((kind, s.name.clone(), name.clone()));
+                                ui.data_mut(|d| d.remove::<String>(id));
+                            } else if edit.has_focus() || name != s.name {
+                                ui.data_mut(|d| d.insert_temp(id, name));
+                            }
+                            if ui
+                                .small_button("×")
+                                .on_hover_text("remove from your library")
+                                .clicked()
+                            {
+                                forget = Some((kind, s.name.clone()));
+                            }
+                        })
+                        .response
+                        .on_hover_text(&s.value);
+                    }
+                }
+                if let Some((kind, from, to)) = rename {
+                    self.status = match self.prefs.rename(kind, &from, &to) {
+                        Ok(()) => {
+                            self.prefs_dirty = true;
+                            format!("{from} is called {to} now")
+                        }
+                        Err(why) => why,
+                    };
+                }
+                if let Some((kind, name)) = forget {
+                    if self.prefs.remove(kind, &name) {
+                        self.prefs_dirty = true;
+                        self.status = format!("{name} removed from your library");
+                    }
+                }
+                ui.horizontal(|ui| {
+                    if ui
+                        .small_button("export…")
+                        .on_hover_text(
+                            "Write the whole library out as a file you can keep or send \
+                             on. Someone else adds it by dropping it on their window.",
+                        )
+                        .clicked()
+                    {
+                        self.requests.library_export = true;
+                    }
+                    ui.weak("drop a .toml here to add one");
+                });
+            });
     }
 
     fn diagnostics_ui(&mut self, ui: &mut egui::Ui) {

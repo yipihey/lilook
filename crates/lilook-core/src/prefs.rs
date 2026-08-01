@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 
 /// What a saved value is for, which decides the menu it appears in and the
 /// argument it is written to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Kind {
     /// A palette for a diagram's series: an array of colours, written to
@@ -79,6 +79,46 @@ impl Default for Prefs {
         Prefs {
             version: Prefs::VERSION,
             saved: vec![],
+        }
+    }
+}
+
+/// What came of taking in another library.
+#[derive(Default)]
+pub struct Merged {
+    /// Arrived under the name it had.
+    pub added: usize,
+    /// Arrived, but under a new name: `(theirs, here)`.
+    pub renamed: Vec<(String, String)>,
+    /// The same name and the same value -- already here, so nothing to do.
+    pub already: usize,
+}
+
+impl Merged {
+    /// What to tell the user, in one line.
+    pub fn summary(&self) -> String {
+        let mut parts = Vec::new();
+        if self.added > 0 {
+            parts.push(format!("{} added", self.added));
+        }
+        if !self.renamed.is_empty() {
+            let names: Vec<String> = self
+                .renamed
+                .iter()
+                .map(|(theirs, here)| format!("{theirs} as {here}"))
+                .collect();
+            parts.push(format!(
+                "{} renamed to keep yours: {}",
+                self.renamed.len(),
+                names.join(", ")
+            ));
+        }
+        if self.already > 0 {
+            parts.push(format!("{} already here", self.already));
+        }
+        match parts.is_empty() {
+            true => "nothing in that library".into(),
+            false => parts.join("; "),
         }
     }
 }
@@ -142,7 +182,26 @@ impl Prefs {
     /// discarded: silently starting empty is how someone loses a year of
     /// palettes to a stray keystroke in a config file.
     pub fn from_toml(text: &str) -> Result<Prefs, String> {
-        let prefs: Prefs = toml::from_str(text).map_err(|e| e.to_string())?;
+        // Read through a shape that can tell "absent" from "defaulted". Any TOML
+        // at all parses as `Prefs` -- both fields have defaults -- so without
+        // this a dropped `Cargo.toml` was a library with nothing in it, and the
+        // import said so cheerfully instead of saying it was the wrong file.
+        #[derive(Deserialize)]
+        struct Raw {
+            version: Option<u32>,
+            #[serde(default)]
+            saved: Vec<Saved>,
+        }
+        let raw: Raw = toml::from_str(text).map_err(|e| e.to_string())?;
+        if raw.version.is_none() && raw.saved.is_empty() {
+            return Err("no version and nothing saved, so this is not a library".into());
+        }
+        let prefs = Prefs {
+            // Absent in a file written by hand, which is the same as the
+            // current format.
+            version: raw.version.unwrap_or(Prefs::VERSION),
+            saved: raw.saved,
+        };
         if prefs.version > Prefs::VERSION {
             return Err(format!(
                 "this library was written by a newer lilook (format {}, this one reads {})",
@@ -203,6 +262,64 @@ impl Prefs {
 
     /// A name that is not taken yet, for "save this as…" starting from a
     /// suggestion. `mine`, then `mine 2`, and so on.
+    /// Rename something in the library.
+    ///
+    /// The name is how a saved thing is chosen and how a theme is bound in a
+    /// document, so the same rules apply as on the way in: not empty, and not
+    /// one already taken by something of its kind.
+    pub fn rename(&mut self, kind: Kind, from: &str, to: &str) -> Result<(), String> {
+        let to = to.trim();
+        if to.is_empty() {
+            return Err("a saved thing needs a name".into());
+        }
+        if to == from {
+            return Ok(());
+        }
+        if self.get(kind, to).is_some() {
+            return Err(format!("you already have a {} called {to}", kind.as_str()));
+        }
+        match self
+            .saved
+            .iter_mut()
+            .find(|s| s.kind == kind && s.name == from)
+        {
+            Some(s) => {
+                s.name = to.to_string();
+                Ok(())
+            }
+            None => Err(format!("no {} called {from}", kind.as_str())),
+        }
+    }
+
+    /// Take in another library, keeping everything from both.
+    ///
+    /// A clash renames the *incoming* thing rather than replacing what is here:
+    /// someone else's `warm` is not your `warm`, and an import that quietly
+    /// overwrote yours would be a worse way to lose a palette than the file
+    /// truncation this whole path was built to prevent. An entry identical in
+    /// name *and* value is the same thing twice, and is simply already here.
+    pub fn merge(&mut self, other: Prefs) -> Merged {
+        let mut report = Merged::default();
+        for incoming in other.saved {
+            match self.get(incoming.kind, &incoming.name) {
+                Some(mine) if mine.value == incoming.value => {
+                    report.already += 1;
+                    continue;
+                }
+                Some(_) => {
+                    let name = self.free_name(incoming.kind, &incoming.name);
+                    report.renamed.push((incoming.name.clone(), name.clone()));
+                    self.saved.push(Saved { name, ..incoming });
+                }
+                None => {
+                    report.added += 1;
+                    self.saved.push(incoming);
+                }
+            }
+        }
+        report
+    }
+
     pub fn free_name(&self, kind: Kind, wanted: &str) -> String {
         let wanted = match wanted.trim().is_empty() {
             true => "my palette",
@@ -274,5 +391,127 @@ mod loading {
         let l = Prefs::load(Some(prefs.to_toml()));
         assert_eq!(l.prefs.saved.len(), 1);
         assert!(l.rescue.is_none());
+    }
+}
+
+#[cfg(test)]
+mod sharing {
+    use super::*;
+
+    fn with(entries: &[(&str, &str)]) -> Prefs {
+        let mut p = Prefs::default();
+        for (name, value) in entries {
+            p.save(Kind::Cycle, name, value).expect("saved");
+        }
+        p
+    }
+
+    /// The rule that makes importing safe: what is already here wins its name.
+    #[test]
+    fn an_import_never_overwrites_what_is_here() {
+        let mut mine = with(&[("warm", "(red, orange)")]);
+        let theirs = with(&[("warm", "(pink, brown)")]);
+        let report = mine.merge(theirs);
+        assert_eq!(
+            mine.get(Kind::Cycle, "warm").map(|s| s.value.as_str()),
+            Some("(red, orange)"),
+            "mine, untouched"
+        );
+        assert_eq!(
+            report.renamed.len(),
+            1,
+            "and theirs kept under another name"
+        );
+        let (theirs, here) = &report.renamed[0];
+        assert_eq!(theirs, "warm");
+        assert_ne!(here, "warm");
+        assert!(mine.get(Kind::Cycle, here).is_some(), "and really here");
+    }
+
+    /// Importing the same library twice does not double it.
+    #[test]
+    fn the_same_thing_twice_is_already_here() {
+        let mut mine = with(&[("warm", "(red, orange)")]);
+        let report = mine.merge(with(&[("warm", "(red, orange)")]));
+        assert_eq!(report.already, 1);
+        assert_eq!(mine.of(Kind::Cycle).count(), 1, "still one");
+    }
+
+    #[test]
+    fn renaming_holds_the_same_line_as_saving() {
+        let mut p = with(&[("a", "(red,)"), ("b", "(blue,)")]);
+        assert!(p.rename(Kind::Cycle, "a", "").is_err(), "no empty names");
+        assert!(p.rename(Kind::Cycle, "a", "b").is_err(), "no clashes");
+        assert!(
+            p.rename(Kind::Cycle, "a", "a").is_ok(),
+            "its own name is fine"
+        );
+        p.rename(Kind::Cycle, "a", "c").expect("renamed");
+        assert!(p.get(Kind::Cycle, "c").is_some());
+        assert!(p.get(Kind::Cycle, "a").is_none());
+        assert!(
+            p.rename(Kind::Colormap, "c", "d").is_err(),
+            "kinds are separate"
+        );
+    }
+
+    /// A library survives the round trip it will actually make: written to
+    /// TOML, sent to someone else, read back, merged.
+    #[test]
+    fn a_library_travels() {
+        let mut mine = Prefs::default();
+        mine.save(Kind::Cycle, "warm", "(red, orange)")
+            .expect("saved");
+        mine.save(Kind::Colormap, "mine", "(red, blue)")
+            .expect("saved");
+        mine.save(Kind::Theme, "ocean-ish", "it => it")
+            .expect("saved");
+        let text = mine.to_toml();
+
+        let mut theirs = Prefs::default();
+        let read = Prefs::from_toml(&text).expect("reads back");
+        let report = theirs.merge(read);
+        assert_eq!(report.added, 3, "all three kinds: {}", report.summary());
+        assert_eq!(theirs.of(Kind::Theme).count(), 1);
+        assert_eq!(
+            theirs.to_toml(),
+            text,
+            "and comes out the same as it went in"
+        );
+    }
+}
+
+#[cfg(test)]
+mod what_counts_as_a_library {
+    use super::*;
+
+    /// A file has to say it is one. Every field has a default, so without this
+    /// any TOML at all read as a library with nothing in it -- and dropping a
+    /// `Cargo.toml` on the window was answered with "nothing in that library"
+    /// rather than "that is the wrong file".
+    #[test]
+    fn an_unrelated_toml_is_not_a_library() {
+        let why =
+            Prefs::from_toml("[package]\nname = \"something-else\"\n").expect_err("not a library");
+        assert!(why.contains("not a library"), "{why}");
+    }
+
+    /// Written by hand, with no version line: still a library, because it says
+    /// what a library says.
+    #[test]
+    fn a_hand_written_library_needs_no_version() {
+        let p = Prefs::from_toml(
+            "[[saved]]\nkind = \"cycle\"\nname = \"mine\"\nvalue = \"(red, blue)\"\n",
+        )
+        .expect("a library");
+        assert_eq!(p.version, Prefs::VERSION, "read as the current format");
+        assert_eq!(p.saved.len(), 1);
+    }
+
+    /// An empty library that lilook itself wrote is still one.
+    #[test]
+    fn an_empty_library_lilook_wrote_is_a_library() {
+        let p = Prefs::from_toml(&Prefs::default().to_toml()).expect("a library");
+        assert!(p.saved.is_empty());
     }
 }

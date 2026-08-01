@@ -165,3 +165,68 @@ fn a_palette_previews_every_colour_in_it() {
         assert!(!colors.is_empty(), "{name} previews nothing");
     }
 }
+
+/// The previews paint the colours they were given.
+///
+/// Asserted on egui's own shapes rather than on a screenshot: a capture goes
+/// through an X server and a file format, and while chasing a preview that
+/// *looked* wrong in one it turned out the picture was rotating colour channels,
+/// not the code. Shapes are what the app actually asks for, so they cannot lie
+/// about it.
+#[test]
+fn a_palette_preview_paints_the_palette() {
+    let value = r##"(rgb("#d55e00"), rgb("#e69f00"), rgb("#f0e442"))"##;
+    let painted = fills(|ui| pick::swatches(ui, value));
+    let want = [
+        egui::Color32::from_rgb(0xd5, 0x5e, 0x00),
+        egui::Color32::from_rgb(0xe6, 0x9f, 0x00),
+        egui::Color32::from_rgb(0xf0, 0xe4, 0x42),
+    ];
+    for c in want {
+        assert!(painted.contains(&c), "{c:?} is not among {painted:?}");
+    }
+}
+
+/// A map is painted as a ramp: its own stops, and every shade between them.
+#[test]
+fn a_colour_map_preview_interpolates() {
+    let parts: Vec<String> =
+        pick::cycle_parts(r##"(rgb("#000004"), rgb("#8c2981"), rgb("#fcfdbf"))"##);
+    let painted = fills(|ui| pick::ramp_of(ui, &parts));
+    assert!(
+        painted.len() > 20,
+        "a ramp is drawn column by column, not as three blocks: {}",
+        painted.len()
+    );
+    // Near it, not exactly it: the strip is a column per pixel and the middle
+    // stop only lands on one when the count happens to be odd. Asking for the
+    // exact colour would be asserting an accident of the width.
+    let near_middle = painted.iter().any(|c| {
+        let [r, g, b, _] = c.to_srgba_unmultiplied();
+        r.abs_diff(0x8c) < 24 && g.abs_diff(0x29) < 24 && b.abs_diff(0x81) < 24
+    });
+    assert!(near_middle, "the middle stop is on the strip: {painted:?}");
+    // Between the first two stops, and therefore in neither of them.
+    let between = painted
+        .iter()
+        .any(|c| c.r() > 0x20 && c.r() < 0x80 && c.b() > 0x20 && c.b() < 0x80);
+    assert!(between, "and shades between the stops: {painted:?}");
+}
+
+/// Every solid colour a closure paints, in order.
+fn fills(add: impl FnOnce(&mut egui::Ui)) -> Vec<egui::Color32> {
+    let ctx = egui::Context::default();
+    let mut add = Some(add);
+    let out = ctx.run_ui(egui::RawInput::default(), |ui| {
+        if let Some(add) = add.take() {
+            add(ui)
+        }
+    });
+    out.shapes
+        .into_iter()
+        .filter_map(|s| match s.shape {
+            egui::Shape::Rect(r) if r.fill.a() == 255 => Some(r.fill),
+            _ => None,
+        })
+        .collect()
+}

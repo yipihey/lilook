@@ -711,6 +711,22 @@ impl eframe::App for App {
         if let Some((format, ppi)) = requests.export {
             self.export(&format, ppi);
         }
+        if requests.library_export {
+            // Beside the document, like every other export here, so it travels
+            // with the figure it belongs to. The library itself stays where it
+            // lives -- this is a copy to keep or send on.
+            let at = match &self.path {
+                Some(p) => p.with_file_name("lilook-library.toml"),
+                None => PathBuf::from("lilook-library.toml"),
+            };
+            self.editor.status = match std::fs::write(&at, self.editor.prefs.to_toml()) {
+                Ok(()) => format!(
+                    "wrote {} -- drop it on a lilook window to add it",
+                    at.display()
+                ),
+                Err(why) => format!("could not write {}: {why}", at.display()),
+            };
+        }
         self.pump(&ctx, requests.compile, requests.query);
         self.screenshot_step(&ctx);
     }

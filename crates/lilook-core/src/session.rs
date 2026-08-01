@@ -78,6 +78,12 @@ pub struct Requests {
     /// no file system to have. The shell exports from the document it already
     /// compiled and puts the bytes wherever it can put them.
     pub export: Option<(String, f32)>,
+    /// The user asked for their library as a file they can keep or send on.
+    ///
+    /// A request rather than an action for the same reason `export` is: the
+    /// session has no file system, and in the browser there is none to have --
+    /// the desktop writes it beside the document, the page downloads it.
+    pub library_export: bool,
     /// Messages whose cause the shell should locate by recompiling variants.
     ///
     /// A request rather than an action because it needs a compiler, and because

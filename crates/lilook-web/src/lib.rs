@@ -358,6 +358,14 @@ impl WebApp {
         if let Some((format, ppi)) = requests.export {
             self.editor.status = self.download(&format, ppi);
         }
+        if requests.library_export {
+            // The browser needs this more than the desktop does: `localStorage`
+            // is the only copy and there is no directory to go looking in.
+            self.editor.status = Self::download_bytes(
+                self.editor.prefs.to_toml().as_bytes(),
+                "lilook-library.toml",
+            );
+        }
         if let Some(expr) = requests.query {
             // In process and in the frame, like the compile: there is no thread
             // to wait for, so the answer is already there when the editor next
@@ -394,7 +402,6 @@ impl WebApp {
     /// the rest. The URL is revoked straight away -- the download has already
     /// taken a reference by then.
     fn download(&mut self, format: &str, ppi: f32) -> String {
-        use wasm_bindgen::JsCast;
         let Some(fmt) = lilook_compile::export::Format::of_path(&format!("x.{format}")) else {
             return format!("unknown format {format}");
         };
@@ -405,8 +412,15 @@ impl WebApp {
             Ok(b) => b,
             Err(e) => return e,
         };
+        Self::download_bytes(&bytes, &format!("figure.{}", fmt.extension()))
+    }
+
+    /// Hand bytes to the browser as a file. The page's only way of putting
+    /// something where the user can keep it.
+    fn download_bytes(bytes: &[u8], name: &str) -> String {
+        use wasm_bindgen::JsCast;
         let n = bytes.len();
-        let array = js_sys::Uint8Array::from(bytes.as_slice());
+        let array = js_sys::Uint8Array::from(bytes);
         let parts = js_sys::Array::of1(&array.buffer());
         let Ok(blob) = web_sys::Blob::new_with_u8_array_sequence(&parts) else {
             return "could not build the file".into();
@@ -414,7 +428,6 @@ impl WebApp {
         let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob) else {
             return "could not build a download link".into();
         };
-        let name = format!("figure.{}", fmt.extension());
         let done = (|| -> Option<()> {
             let d = web_sys::window()?.document()?;
             let a = d
@@ -423,13 +436,13 @@ impl WebApp {
                 .dyn_into::<web_sys::HtmlAnchorElement>()
                 .ok()?;
             a.set_href(&url);
-            a.set_download(&name);
+            a.set_download(name);
             a.click();
             Some(())
         })();
         let _ = web_sys::Url::revoke_object_url(&url);
         match done {
-            Some(()) => format!("downloaded {name} ({} KB)", n / 1024),
+            Some(()) => format!("downloaded {name} ({} KB)", n.div_ceil(1024)),
             None => "the browser refused the download".into(),
         }
     }
