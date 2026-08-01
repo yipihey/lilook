@@ -8,6 +8,18 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 
 fn drive(dir: &std::path::Path, requests: &[&str]) -> Vec<String> {
+    drive_raw(dir, requests)
+        .into_iter()
+        .map(|v| {
+            v["result"]["content"][0]["text"]
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| v["result"].to_string())
+        })
+        .collect()
+}
+
+fn drive_raw(dir: &std::path::Path, requests: &[&str]) -> Vec<serde_json::Value> {
     let exe = env!("CARGO_BIN_EXE_lilook-mcp");
     let mut child = Command::new(exe)
         .arg(dir)
@@ -25,19 +37,43 @@ fn drive(dir: &std::path::Path, requests: &[&str]) -> Vec<String> {
         }
     }
     let out = BufReader::new(child.stdout.take().expect("stdout"));
-    let replies: Vec<String> = out
+    let replies = out
         .lines()
         .map_while(Result::ok)
-        .map(|line| {
-            let v: serde_json::Value = serde_json::from_str(&line).expect("json reply");
-            v["result"]["content"][0]["text"]
-                .as_str()
-                .map(str::to_string)
-                .unwrap_or_else(|| v["result"].to_string())
-        })
+        .map(|line| serde_json::from_str(&line).expect("json reply"))
         .collect();
     let _ = child.wait();
     replies
+}
+
+/// `initialize` carries the whole workflow, not just a version string: it is
+/// sent once per session, so this is where the tool-call order and the one
+/// trap (node-id renumbering) live, rather than in every tool's re-sent
+/// description.
+#[test]
+fn initialize_teaches_the_workflow() {
+    let dir = std::env::temp_dir().join("lilook-mcp-init-test");
+    let _ = std::fs::create_dir_all(&dir);
+    let out = drive_raw(&dir, &[r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#]);
+    let instructions = out[0]["result"]["instructions"]
+        .as_str()
+        .expect("instructions string");
+    for tool in [
+        "lilook_doc",
+        "lilook_capabilities",
+        "lilook_describe",
+        "lilook_edit",
+        "lilook_render",
+    ] {
+        assert!(
+            instructions.contains(tool),
+            "missing {tool}: {instructions}"
+        );
+    }
+    assert!(
+        instructions.contains("renumbers"),
+        "the node-id trap must survive: {instructions}"
+    );
 }
 
 /// The whole loop an agent runs to produce a publication-ready figure.

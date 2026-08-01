@@ -84,6 +84,25 @@ fn first_line(doc: &str) -> String {
     }
 }
 
+/// Sent once, in `initialize` -- unlike the tool descriptions, this is not
+/// re-sent every turn, so the per-tool docs stay terse and the workflow (the
+/// order to call them in, and the one trap) lives here instead.
+const INSTRUCTIONS: &str = "\
+Build and edit a lilaq figure in Typst by working this loop:\n\
+1. lilook_doc -- current state: diagrams, series, theme, linked data, source. Call first.\n\
+2. lilook_capabilities -- what lilaq can draw and style, filtered by category or name. Cheap.\n\
+3. lilook_describe -- full parameter detail for the specific names you are about to use. \
+   Never guess a parameter name or value; it is one call away.\n\
+4. lilook_edit -- a batch of ops as one undoable step.\n\
+5. lilook_render -- compile and check: errors (with cause and offered fixes, since lilaq \
+   rarely gives its own errors a source location) and a scene readback -- axis ranges, \
+   scales, point counts. write: \"out.pdf|.svg|.png\" to export; the extension picks the format.\n\
+\n\
+Trap: node ids from lilook_edit are positions in a document-order walk, so an op that \
+inserts text above a node renumbers everything after it. Put ops on existing nodes before \
+theme/fork_theme/style ops in the same batch, or send them as two batches. Use the ids \
+lilook_edit's own reply lists afterward, not ones from a stale lilook_doc.";
+
 /// The five tools. Small on purpose: this text is re-sent every request.
 fn tools() -> Value {
     json!([
@@ -673,7 +692,8 @@ fn main() {
             "initialize" => Ok(json!({
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "lilook", "version": env!("CARGO_PKG_VERSION")}
+                "serverInfo": {"name": "lilook", "version": env!("CARGO_PKG_VERSION")},
+                "instructions": INSTRUCTIONS
             })),
             "tools/list" => Ok(json!({"tools": tools()})),
             "tools/call" => {
