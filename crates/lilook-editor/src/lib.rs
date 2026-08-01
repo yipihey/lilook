@@ -946,11 +946,16 @@ impl Editor {
             Some((_, insert)) => insert.clone(),
             None => c.insert.clone(),
         };
-        // Replace the word being typed rather than appending to it.
-        let written = insert.len();
+        // Replace the word being typed rather than appending to it -- and let the
+        // core fit the result into the argument list, which is where the commas
+        // come from.
+        let (range, insert) = lilook_core::fit_argument(text, start..at, &insert);
+        let start = range.start;
+        // After the value, not after the comma that follows it.
+        let written = insert.len() - usize::from(insert.ends_with(','));
         self.doc.begin("completion");
         self.apply(Intent::ReplaceRange {
-            range: start..at,
+            range,
             value: insert,
         });
         self.doc.commit();

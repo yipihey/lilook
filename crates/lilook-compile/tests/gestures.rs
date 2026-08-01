@@ -1010,3 +1010,77 @@ fn annotations_recover_as_points_and_edit_by_shape() {
     doc.undo();
     assert_eq!(doc.text(), src);
 }
+
+/// A completion accepted in the source pane leaves a document that compiles.
+///
+/// The other half of `offered_arguments_compile`: that one checks the *value*,
+/// this one checks where it lands. A completion is a text edit over the word
+/// being typed, so the argument list it drops into is the list's problem --
+/// `width: 6cm, xscale: "log"` with a series on the next line and no comma
+/// between them is a figure typst refuses, and the report is "expected comma" at
+/// a byte offset. `fit_argument` is what supplies it; this is the proof.
+#[test]
+fn an_accepted_completion_leaves_a_list_that_compiles() {
+    const SCHEMA: &str = lilook_core::schema::BUNDLED;
+    let schema = lilook_core::Schema::from_json(SCHEMA).expect("bundled schema");
+    let mut b = Backend::new(std::env::temp_dir(), "");
+
+    // A caret between an argument and the series that follows it: the position
+    // that needs a comma *after* whatever is accepted.
+    let base = r#"#import "@preview/lilaq:0.6.0" as lq
+#set page(width: auto, height: auto, margin: 5pt)
+#lq.diagram(
+  width: 6cm,
+  lq.plot((1, 2, 3), (1, 2, 4)),
+)
+"#;
+    let caret = base.find("\n  lq.plot").expect("between arguments") + 1;
+    let session = lilook_core::Session::new(base, schema);
+    let offers = session.completions(caret);
+    assert!(offers.len() > 5, "the caret takes arguments: {offers:?}");
+
+    let mut checked = 0;
+    for c in offers.iter().take(14) {
+        // Exactly what the pane does with a click: fit the offer to the list,
+        // then replace.
+        let (range, value) = lilook_core::fit_argument(base, caret..caret, &c.insert);
+        if value.trim_end().ends_with(':') {
+            continue; // a name whose value the user has still to type
+        }
+        let mut src = base.to_string();
+        src.replace_range(range, &value);
+        let r = b.render(&src, 1.0);
+        if skip(&r) {
+            return;
+        }
+        assert!(
+            !r.failed(),
+            "accepting `{}` leaves a document that will not compile: {:?}\n{src}",
+            c.label,
+            r.errors().map(|d| d.message.clone()).collect::<Vec<_>>()
+        );
+        checked += 1;
+    }
+    assert!(checked >= 5, "only {checked} completions were accepted");
+
+    // And the comma that was missing *before* the word being typed: mid-edit
+    // source that does not compile until the offer is fitted into it.
+    let mid = r#"#import "@preview/lilaq:0.6.0" as lq
+#set page(width: auto, height: auto, margin: 5pt)
+#lq.diagram(
+  width: 6cm
+  xsc
+  lq.plot((1, 2, 3), (1, 2, 4)),
+)
+"#;
+    let word = mid.find("xsc").expect("the word being typed");
+    let (range, value) = lilook_core::fit_argument(mid, word..word + 3, "xscale: \"log\"");
+    let mut src = mid.to_string();
+    src.replace_range(range, &value);
+    let r = b.render(&src, 1.0);
+    assert!(
+        !r.failed(),
+        "a missing comma before the caret survived: {:?}\n{src}",
+        r.errors().map(|d| d.message.clone()).collect::<Vec<_>>()
+    );
+}

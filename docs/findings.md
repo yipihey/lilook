@@ -2126,3 +2126,35 @@ everything that is not one.
 Neither the source pane nor the inspector got to keep its own version of any of
 this: both read `argument_offers` and both draw `pick::popup`, so `xscale scale
 linear log symlog datetime` is one line in the text pane too.
+
+## A completion is a text edit, and a text edit does not know it is in a list
+
+2026-08-01, reported. Accepting `xscale: "log"` between `width: 6cm,` and the
+series on the next line produced a figure typst refused: "expected comma (byte
+168)". The completion replaces the word being typed -- that is what makes it a
+completion rather than a regeneration -- and a byte-range replacement knows
+nothing about the argument list it lands in.
+
+`fit_argument` supplies the separators, and the shape of it is the interesting
+part. **The comma before belongs against the argument it follows, not at the
+start of the line the caret is on.** So the replaced range is widened backwards
+to the end of the previous token and the whitespace between is reproduced:
+
+```
+  width: 6cm          width: 6cm,
+  xsc          ->       xscale: "log"
+```
+
+rather than `width: 6cm\n  , xscale: "log"`, which is what appending to the
+value would have written.
+
+Three things are deliberately left alone. A completion that is not `name: value`
+-- a value inside an argument, `calc.sqrt(` in a data slot -- is not in a list
+and gets nothing. A name whose value the user has still to type ends in a colon,
+and `xlabel: ,` is worse than the miss it fixes. And a trailing comma before `)`
+is not added: the argument-insertion path already learned that lesson once, in
+the trap `InsertNamedArg` is written around.
+
+The inspector never had this bug, because `InsertNamedArg` computes its own
+separator from the call site. Two paths write arguments and only one of them
+knew where it was.

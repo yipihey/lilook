@@ -1061,6 +1061,65 @@ pub fn check_expr(value: &str) -> Result<(), String> {
     }
 }
 
+/// Fit an inserted argument into the argument list around it, commas and all.
+///
+/// A completion replaces the word being typed, which is a *text* edit that knows
+/// nothing about the list it lands in. `height: 4cm, xsc` completes to
+/// `xscale: "log"` with another argument on the next line, and typst answers
+/// "expected comma" at a byte offset -- a poor reply to a click. The same goes
+/// the other way: someone who forgot the comma before the word they are typing
+/// gets it supplied rather than reported.
+///
+/// Returns the range to replace and the text to put there. The range may begin
+/// *earlier* than the one asked for, because a comma belongs immediately after
+/// the argument it follows and not at the start of the next line -- the
+/// whitespace between them is reproduced so the layout survives.
+///
+/// Anything that is not a `name: value` is left exactly as it came: a value
+/// completion inside an argument, a `calc.sqrt(` in a data slot, a bare name a
+/// user is still typing the value for.
+pub fn fit_argument(text: &str, range: Range<usize>, value: &str) -> (Range<usize>, String) {
+    if !is_named_arg(value) {
+        return (range, value.to_string());
+    }
+    let mut out = value.to_string();
+    let mut start = range.start;
+
+    let before = &text[..range.start];
+    let trimmed = before.trim_end();
+    // Nothing before it, an open paren, or a comma: already separated. A colon
+    // means this is a value position, where a comma would be nonsense.
+    if !matches!(
+        trimmed.chars().last(),
+        None | Some('(') | Some(',') | Some(':')
+    ) {
+        start = trimmed.len();
+        out = format!(",{}{out}", &before[trimmed.len()..]);
+    }
+
+    // A name whose value is still to be typed gets no trailing comma: `xlabel: ,`
+    // is worse than what it replaced.
+    let unfinished = out.trim_end().ends_with(':');
+    let after = text[range.end..].trim_start();
+    if !unfinished && !matches!(after.chars().next(), None | Some(',') | Some(')')) {
+        out.push(',');
+    }
+    (start..range.end, out)
+}
+
+/// `name:` before anything else -- the shape that belongs to an argument list
+/// and therefore needs separating from its neighbours.
+fn is_named_arg(value: &str) -> bool {
+    let v = value.trim_start();
+    let name: usize = v
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .map(char::len_utf8)
+        .sum();
+    let rest = v[name..].trim_start();
+    name > 0 && rest.starts_with(':') && !rest.starts_with("::")
+}
+
 /// Does this value mean the same thing in the user's document as where it was
 /// written?
 ///

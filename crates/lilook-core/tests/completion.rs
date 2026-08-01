@@ -270,3 +270,68 @@ fn every_helper_offered_is_real_typst() {
         );
     }
 }
+
+/// An accepted completion lands in an argument list, and lists have commas.
+///
+/// The completion replaces the word being typed, which is a text edit that knows
+/// nothing about its neighbours -- so `height: 4cm, xsc` became
+/// `height: 4cm, xscale: "log"` with `lq.plot(..)` on the next line and no comma
+/// between them. Typst says "expected comma (byte 168)", which is a poor answer
+/// to a click. Each case here is a real caret position with a real offer.
+#[test]
+fn an_accepted_completion_keeps_the_argument_list_separated() {
+    let fit = |text: &str, word: &str, value: &str| {
+        let at = text.find(word).unwrap_or_else(|| panic!("no {word:?}")) + word.len();
+        let (range, out) = lilook_core::fit_argument(text, at - word.len()..at, value);
+        let mut done = text.to_string();
+        done.replace_range(range, &out);
+        done
+    };
+
+    // Another argument follows, so the new one needs a comma after it.
+    assert_eq!(
+        fit(
+            "#lq.diagram(width: 6cm, xsc\n  lq.plot(x, y),\n)",
+            "xsc",
+            "xscale: \"log\""
+        ),
+        "#lq.diagram(width: 6cm, xscale: \"log\",\n  lq.plot(x, y),\n)"
+    );
+    // The comma before it was missing, and belongs against the argument it
+    // follows -- not at the start of the line the caret is on.
+    assert_eq!(
+        fit(
+            "#lq.diagram(\n  width: 6cm\n  xsc\n)",
+            "xsc",
+            "xscale: \"log\""
+        ),
+        "#lq.diagram(\n  width: 6cm,\n  xscale: \"log\"\n)"
+    );
+    // Nothing on either side to separate from.
+    assert_eq!(
+        fit("#lq.diagram(xsc)", "xsc", "xscale: \"log\""),
+        "#lq.diagram(xscale: \"log\")"
+    );
+    // A name whose value is still to be typed must not be handed a comma.
+    assert_eq!(
+        fit(
+            "#lq.diagram(width: 6cm, xla\n  lq.plot(x, y),\n)",
+            "xla",
+            "xlabel: "
+        ),
+        "#lq.diagram(width: 6cm, xlabel: \n  lq.plot(x, y),\n)"
+    );
+    // Not an argument at all: a value inside one, and a helper in a data slot.
+    assert_eq!(
+        fit(
+            "#lq.colormesh(x, y, z, map: viri)",
+            "viri",
+            "color.map.viridis"
+        ),
+        "#lq.colormesh(x, y, z, map: color.map.viridis)"
+    );
+    assert_eq!(
+        fit("#lq.plot(calc, y)", "calc", "calc.sqrt("),
+        "#lq.plot(calc.sqrt(, y)"
+    );
+}
