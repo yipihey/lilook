@@ -71,6 +71,60 @@ pub fn bundled_files() -> MemoryFiles {
     files
 }
 
+/// The user's library in a page: the same TOML the desktop keeps in a file,
+/// kept in `localStorage` instead.
+///
+/// A browser has no file system, which is exactly why `lilook-core` has none
+/// either -- the shape of a library is the core's, and where it lives is the
+/// shell's. Per browser and per origin, so it does not follow anyone between
+/// machines; the format is the desktop's, so a copied file does.
+mod library {
+    const KEY: &str = "lilook.prefs";
+
+    #[cfg(target_arch = "wasm32")]
+    fn storage() -> Option<web_sys::Storage> {
+        web_sys::window()?.local_storage().ok().flatten()
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn load() -> (lilook_core::Prefs, Option<String>) {
+        let Some(text) = storage().and_then(|s| s.get_item(KEY).ok().flatten()) else {
+            return (lilook_core::Prefs::default(), None);
+        };
+        match lilook_core::Prefs::from_toml(&text) {
+            Ok(prefs) => (prefs, None),
+            // Kept, not overwritten: the next save would replace a library the
+            // user may want to rescue by hand.
+            Err(why) => (lilook_core::Prefs::default(), Some(why)),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn store(prefs: &lilook_core::Prefs) -> Result<(), String> {
+        let storage = storage().ok_or("this browser has no local storage")?;
+        storage
+            .set_item(KEY, &prefs.to_toml())
+            // Private browsing, or a full quota. Either way the user should hear
+            // it once rather than lose palettes silently.
+            .map_err(|_| "local storage refused the write".to_string())
+    }
+
+    // This crate's own tests run natively -- they drive the browser app through
+    // a real egui context -- and a `web_sys` call off wasm is a panic, not a
+    // stub. So the page's storage exists only where the page does, and a native
+    // run starts from an empty library and keeps it in memory.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn load() -> (lilook_core::Prefs, Option<String>) {
+        let _ = KEY;
+        (lilook_core::Prefs::default(), None)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn store(_prefs: &lilook_core::Prefs) -> Result<(), String> {
+        Ok(())
+    }
+}
+
 pub struct WebApp {
     editor: Editor,
     backend: Backend<MemoryFiles>,
@@ -108,7 +162,15 @@ impl WebApp {
 
     pub fn new() -> Self {
         let schema = Schema::from_json(SCHEMA).expect("bundled schema");
-        let editor = Editor::new(EXAMPLES[0].1, schema);
+        let mut editor = Editor::new(EXAMPLES[0].1, schema);
+        // The toolbar carries the name and the about menu behind it, so the
+        // panel does not repeat them.
+        editor.layout.about = false;
+        let (prefs, complaint) = library::load();
+        editor.prefs = prefs;
+        if let Some(why) = complaint {
+            editor.status = format!("your library could not be read -- {why}");
+        }
         let files = bundled_files();
         let backend = Backend::with_loader(files, "");
         WebApp {
@@ -150,7 +212,9 @@ impl WebApp {
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         let mut load = None;
         ui.horizontal_wrapped(|ui| {
-            ui.strong("lilook");
+            // The name is the about menu: this shell says `lilook` here, so the
+            // editor does not say it again a row below.
+            self.editor.about_ui(ui);
             ui.label("·");
             for (i, (name, _)) in EXAMPLES.iter().enumerate() {
                 if ui.selectable_label(self.example == i, *name).clicked() {
@@ -191,6 +255,21 @@ impl eframe::App for WebApp {
 }
 
 impl WebApp {
+    /// Write the library back when it changed, and say so once.
+    ///
+    /// The flag is cleared whatever the outcome, so a browser that refuses the
+    /// write -- private mode, a full quota -- reports it once instead of on
+    /// every frame for the rest of the session.
+    fn store_library(&mut self) {
+        if !self.editor.prefs_dirty {
+            return;
+        }
+        self.editor.prefs_dirty = false;
+        if let Err(why) = library::store(&self.editor.prefs) {
+            self.editor.status = format!("your library could not be saved -- {why}");
+        }
+    }
+
     /// One frame. Split out of the `eframe::App` impl so a native test can
     /// drive it: the browser pane is the only thing that cannot be checked
     /// without a browser, and everything else should not need one.
@@ -211,6 +290,7 @@ impl WebApp {
         egui::containers::Panel::top(egui::Id::new("toolbar")).show(ui, |ui| self.toolbar(ui));
 
         let requests = self.editor.ui(ui, now, |_ui| {});
+        self.store_library();
         if requests.save {
             self.editor.status =
                 "this is the browser build — use “copy source”, or edit the text below".into();

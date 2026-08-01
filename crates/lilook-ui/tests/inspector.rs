@@ -248,6 +248,7 @@ fn a_data_slot_renders_in_every_link_state() {
         let insp = RefCell::new(Inspector::new(f).with_context(Context {
             recovered_points,
             slot_sources: &slot_sources,
+            ..Default::default()
         }));
         egui::__run_test_ui(|ui| insp.borrow_mut().ui(ui, call));
         // Drawing a state must never itself be an edit.
@@ -621,4 +622,109 @@ fn a_colormap_is_pickable_even_though_its_value_is_an_expression() {
         lilook_ui::inspector::control_of(Some(cycle), Editability::Opaque, "petroff10"),
         Control::Cycle
     );
+}
+
+/// A palette of the user's own: built in the inspector, kept in the library, and
+/// applied to the figure by the same click.
+///
+/// Two events, on purpose. `SavePref` puts it on the shelf and `Set` writes its
+/// colours into the document -- because the shelf is not what draws the figure.
+/// Delete the library and this document still means exactly what it says.
+#[test]
+fn the_cycle_editor_saves_a_palette_and_applies_it() {
+    use lilook_core::Kind;
+
+    let schema = schema();
+    let doc = Document::new(
+        "#import \"@preview/lilaq:0.6.0\" as lq\n#lq.diagram(cycle: (red, blue), lq.plot((1,2),(1,2)))\n",
+    );
+    let call = doc
+        .calls()
+        .iter()
+        .find(|c| c.short_name() == "diagram")
+        .expect("a diagram");
+    let f = schema.function_for_callee(&call.callee);
+
+    let ctx = egui::Context::default();
+    let frame = |input: egui::RawInput, open: bool| {
+        let mut insp = Inspector::new(f);
+        let _ = ctx.run_ui(input, |ui| {
+            if open {
+                // Exactly what the cycle menu does.
+                lilook_ui::inspector::open_cycle_editor(
+                    ui,
+                    call.id,
+                    "cycle",
+                    "my palette",
+                    "(red, blue)",
+                );
+            }
+            insp.ui(ui, call);
+        });
+        insp.events
+    };
+
+    // Closed, it draws nothing and asks for nothing.
+    assert!(frame(egui::RawInput::default(), false).is_empty());
+    // Opening one is not an edit either.
+    assert!(frame(egui::RawInput::default(), true).is_empty());
+
+    let id = lilook_ui::inspector::cycle_editor_id(call.id);
+    let mut save = egui::Rect::NOTHING;
+    for _ in 0..4 {
+        assert!(frame(egui::RawInput::default(), false).is_empty());
+        save = ctx
+            .read_response(id.with("save"))
+            .expect("a save button")
+            .rect;
+    }
+
+    let at = save.center();
+    let mut input = egui::RawInput::default();
+    input.events.push(egui::Event::PointerMoved(at));
+    for pressed in [true, false] {
+        input.events.push(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        });
+    }
+    let events = frame(input, false);
+
+    assert_eq!(
+        events,
+        vec![
+            UiEvent::SavePref {
+                kind: Kind::Cycle,
+                // Named on opening, so the save is never refused for a field
+                // nobody reached.
+                name: "my palette".into(),
+                value: "(red, blue)".into(),
+            },
+            UiEvent::Set {
+                node: call.id,
+                param: "cycle".into(),
+                value: "(red, blue)".into(),
+            },
+        ],
+        "saved to the library and applied to the figure, in one click"
+    );
+    // And it closes: the palette is made, so the panel goes away and the same
+    // click lands on nothing.
+    let click = |at: egui::Pos2| {
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::PointerMoved(at));
+        for pressed in [true, false] {
+            input.events.push(egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            });
+        }
+        input
+    };
+    assert!(frame(egui::RawInput::default(), false).is_empty());
+    assert!(frame(click(at), false).is_empty(), "the editor is gone");
 }

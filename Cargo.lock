@@ -2231,6 +2231,7 @@ version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
+ "toml 0.8.23",
  "typst-syntax",
  "typstyle-core",
 ]

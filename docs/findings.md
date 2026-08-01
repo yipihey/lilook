@@ -2158,3 +2158,44 @@ the trap `InsertNamedArg` is written around.
 The inspector never had this bug, because `InsertNamedArg` computes its own
 separator from the call site. Two paths write arguments and only one of them
 knew where it was.
+
+## A library of your own, and the rule that keeps it safe
+
+2026-08-01. Palettes, colour maps and themes you have saved, offered beside
+lilaq's. The interesting part is not the editor, it is the constraint the whole
+feature is built inside.
+
+**A library is a shelf of offers. It is never an input to rendering.** Choosing a
+saved palette writes its colours into the document, exactly as choosing a
+built-in one does — so the document still says everything about how the figure
+looks, and a co-author who has never seen the library gets the same picture.
+Delete `prefs.toml` and no figure changes. The moment a figure needed the library
+to draw, every other property this tool is built on would go with it: a document
+you can paste into a manuscript, a compile that means the same thing everywhere,
+a `git diff` that shows what changed.
+
+That rule decides the design. `SavePref` is not an edit and opens no transaction.
+The renderer never sees `Prefs`. And the value is checked with `check_expr` on
+the way *in*, because a library that can hold something unwritable is a library
+that breaks a figure later, at a moment nobody connects with having saved it.
+
+**One table, three kinds.** A palette, a colour map and a theme are the same
+thing — a name bound to a typst expression, offered wherever that kind of
+expression is chosen — so they share `Saved { kind, name, value }` and one file.
+Three tables would be three formats to migrate the first time one of them grew a
+field. The cycle editor is the first editor over that table; the other two slot
+in without a format change.
+
+**Where it lives is the shell's business.** `lilook-core` has no file system,
+which is exactly what lets the same editor run in a page: the desktop keeps the
+library in the platform's config directory, the browser in `localStorage`, and
+both read and write the same TOML. The core hands over a `Prefs` and a dirty
+flag, the way it hands over an `Extraction` for a figure written to disk.
+
+Two things this caught while it was being built, both by doing it for real rather
+than by reasoning about it. A derived `Default` stamped a fresh library
+`version = 0` — a format that never existed, which a later lilook would have had
+to guess the meaning of. And `web_sys` off wasm is a panic rather than a stub, so
+the browser's storage is behind `cfg(target_arch = "wasm32")` with a native
+fallback: this crate's own tests run natively, and they start from an empty
+library rather than from a panic.

@@ -21,5 +21,8 @@ typstyle-core = { workspace = true }
 typst-syntax = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The user library is a config file, so it is written in the format people
+# already hand-edit next to their typst.toml rather than in JSON.
+toml = { workspace = true }
 
 [dev-dependencies]

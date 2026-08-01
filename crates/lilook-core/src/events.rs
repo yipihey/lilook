@@ -90,4 +90,17 @@ pub enum UiEvent {
         param: String,
         name: String,
     },
+    /// Keep a value in the user's own library, under a name.
+    ///
+    /// Not an edit: the document is untouched until the saved value is *chosen*,
+    /// which is an ordinary `Set`. A library is a shelf of offers, and putting
+    /// something on the shelf changes no figure -- see [`crate::Prefs`].
+    SavePref {
+        kind: crate::Kind,
+        name: String,
+        value: String,
+    },
+    /// Take one off the shelf. Also not an edit: a figure that already uses it
+    /// carries the value, not the name.
+    RemovePref { kind: crate::Kind, name: String },
 }

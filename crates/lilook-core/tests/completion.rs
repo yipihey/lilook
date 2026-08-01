@@ -335,3 +335,82 @@ fn an_accepted_completion_keeps_the_argument_list_separated() {
         "#lq.plot(calc.sqrt(, y)"
     );
 }
+
+/// The user's own library: saved, read back, and offered beside the built-ins.
+///
+/// A library is a shelf of offers and nothing more. Saving a palette changes no
+/// figure, and choosing one writes its colours into the document exactly as
+/// choosing a built-in does -- so a document means the same thing on a machine
+/// that has never seen this library. That property is why nothing here is ever
+/// read while rendering.
+#[test]
+fn a_saved_palette_is_offered_and_survives_the_round_trip() {
+    use lilook_core::{Kind, Prefs};
+
+    let mut prefs = Prefs::default();
+    assert_eq!(
+        prefs.version,
+        Prefs::VERSION,
+        "an empty library is a current one, not format zero"
+    );
+    prefs
+        .save(Kind::Cycle, "  mine  ", r##"(rgb("#112233"), luma(50%))"##)
+        .expect("a palette of two colours");
+    assert_eq!(prefs.of(Kind::Cycle).count(), 1);
+    assert!(
+        prefs.get(Kind::Cycle, "mine").is_some(),
+        "the name is trimmed"
+    );
+
+    // Saving the same name again is an edit, not a second entry.
+    prefs
+        .save(Kind::Cycle, "mine", r##"(rgb("#112233"),)"##)
+        .unwrap();
+    assert_eq!(prefs.of(Kind::Cycle).count(), 1);
+
+    // Nothing unwritable can get in: the library accepts what the buffer does.
+    assert!(prefs.save(Kind::Cycle, "broken", "(rgb(").is_err());
+    assert!(
+        prefs.save(Kind::Cycle, "  ", "(red,)").is_err(),
+        "needs a name"
+    );
+
+    // Kinds do not collide, and a free name is found by counting up.
+    prefs
+        .save(Kind::Colormap, "mine", "color.map.magma")
+        .unwrap();
+    assert_eq!(prefs.of(Kind::Cycle).count(), 1);
+    assert_eq!(prefs.free_name(Kind::Cycle, "mine"), "mine 2");
+    assert_eq!(prefs.free_name(Kind::Cycle, "other"), "other");
+
+    // Written down and read back, byte for byte.
+    let text = prefs.to_toml();
+    let back = Prefs::from_toml(&text).expect("what we just wrote");
+    assert_eq!(back, prefs, "{text}");
+    // A library from the future is reported rather than silently truncated.
+    assert!(Prefs::from_toml("version = 99").is_err());
+
+    // And it reaches the menus: a saved palette is offered where cycles are.
+    let mut s = session();
+    s.prefs = prefs;
+    let names: Vec<String> = s
+        .completions(at("color.map.viridis") + 4)
+        .into_iter()
+        .map(|c| c.label)
+        .collect();
+    assert!(!names.contains(&"mine".to_string()), "a map is not a cycle");
+
+    // Saving through the event stream is what the editor does, and it marks the
+    // library for the shell to store.
+    s.handle(
+        vec![lilook_core::UiEvent::SavePref {
+            kind: Kind::Cycle,
+            name: "from the ui".into(),
+            value: "(red, blue)".into(),
+        }],
+        0.0,
+    );
+    assert!(s.prefs_dirty, "the shell has something to write");
+    assert!(s.prefs.get(Kind::Cycle, "from the ui").is_some());
+    assert_eq!(s.doc.text(), SRC, "saving a palette is not an edit");
+}

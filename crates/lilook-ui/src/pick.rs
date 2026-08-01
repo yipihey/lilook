@@ -389,6 +389,16 @@ pub fn colormap_stops(map: &str) -> Vec<Color32> {
 /// first and last entries carrying a bracket, neither parses, and Okabe-Ito
 /// showed six of its eight colours.
 pub fn cycle_colors(expr: &str) -> Vec<Color32> {
+    cycle_parts(expr)
+        .iter()
+        .filter_map(|p| parse_color(p))
+        .collect()
+}
+
+/// The elements of a palette, as the source text of each -- which is what an
+/// editor needs: `rgb("#4477aa")` must come back out the way it went in, not as
+/// whatever a colour picker would print for the same pixels.
+pub fn cycle_parts(expr: &str) -> Vec<String> {
     let Some(inner) = expr
         .trim()
         .strip_prefix('(')
@@ -398,8 +408,19 @@ pub fn cycle_colors(expr: &str) -> Vec<Color32> {
     };
     inner
         .split(',')
-        .filter_map(|part| parse_color(part.trim()))
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
         .collect()
+}
+
+/// A palette written back as typst: an array, and a one-element array in typst
+/// keeps its comma -- `(red)` is a colour in brackets, `(red,)` is a list of one.
+pub fn cycle_array(parts: &[String]) -> String {
+    match parts.len() {
+        1 => format!("({},)", parts[0]),
+        _ => format!("({})", parts.join(", ")),
+    }
 }
 
 fn hex(s: &str) -> Color32 {

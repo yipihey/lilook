@@ -1084,3 +1084,59 @@ fn an_accepted_completion_leaves_a_list_that_compiles() {
         r.errors().map(|d| d.message.clone()).collect::<Vec<_>>()
     );
 }
+
+/// A palette out of the user's own library draws a figure.
+///
+/// The library stores typst, so the same rule applies to it as to everything
+/// else lilook writes: it has to compile, not merely reparse. `Prefs::save`
+/// refuses what will not parse; this is the other half, and it is the half that
+/// caught `cycle: "petroff10"` -- a string where lilaq wanted an array, which
+/// parses perfectly.
+///
+/// And the property that makes a library safe at all: the *document* carries the
+/// colours. Rendering never reads the library, so the figure below is drawn from
+/// its own source and would look the same to someone who has never seen it.
+#[test]
+fn a_saved_palette_draws() {
+    use lilook_core::{Kind, Prefs};
+
+    let mut b = Backend::new(std::env::temp_dir(), "");
+    let mut prefs = Prefs::default();
+    // Built the way the editor builds one: colours as source text, joined.
+    let parts = ["rgb(\"#4477aa\")".to_string(), "luma(30%)".to_string()];
+    let value = lilook_ui::pick::cycle_array(&parts);
+    prefs
+        .save(Kind::Cycle, "mine", &value)
+        .expect("a palette lilook would store");
+
+    let saved = prefs.get(Kind::Cycle, "mine").expect("just saved");
+    let src = format!(
+        r#"#import "@preview/lilaq:0.6.0" as lq
+#set page(width: auto, height: auto, margin: 5pt)
+#lq.diagram(
+  cycle: {},
+  lq.plot((1, 2, 3), (1, 2, 4)),
+  lq.plot((1, 2, 3), (2, 3, 5)),
+)
+"#,
+        saved.value
+    );
+    let r = b.render(&src, 1.0);
+    if skip(&r) {
+        return;
+    }
+    assert!(
+        !r.failed(),
+        "a palette from the library does not draw: {:?}\n{src}",
+        r.errors().map(|d| d.message.clone()).collect::<Vec<_>>()
+    );
+
+    // A one-colour palette is an array of one, which in typst keeps its comma.
+    let one = lilook_ui::pick::cycle_array(&parts[..1]);
+    assert_eq!(one, "(rgb(\"#4477aa\"),)");
+    let src = src.replace(&saved.value, &one);
+    assert!(
+        !b.render(&src, 1.0).failed(),
+        "a palette of one colour does not draw:\n{src}"
+    );
+}

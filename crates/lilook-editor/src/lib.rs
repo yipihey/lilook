@@ -37,6 +37,12 @@ pub struct Layout {
     pub tree: bool,
     pub inspector: bool,
     pub source: bool,
+    /// Whether the editor puts its own name at the top of the panel. A shell
+    /// with a toolbar has already said `lilook` up there, and saying it twice --
+    /// once as a heading and once as a row with a version beside it -- is one
+    /// name too many. Such a shell turns this off and calls [`Editor::about_ui`]
+    /// wherever its own name goes.
+    pub about: bool,
 }
 
 impl Default for Layout {
@@ -45,6 +51,7 @@ impl Default for Layout {
             tree: true,
             inspector: true,
             source: true,
+            about: true,
         }
     }
 }
@@ -311,7 +318,9 @@ impl Editor {
                 .default_size(250.0)
                 .resizable(true)
                 .show(ui, |ui| {
-                    self.about_ui(ui);
+                    if self.layout.about {
+                        self.about_ui(ui);
+                    }
                     if self.layout.tree {
                         // Bounded when the inspector shares the column, or a long
                         // figure pushes it off the bottom.
@@ -470,6 +479,7 @@ impl Editor {
                                 })
                                 .map(|s| s.points.len()),
                             slot_sources: &sources,
+                            saved: &self.prefs.saved,
                         };
                         let mut insp = Inspector::new(f).with_context(context);
                         insp.ui(ui, &call);
@@ -1368,29 +1378,32 @@ impl Editor {
         }
     }
 
-    /// Who made this, under what licence, and where to find it.
+    /// Who made this, under what licence, and where to find it -- **on the name
+    /// itself**.
     ///
-    /// Collapsed by default: it is the answer to a question asked once, and a
-    /// permanent banner would cost the figure space every day to answer it.
-    fn about_ui(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.strong("lilook");
-            ui.weak(format!("v{}", env!("CARGO_PKG_VERSION")));
-            ui.menu_button("ⓘ", |ui| {
-                ui.set_max_width(260.0);
-                ui.label(format!("lilook {}", env!("CARGO_PKG_VERSION")));
-                ui.weak(format!("built {}", BUILD_DATE));
-                ui.separator();
-                ui.label("© Tom Abel");
-                ui.weak("MIT licence");
-                ui.separator();
-                ui.hyperlink_to(
-                    "github.com/yipihey/lilook",
-                    "https://github.com/yipihey/lilook",
-                );
-                ui.weak("figures for lilaq, in Typst");
-            });
-        });
+    /// The answer to a question asked once, so it costs no permanent space: the
+    /// word `lilook` is the menu. It used to be a row of its own -- the name, the
+    /// version, and an ⓘ button that rendered as a tofu box in the browser
+    /// because the bundled fonts have no such glyph -- directly under a shell
+    /// that had already said `lilook` at the top of the window. One name, one
+    /// place, and a shell that draws its own can put this behind that one.
+    pub fn about_ui(&mut self, ui: &mut egui::Ui) -> egui::Response {
+        ui.menu_button(egui::RichText::new("lilook").strong(), |ui| {
+            ui.set_max_width(260.0);
+            ui.label(format!("lilook {}", env!("CARGO_PKG_VERSION")));
+            ui.weak(format!("built {}", BUILD_DATE));
+            ui.separator();
+            ui.label("© Tom Abel");
+            ui.weak("MIT licence");
+            ui.separator();
+            ui.hyperlink_to(
+                "github.com/yipihey/lilook",
+                "https://github.com/yipihey/lilook",
+            );
+            ui.weak("figures for lilaq, in Typst");
+        })
+        .response
+        .on_hover_text(format!("lilook {}", env!("CARGO_PKG_VERSION")))
     }
 
     /// The two settings that decide whether a figure survives being put in a

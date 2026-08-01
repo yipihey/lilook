@@ -43,6 +43,10 @@ pub struct Context<'a> {
     /// rather than per call because x and y link independently: x can come from
     /// one file's column and y from another's.
     pub slot_sources: &'a [SlotSource],
+    /// The user's own palettes and colour maps, offered beside the built-in
+    /// ones. Borrowed, and empty by default: an inspector with no library is the
+    /// same inspector with a shorter menu.
+    pub saved: &'a [lilook_core::Saved],
 }
 
 /// Adapt a control to the value actually written there.
@@ -179,6 +183,7 @@ impl<'a> Inspector<'a> {
             self.argument(ui, call, arg);
         }
 
+        self.cycle_editor(ui, call);
         self.add_argument(ui, call);
     }
 
@@ -397,43 +402,93 @@ impl<'a> Inspector<'a> {
                         ev.push(set(node, &name, v));
                     }
                 }
-                // The palette every series in this diagram draws from.
+                // The palette every series in this diagram draws from: the
+                // user's own first, then lilaq's.
                 Control::Cycle => {
                     let current = arg.text.trim().to_string();
-                    let label = lilook_core::CYCLES
+                    let mine: Vec<(&str, &str, &str)> = self
+                        .context
+                        .saved
                         .iter()
-                        .find(|(_, expr, _)| *expr == current)
-                        .map(|(n, _, _)| n.to_string())
+                        .filter(|s| s.kind == lilook_core::Kind::Cycle)
+                        .map(|s| (s.name.as_str(), s.value.as_str(), "yours"))
+                        .collect();
+                    let label = mine
+                        .iter()
+                        .map(|(n, expr, _)| (*n, *expr))
+                        .chain(lilook_core::CYCLES.iter().map(|(n, expr, _)| (*n, *expr)))
+                        .find(|(_, expr)| *expr == current)
+                        .map(|(n, _)| n.to_string())
                         .unwrap_or_else(|| match current.len() > 18 {
                             true => "custom".into(),
                             false => current.clone(),
                         });
                     let mut picked = None;
+                    let mut edit = None;
                     egui::ComboBox::from_id_salt((node, &name))
                         .selected_text(&label)
                         .width(210.0)
                         .show_ui(ui, |ui| {
-                            for (n, expr, note) in lilook_core::CYCLES {
+                            let builtin = lilook_core::CYCLES
+                                .iter()
+                                .map(|(n, expr, note)| (*n, *expr, *note));
+                            for (i, (n, expr, note)) in
+                                mine.iter().copied().chain(builtin).enumerate()
+                            {
                                 // Swatches included, for the same reason the
                                 // colormap ramp is.
                                 let r = pick::click_row(
                                     ui,
-                                    ui.id().with(("cycle", n)),
-                                    label == *n,
+                                    ui.id().with(("cycle", i)),
+                                    label == n,
                                     |ui| {
                                         swatches(ui, expr);
-                                        ui.label(*n);
+                                        ui.label(n);
+                                        if note == "yours"
+                                            && pick::chip(ui, ui.id().with(("forget", i)), "×")
+                                                .on_hover_text("remove from your library")
+                                                .clicked()
+                                        {
+                                            edit = Some(Edit::Forget(n.to_string()));
+                                        }
                                     },
                                 );
-                                if r.on_hover_text(*note).clicked() {
+                                if r.on_hover_text(note).clicked() {
                                     picked = Some(expr.to_string());
                                 }
                             }
                         });
+                    // Beside the menu rather than in it: a combo box scrolls its
+                    // own list, and an action at the bottom of one is an action
+                    // nobody finds.
+                    if pick::chip(ui, ui.id().with((node, "new-palette")), "new…")
+                        .on_hover_text("build a palette of your own, from this one")
+                        .clicked()
+                    {
+                        edit = Some(Edit::Open(current.clone()));
+                    }
                     if let Some(v) = picked {
                         // A named cycle is a string; a list of colours is an
                         // array and must not be quoted.
                         ev.push(set(node, &name, lilook_core::cycle_source(&v)));
+                    }
+                    match edit {
+                        Some(Edit::Open(from)) => {
+                            // Named before it is opened, so `save` is never
+                            // refused for a field the user has not reached yet.
+                            // The rule for a free name lives with the library.
+                            let taken = lilook_core::Prefs {
+                                version: lilook_core::Prefs::VERSION,
+                                saved: self.context.saved.to_vec(),
+                            };
+                            let suggested = taken.free_name(lilook_core::Kind::Cycle, "my palette");
+                            open_cycle_editor(ui, node, &name, &suggested, &from)
+                        }
+                        Some(Edit::Forget(n)) => ev.push(UiEvent::RemovePref {
+                            kind: lilook_core::Kind::Cycle,
+                            name: n,
+                        }),
+                        None => {}
                     }
                 }
                 Control::Mark | Control::Scale => {
@@ -583,6 +638,90 @@ impl<'a> Inspector<'a> {
         self.events.extend(ev);
     }
 
+    // ----------------------------------------------------------- palettes
+
+    /// Build a palette of your own, from the one in force.
+    ///
+    /// Open only when the cycle menu asked for it, and it edits *source text*
+    /// rather than colours: `rgb("#4477aa")` comes back out the way it went in,
+    /// because a palette that silently reprints itself every time it is opened
+    /// is a palette that has been rewritten rather than edited.
+    ///
+    /// Saving does two things on purpose -- keeps it in the library and applies
+    /// it to the figure. Building a palette to look at is not a thing anyone
+    /// wants, and having to pick it from the menu afterwards is a step with no
+    /// question in it.
+    fn cycle_editor(&mut self, ui: &mut egui::Ui, call: &CallSite) {
+        let id = cycle_editor_id(call.id);
+        let Some(mut state) = ui.data(|d| d.get_temp::<CycleEdit>(id)) else {
+            return;
+        };
+        let mut close = false;
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label("palette");
+            ui.add(
+                egui::TextEdit::singleline(&mut state.name)
+                    .id(id.with("name"))
+                    .desired_width(130.0),
+            );
+            if pick::chip(ui, id.with("save"), "save")
+                .on_hover_text("keep this palette and use it here")
+                .clicked()
+            {
+                let value = pick::cycle_array(&state.colors);
+                self.events.push(UiEvent::SavePref {
+                    kind: lilook_core::Kind::Cycle,
+                    name: state.name.clone(),
+                    value: value.clone(),
+                });
+                self.events.push(set(call.id, &state.param, value));
+                close = true;
+            }
+            if pick::chip(ui, id.with("cancel"), "cancel").clicked() {
+                close = true;
+            }
+        });
+
+        let mut remove = None;
+        ui.horizontal_wrapped(|ui| {
+            for (i, part) in state.colors.iter_mut().enumerate() {
+                let mut c = parse_color(part).unwrap_or(egui::Color32::GRAY);
+                if ui.color_edit_button_srgba(&mut c).changed() {
+                    *part = color_source(c, part);
+                }
+                if pick::chip(ui, id.with(("drop", i)), "×")
+                    .on_hover_text("drop this colour")
+                    .clicked()
+                {
+                    remove = Some(i);
+                }
+            }
+            if pick::chip(ui, id.with("add"), "+")
+                .on_hover_text("one more, to edit")
+                .clicked()
+            {
+                // From the last colour rather than from black: a palette is
+                // built by variation, and an editor that starts every entry at
+                // the same place makes the user do that work twice.
+                let next = state.colors.last().cloned().unwrap_or_else(|| "red".into());
+                state.colors.push(next);
+            }
+        });
+        if let Some(i) = remove {
+            state.colors.remove(i);
+        }
+        // What it will look like, from the same painter the menu uses.
+        swatches(ui, &pick::cycle_array(&state.colors));
+
+        match close {
+            true => ui.data_mut(|d| d.remove::<CycleEdit>(id)),
+            false => ui.data_mut(|d| {
+                d.insert_temp(id, state);
+            }),
+        }
+    }
+
     // ---------------------------------------------------------- add argument
 
     /// Add an argument: type to narrow, one click to write it.
@@ -698,6 +837,59 @@ impl<'a> Inspector<'a> {
 }
 
 // ------------------------------------------------------------------ helpers
+
+/// What the cycle menu asked for. The menu runs inside egui's closure, which is
+/// already borrowing the inspector, so the answer is carried out rather than
+/// acted on where it is made.
+enum Edit {
+    /// Start a palette of your own from this expression.
+    Open(String),
+    /// Take this one out of the library.
+    Forget(String),
+}
+
+/// The palette being built, between frames.
+///
+/// In egui's store keyed by the call site, for the same reason the
+/// add-argument field's text is: the shell builds a fresh `Inspector` every
+/// frame, so anything that outlives a frame cannot live on it.
+#[derive(Clone)]
+struct CycleEdit {
+    /// The argument it will be applied to -- `cycle` on a diagram, and named
+    /// rather than assumed because a forwarded parameter can carry it too.
+    param: String,
+    name: String,
+    /// Each colour as *source text*, not as pixels.
+    colors: Vec<String>,
+}
+
+/// Where the palette being built lives. Derived from the call site alone, like
+/// every other piece of two-frame state here.
+pub fn cycle_editor_id(node: usize) -> egui::Id {
+    egui::Id::new((node, "cycle-editor"))
+}
+
+/// Seed the editor from whatever the figure is using now.
+///
+/// A palette that is already an array opens as its own colours; anything else --
+/// unset, or a name -- opens as lilaq's own, which is what the figure is drawn
+/// with when nothing else is said. Starting from an empty row would make the
+/// first act of every palette "put back what was already there".
+pub fn open_cycle_editor(ui: &mut egui::Ui, node: usize, param: &str, name: &str, from: &str) {
+    let mut colors = pick::cycle_parts(from);
+    if colors.is_empty() {
+        colors = lilook_core::CYCLES
+            .first()
+            .map(|(_, expr, _)| pick::cycle_parts(expr))
+            .unwrap_or_default();
+    }
+    let state = CycleEdit {
+        param: param.to_string(),
+        name: name.to_string(),
+        colors,
+    };
+    ui.data_mut(|d| d.insert_temp(cycle_editor_id(node), state));
+}
 
 /// Where the "add argument" field keeps what has been typed into it.
 ///

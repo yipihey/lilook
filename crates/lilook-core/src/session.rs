@@ -226,6 +226,16 @@ pub struct Session {
     pub link_path: String,
     /// What the shell last found to be responsible for an error.
     pub blames: Vec<crate::Blame>,
+    /// The user's own palettes, colour maps and themes.
+    ///
+    /// Offered beside the built-in ones and written into the document when
+    /// chosen -- never read while rendering, so a figure means the same thing on
+    /// a machine that has never seen this library. The shell loads it at startup
+    /// and writes it back when [`Session::prefs_dirty`] says so, because a
+    /// session has no file system and a browser has no file at all.
+    pub prefs: crate::Prefs,
+    /// The library changed and has not been stored yet. The shell clears it.
+    pub prefs_dirty: bool,
     /// Where a dragged decoration started, for the length of one gesture.
     drag_origin: Option<(f64, f64)>,
 }
@@ -263,6 +273,8 @@ impl Session {
             follow_files: false,
             link_path: String::new(),
             blames: vec![],
+            prefs: crate::Prefs::default(),
+            prefs_dirty: false,
             drag_origin: None,
         }
     }
@@ -387,6 +399,21 @@ impl Session {
                         Some(at) => format!("`{name}` bound at byte {at}"),
                         None => format!("`{name}` is not bound in this file"),
                     };
+                }
+                UiEvent::SavePref { kind, name, value } => {
+                    self.status = match self.prefs.save(kind, &name, &value) {
+                        Ok(()) => {
+                            self.prefs_dirty = true;
+                            format!("{} {name} saved", kind.as_str())
+                        }
+                        Err(why) => format!("cannot save {name}: {why}"),
+                    };
+                }
+                UiEvent::RemovePref { kind, name } => {
+                    if self.prefs.remove(kind, &name) {
+                        self.prefs_dirty = true;
+                        self.status = format!("{} {name} removed from your library", kind.as_str());
+                    }
                 }
             }
         }
@@ -1355,6 +1382,14 @@ impl Session {
                     }))
                 }
                 Some(crate::Control::Cycle) => {
+                    // The user's own first: a library exists to be reached for.
+                    out.extend(self.prefs.of(crate::Kind::Cycle).map(|s| Completion {
+                        label: s.name.clone(),
+                        insert: crate::policy::cycle_source(&s.value),
+                        note: "yours".into(),
+                        doc: String::new(),
+                        choices: vec![],
+                    }));
                     out.extend(crate::CYCLES.iter().map(|(n, expr, note)| Completion {
                         label: (*n).into(),
                         insert: crate::policy::cycle_source(expr),

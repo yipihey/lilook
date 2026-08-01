@@ -16,6 +16,63 @@ const SCHEMA: &str = lilook_core::schema::BUNDLED;
 /// directory because these are lilook's working files rather than the user's.
 const SIDECAR_DIR: &str = ".lilook";
 
+/// The user's library on disk: palettes, colour maps and themes they saved.
+///
+/// The shell's job, not the session's -- `lilook-core` has no file system, which
+/// is what lets the same editor run in a browser where there is no file at all.
+/// A desktop keeps it in the place the platform puts configuration, so it
+/// follows the user between documents rather than between directories.
+mod library {
+    use std::path::PathBuf;
+
+    /// `~/.config/lilook/prefs.toml`, or the platform's equivalent.
+    ///
+    /// Hand-rolled rather than a dependency: three environment variables and a
+    /// join, against a crate that would have to be tracked and audited for the
+    /// same six lines.
+    pub fn path() -> Option<PathBuf> {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let dir = if cfg!(target_os = "macos") {
+            home?.join("Library/Application Support/lilook")
+        } else if cfg!(target_os = "windows") {
+            PathBuf::from(std::env::var_os("APPDATA")?).join("lilook")
+        } else {
+            match std::env::var_os("XDG_CONFIG_HOME") {
+                Some(x) => PathBuf::from(x).join("lilook"),
+                None => home?.join(".config/lilook"),
+            }
+        };
+        Some(dir.join("prefs.toml"))
+    }
+
+    /// Read it, or start empty. A file that exists but cannot be read is
+    /// *reported*: losing a library quietly is worse than being told why.
+    pub fn load() -> (lilook_core::Prefs, Option<String>) {
+        let Some(path) = path() else {
+            return (lilook_core::Prefs::default(), None);
+        };
+        match std::fs::read_to_string(&path) {
+            Ok(text) => match lilook_core::Prefs::from_toml(&text) {
+                Ok(prefs) => (prefs, None),
+                Err(why) => (
+                    lilook_core::Prefs::default(),
+                    Some(format!("{}: {why}", path.display())),
+                ),
+            },
+            // Not there yet is the ordinary case, not a problem to announce.
+            Err(_) => (lilook_core::Prefs::default(), None),
+        }
+    }
+
+    pub fn store(prefs: &lilook_core::Prefs) -> Result<(), String> {
+        let path = path().ok_or("no home directory to store a library in")?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
+        std::fs::write(&path, prefs.to_toml()).map_err(|e| format!("{}: {e}", path.display()))
+    }
+}
+
 struct App {
     editor: Editor,
     path: Option<PathBuf>,
@@ -62,11 +119,17 @@ impl App {
         let actor = CompileActor::spawn(lilook_compile::root_for(path.as_ref()), move || {
             ctx.request_repaint()
         });
+        let mut editor = Editor::new(
+            text.clone(),
+            Schema::from_json(SCHEMA).expect("bundled schema"),
+        );
+        let (prefs, complaint) = library::load();
+        editor.prefs = prefs;
+        if let Some(why) = complaint {
+            editor.status = format!("your library could not be read -- {why}");
+        }
         App {
-            editor: Editor::new(
-                text.clone(),
-                Schema::from_json(SCHEMA).expect("bundled schema"),
-            ),
+            editor,
             path: path.clone(),
             actor,
             pending_export: None,
@@ -515,6 +578,23 @@ struct Watch {
     seen: Option<(std::time::SystemTime, u64)>,
 }
 
+impl App {
+    /// Write the library out when it changed, and say so once.
+    ///
+    /// Checked every frame and almost always false: the flag is set by saving or
+    /// forgetting a palette, and cleared here whatever the outcome, so a failing
+    /// disk cannot make this retry on every frame for the rest of the session.
+    fn store_library(&mut self) {
+        if !self.editor.prefs_dirty {
+            return;
+        }
+        self.editor.prefs_dirty = false;
+        if let Err(why) = library::store(&self.editor.prefs) {
+            self.editor.status = format!("your library could not be saved -- {why}");
+        }
+    }
+}
+
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -523,6 +603,7 @@ impl eframe::App for App {
         self.watch_data(now);
         self.retitle(&ctx);
 
+        self.store_library();
         let mut reload = false;
         let mut keep = false;
         let conflict = self.conflict;

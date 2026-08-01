@@ -13,6 +13,7 @@ pub mod edit;
 pub mod events;
 pub mod intent;
 pub mod policy;
+pub mod prefs;
 pub mod render;
 pub mod scene;
 pub mod schema;
@@ -36,6 +37,7 @@ pub use policy::{
     argument_offers, cycle_source, seed_for_test, sentinel_of, widget_control, ArgumentOffer,
     Control, COLORMAPS, CYCLES, FIGURE_TEXT_SIZES, FIGURE_WIDTHS, TYPST_HELPERS,
 };
+pub use prefs::{Kind, Prefs, Saved};
 pub use render::{Blame, Diagnostic, Image, Page, Render, Severity};
 pub use scene::{Bounds, Scene, SceneHit, SeriesGeom};
 pub use schema::{ElementSchema, FunctionSchema, ParamSchema, Schema};
