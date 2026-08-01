@@ -311,7 +311,10 @@ pub fn preview(ui: &mut egui::Ui, value: &str) {
 /// described, because "perceptually uniform, warm" is not a thing anyone can
 /// picture and a two-centimetre gradient is.
 pub fn ramp(ui: &mut egui::Ui, map: &str) {
-    let stops = colormap_stops(map);
+    let mut stops = colormap_stops(map_name(map));
+    if is_reversed(map) {
+        stops.reverse();
+    }
     let (rect, _) = ui.allocate_exact_size(egui::vec2(48.0, 12.0), egui::Sense::hover());
     if stops.is_empty() {
         return;
@@ -415,13 +418,37 @@ pub fn cycle_parts(expr: &str) -> Vec<String> {
 }
 
 /// The map a value names, for looking its preview up: `color.map.viridis` is
-/// `viridis`, and anything else is itself.
+/// `viridis`, and anything else is itself. A reversed map is still that map --
+/// `.rev()` changes the direction, not the colours.
 pub fn map_name(value: &str) -> &str {
+    let value = value.trim();
+    let value = value.strip_suffix(REVERSE).unwrap_or(value);
     value
-        .trim()
         .rsplit_once("color.map.")
         .map(|(_, n)| n)
-        .unwrap_or(value.trim())
+        .unwrap_or(value)
+}
+
+/// How typst reverses an array, which is what a colour map is.
+///
+/// Written as a suffix rather than as stops of lilook's own: `color.map.viridis`
+/// reversed this way is *exactly* viridis backwards, and lilook only ever had a
+/// five-stop sketch of it. The same suffix works on a map of the user's own,
+/// where the colours are theirs to begin with.
+pub const REVERSE: &str = ".rev()";
+
+/// Is this value a map read backwards?
+pub fn is_reversed(value: &str) -> bool {
+    value.trim().ends_with(REVERSE)
+}
+
+/// The same map, the other way round. Toggles, so it is its own undo.
+pub fn reverse(value: &str) -> String {
+    let value = value.trim();
+    match value.strip_suffix(REVERSE) {
+        Some(plain) => plain.to_string(),
+        None => format!("{value}{REVERSE}"),
+    }
 }
 
 /// A colour as typst source, for an editor that starts from painted stops

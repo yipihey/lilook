@@ -378,11 +378,19 @@ impl<'a> Inspector<'a> {
                     // A map of the user's own is matched by its value, a typst
                     // one by its name -- `color.map.viridis` is a name lilook
                     // never sees the colours of.
+                    let plain = pick::reverse(&current);
                     let short = mine
                         .iter()
-                        .find(|(_, expr)| *expr == current)
+                        .find(|(_, expr)| **expr == current || **expr == plain)
                         .map(|(n, _)| n.to_string())
                         .unwrap_or_else(|| pick::map_name(&current).to_string());
+                    // Said in the box, because a reversed map is the same map
+                    // and the strip beside it is easy to read the wrong way
+                    // round when it is the only sign.
+                    let short = match pick::is_reversed(&current) {
+                        true => format!("{short} reversed"),
+                        false => short,
+                    };
                     let mut picked = None;
                     let mut edit = None;
                     egui::ComboBox::from_id_salt((node, &name))
@@ -431,9 +439,30 @@ impl<'a> Inspector<'a> {
                     // without opening anything -- from the user's own colours
                     // where they are the user's, and from lilook's preview of a
                     // typst map where they are not.
-                    match mine.iter().find(|(_, expr)| *expr == current) {
-                        Some((_, expr)) => pick::ramp_of(ui, &pick::cycle_parts(expr)),
-                        None => ramp(ui, &short),
+                    match mine
+                        .iter()
+                        .find(|(_, expr)| **expr == current || **expr == plain)
+                    {
+                        Some((_, expr)) => {
+                            let mut parts = pick::cycle_parts(expr);
+                            if pick::is_reversed(&current) {
+                                parts.reverse();
+                            }
+                            pick::ramp_of(ui, &parts)
+                        }
+                        None => ramp(ui, &current),
+                    }
+                    // Exact, for a map lilook cannot read: `.rev()` is typst's
+                    // own, so reversing viridis gives viridis backwards rather
+                    // than a five-stop sketch of it turned around.
+                    // Spelt out rather than drawn: the bundled fonts have no
+                    // arrow glyph for it, and an ⓘ that came out as a tofu box
+                    // taught that lesson once already.
+                    if pick::chip(ui, ui.id().with((node, "rev-map")), "rev")
+                        .on_hover_text("read this map the other way round")
+                        .clicked()
+                    {
+                        picked = Some(pick::reverse(&current));
                     }
                     if pick::chip(ui, ui.id().with((node, "new-map")), "new…")
                         .on_hover_text("build a colour map of your own, starting from this one")
@@ -737,6 +766,12 @@ impl<'a> Inspector<'a> {
                 });
                 self.events.push(set(call.id, &state.param, value));
                 close = true;
+            }
+            if pick::chip(ui, id.with("invert"), "invert")
+                .on_hover_text("the same colours, the other way round")
+                .clicked()
+            {
+                state.colors.reverse();
             }
             if pick::chip(ui, id.with("cancel"), "cancel").clicked() {
                 close = true;

@@ -1220,3 +1220,51 @@ fn a_saved_map_and_a_saved_theme_draw() {
     other.doc.undo();
     assert_eq!(other.doc.text(), first, "one step, fully undone");
 }
+
+/// Reading a colour map the other way round is typst's own `.rev()`, and it has
+/// to compile -- on a map lilook cannot see the colours of, and on one of the
+/// user's own.
+///
+/// This is why the reverse is written as a suffix rather than as reversed stops:
+/// `color.map.viridis.rev()` is *exactly* viridis backwards, and lilook has only
+/// ever had a five-stop sketch of viridis to turn around.
+#[test]
+fn a_reversed_map_draws() {
+    let mut b = Backend::new(std::env::temp_dir(), "");
+    let figure = |map: &str| {
+        format!(
+            r#"#import "@preview/lilaq:0.6.0" as lq
+#set page(width: auto, height: auto, margin: 5pt)
+#let xs = lq.linspace(0, 4, num: 5)
+#lq.diagram(lq.colormesh(xs, xs, (x, y) => x * y, map: {map}))
+"#
+        )
+    };
+
+    for map in [
+        "color.map.viridis.rev()",
+        r##"(rgb("#000004"), rgb("#8c2981"), rgb("#fcfdbf")).rev()"##,
+    ] {
+        let src = figure(map);
+        let r = b.render(&src, 1.0);
+        if skip(&r) {
+            return;
+        }
+        assert!(
+            !r.failed(),
+            "`{map}` does not draw: {:?}",
+            r.errors().map(|d| d.message.clone()).collect::<Vec<_>>()
+        );
+    }
+
+    // And the toggle is its own undo: twice is where it started.
+    let once = lilook_ui::pick::reverse("color.map.viridis");
+    assert_eq!(once, "color.map.viridis.rev()");
+    assert_eq!(lilook_ui::pick::reverse(&once), "color.map.viridis");
+    assert!(lilook_ui::pick::is_reversed(&once));
+    assert_eq!(
+        lilook_ui::pick::map_name(&once),
+        "viridis",
+        "reversed is still the same map"
+    );
+}
