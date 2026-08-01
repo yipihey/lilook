@@ -127,3 +127,32 @@ jobs:
             --generate-notes \
             $prerelease \
             dist/*
+
+  homebrew:
+    needs: publish
+    runs-on: ubuntu-latest
+    # A pre-release tag rehearses; it should not move the tap that
+    # `brew install` actually reads.
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: yipihey/homebrew-lilook
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+      - name: bump the formula
+        run: scripts/bump-homebrew-tap.sh "${GITHUB_REF_NAME#v}" tap
+      - name: commit and push
+        run: |
+          set -euo pipefail
+          cd tap
+          git config user.name "lilook-release"
+          git config user.email "actions@users.noreply.github.com"
+          git add Formula/lilook.rb
+          if git diff --cached --quiet; then
+            echo "formula already up to date"
+          else
+            git commit -m "lilook ${GITHUB_REF_NAME#v}"
+            git push
+          fi

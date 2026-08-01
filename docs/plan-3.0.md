@@ -249,6 +249,47 @@ now unblocked. R3 is one command once someone decides `0.2.0` is the version.
 
 ---
 
+## Shipped: R3 and R4
+
+**R3 — all eight publishable crates are on crates.io at 0.2.0.** The order
+that mattered was `lilook-core` → `lilook-data` → `lilook-ui` →
+`lilook-compile` → `lilook-editor` → `lilook-app` → `lilook-ffi`, derived by
+`scripts/publish-order.sh` after a hand-written order (dev-dependencies
+omitted) failed mid-sequence. crates.io's new-crate rate limit -- stricter
+than the existing-version limit, and untouched by `--dry-run` because that
+never talks to the registry -- paused the run once; resuming after the window
+cleared needed nothing but re-running the same idempotent script.
+
+*Exit criterion actually run, not assumed:* `cargo install lilook-app
+--version 0.2.0` with a throwaway `CARGO_HOME`, no checkout of this
+repository anywhere on the machine. It resolved every dependency from
+crates.io, including the workspace's own crates, and produced a binary that
+prints `lilook 0.2.0`.
+
+**R4 — the tap.** `yipihey/homebrew-lilook`, one formula
+(`Formula/lilook.rb`) that builds from the same crates.io source tarball R3
+just proved works, so there is no separate binary-distribution path to keep
+in sync. Verified for real, not by inspection: `brew style`, `brew audit
+--strict`, a `brew install --build-from-source` that compiled the full
+typst/egui tree inside Homebrew's own sandbox (2m11s, 66 MB installed), and
+`brew test` running `lilook-app --version`. Only Apple Silicon was tested
+directly; Intel and Linux get no separate artifact to diverge, since the
+formula has no platform-specific step.
+
+`scripts/bump-homebrew-tap.sh` derives the url and sha256 from the version
+rather than hand-editing them, and `release.yml`'s new `homebrew` job runs it
+against a real tag (excluding pre-release tags, which rehearse and should not
+move what `brew install` reads). It needs a fine-grained PAT with write
+access to the tap repo, added as `HOMEBREW_TAP_TOKEN` -- the one piece of R4
+that could not be automated, because the default `GITHUB_TOKEN` is scoped to
+the repo the workflow runs in.
+
+Packaging and distribution are done. What is left in this plan is Tier 3
+(`lilook-lsp`, a VS Code extension), both explicitly blocked on work outside
+this plan's scope.
+
+---
+
 ## The rehearsal
 
 R2's exit criterion, run twice before any version existed. Both runs earned their
