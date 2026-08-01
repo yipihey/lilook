@@ -641,13 +641,14 @@ fn seeded_arguments_compile() {
 /// value, so the offer must not fall through to the shape's placeholder. Both
 /// panes write these: the popup at the caret and the inspector's field.
 ///
-/// **What lilook chose, not what the user chose.** The rows that name a value --
-/// `xscale: log` -- are excluded, because whether one suits *this* data is not
-/// something any list can know and not something lilook decided. `"log"` needs
-/// data above zero and `"symlog"` needs data spanning it, so no single figure
-/// can hold both: measured here, on the fixtures this test started with. An
-/// offer with a value in it is advisory; a value lilook writes on the user's
-/// behalf when they add a bare name is a promise, and this is the promise.
+/// **What lilook chose, not what the user chose.** The values a row *names* --
+/// `xscale`'s `log`, `symlog` -- are not checked here, because whether one suits
+/// *this* data is not something any list can know and not something lilook
+/// decided. `"log"` needs data above zero and `"symlog"` needs data spanning it,
+/// so no single figure can hold both: measured here, on the fixtures this test
+/// started with. A value the user picks is advisory; the one lilook writes on
+/// their behalf when they add the argument itself is a promise, and this is the
+/// promise.
 #[test]
 fn offered_arguments_compile() {
     const SCHEMA: &str = lilook_core::schema::BUNDLED;
@@ -670,9 +671,6 @@ fn offered_arguments_compile() {
             .unwrap_or_else(|| panic!("{callee} is a call site"));
 
         for o in lilook_core::argument_offers(&f.params, call) {
-            if o.label != o.param {
-                continue; // a value the user picked, not one lilook chose
-            }
             let value = o.written();
             let src = format!(
                 r#"#import "@preview/lilaq:0.6.0" as lq

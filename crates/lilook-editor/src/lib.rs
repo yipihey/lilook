@@ -909,10 +909,23 @@ impl Editor {
         // argument" field uses -- see `lilook_ui::pick`. Two implementations of
         // one interaction is how they came to behave differently.
         let offers = self.completions(at);
-        let matching = lilook_ui::pick::matching(&offers, prefix, |c| c.label.as_str());
+        let matching: Vec<&lilook_core::Completion> = offers
+            .iter()
+            .filter(|c| {
+                lilook_ui::pick::matches(
+                    &lilook_ui::pick::haystack(&c.label, c.choices.iter().map(|(l, _)| l.as_str())),
+                    prefix,
+                )
+            })
+            .collect();
+        let labels: Vec<Vec<String>> = matching
+            .iter()
+            .map(|c| c.choices.iter().map(|(l, _)| l.clone()).collect())
+            .collect();
         let rows: Vec<lilook_ui::pick::Offer> = matching
             .iter()
-            .map(|c| lilook_ui::pick::Offer::new(&c.label, &c.note, &c.insert))
+            .zip(&labels)
+            .map(|(c, l)| lilook_ui::pick::Offer::new(&c.label, &c.note, &c.insert).choices(l))
             .collect();
         let anchor = out.galley_pos
             + out
@@ -920,21 +933,25 @@ impl Editor {
                 .pos_from_cursor(egui::text::CCursor::new(text[..at].chars().count()))
                 .left_bottom()
                 .to_vec2();
-        let accepted = lilook_ui::pick::popup(
+        let taken = lilook_ui::pick::popup(
             ui.ctx(),
             egui::Id::new("completions"),
             anchor,
             &rows,
             focused,
-        )
-        .map(|i| matching[i].clone());
-        let c = accepted?;
+        )?;
+        let c = matching[taken.row];
+        // The value the pointer was on, where a row named several.
+        let insert = match taken.choice.and_then(|k| c.choices.get(k)) {
+            Some((_, insert)) => insert.clone(),
+            None => c.insert.clone(),
+        };
         // Replace the word being typed rather than appending to it.
-        let written = c.insert.len();
+        let written = insert.len();
         self.doc.begin("completion");
         self.apply(Intent::ReplaceRange {
             range: start..at,
-            value: c.insert,
+            value: insert,
         });
         self.doc.commit();
         self.mark_dirty();

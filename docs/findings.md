@@ -2080,3 +2080,49 @@ not about cycles. **A gate that skips silently when its fixture is unavailable
 reports green from an empty run** — every compile-backed test here returns early
 when the lilaq package cannot be fetched, which is exactly the state a sandboxed
 agent works in, and it is indistinguishable from a pass in the output.
+
+## A caption beside a click target is a promise, and this one was a lie
+
+2026-08-01, reported from the deployed page. `lq.colormesh`'s `interpolation` sat
+in the add-argument list as
+
+```
+interpolation    "pixelated"|"smooth"
+```
+
+and clicking the word `smooth` wrote `pixelated`. Every time.
+
+Three separate mistakes stacked into one bad minute for the person using it.
+
+**The note was the types, and the types of that parameter are its values.**
+`p.types.join("|")` is honest for `length|relative|auto` and a trap for an enum,
+where the type *is* the set of literals. Beside a row that writes one fixed
+thing, it reads as a menu. It was fine while only the name was clickable —
+making the whole row a target is what turned a caption into a control. The rule
+now: **a note must not name a value the click will not write.** The note is the
+widget kind (`enum`, `length`, `scale`); the types moved to the hover.
+
+**The values were there, three rows down, and the list was cut before them.**
+The offers ran name, value, value, name, value…, capped at twelve rows — and on
+a colormesh the cut fell exactly between `interpolation` and its `pixelated` and
+`smooth`. The only row you could see was the one that could not write what it
+advertised. A cap by *count* hides; the popup now bounds its *height* and
+scrolls, so nothing is offered-but-unreachable.
+
+**And the list was three times longer than the thing it listed.** One row per
+value made a seven-argument call into a twenty-row menu. So the values moved
+onto their parameter's own line, each its own target: `interpolation  enum
+pixelated  smooth` — one row per argument, one click for either meaning of it.
+The bill for that: `argument_offers` returns one offer per parameter carrying
+`choices`, and `pick::popup` answers with a row *and* which value on it.
+
+The egui detail that makes it work is worth keeping. **Whoever registers last
+wins the hit test**, so a row that claims its rectangle after laying out its
+contents swallows every widget inside it. `click_row` now allocates and claims
+the row first, then builds the contents in a child `Ui` — the chips are
+registered later, so the pointer reaches them, and the row still answers for
+everything that is not one.
+
+Neither the source pane nor the inspector got to keep its own version of any of
+this: both read `argument_offers` and both draw `pick::popup`, so `xscale scale
+linear log symlog datetime` is one line in the text pane too.

@@ -245,12 +245,29 @@ pub struct ArgumentOffer {
     /// because for a `scale` or a `variant` that *is* the value -- and
     /// `xscale: none` is a figure lilaq refuses to draw.
     pub fallback: String,
-    /// The types, or the parameter this value belongs to.
+    /// What kind of value goes here, or the parameter a chosen value belongs to.
+    ///
+    /// **Never the list of types.** It used to be, and for a parameter with a
+    /// small fixed set the types *are* its values: `interpolation` read
+    /// `"pixelated"|"smooth"`, in a row that writes `"pixelated"` whatever part
+    /// of it you click. Someone aiming at the word `smooth` got `pixelated` and
+    /// no sign of why. A note beside a click target must not name a thing the
+    /// click will not do; the values live in their own rows, which are their own
+    /// targets, and the types are on the hover.
     pub note: String,
-    /// One line of what the parameter is for, to be shown on hover. The old
-    /// combo box had this and a list of bare names does not deserve to lose it:
-    /// `bounds` and `margin` are not self-explanatory.
+    /// What the parameter is for and what it accepts, to be shown on hover. The
+    /// old combo box had the documentation and a list of bare names does not
+    /// deserve to lose it: `bounds` and `margin` are not self-explanatory.
     pub doc: String,
+    /// The values worth naming inline, as `(label, value)` -- each one its own
+    /// thing to click, in the same row as the parameter.
+    ///
+    /// This is what a small fixed set looks like: `interpolation` and its
+    /// `pixelated` and `smooth` beside it, so the row reads as one line and
+    /// still says which part of it you are aiming at. Empty where the set is too
+    /// big or too pictorial for one line -- a colour map wants its gradient and
+    /// thirteen of them want a row each, so those come as separate offers.
+    pub choices: Vec<(String, String)>,
 }
 
 impl ArgumentOffer {
@@ -264,12 +281,14 @@ impl ArgumentOffer {
     }
 }
 
-/// Every argument this call is missing, each offered once with a safe value and
-/// again per choice where it has a small fixed set.
+/// Every argument this call is missing: **one offer each**, carrying the values
+/// worth naming inline.
 ///
-/// The per-choice rows are what make adding an argument one act rather than
-/// three: picking `interpolation: "smooth"` writes it, instead of writing
-/// `interpolation: auto` and leaving the user to find the menu and the value.
+/// One per parameter, deliberately. It was one per parameter *and one per value*
+/// -- `interpolation`, `interpolation: pixelated`, `interpolation: smooth` --
+/// which made every list three times longer than the thing it was listing, and
+/// pushed the values themselves off the end of it. The values belong beside
+/// their parameter, on the same line, each its own thing to click.
 ///
 /// Positional parameters are left out on purpose. typst refuses one passed by
 /// name -- `lq.plot(x: xs)` is "unexpected argument: x" -- so offering it is
@@ -284,65 +303,65 @@ pub fn argument_offers(params: &[ParamSchema], call: &crate::CallSite) -> Vec<Ar
         let fallback = usable_default(Some(p))
             .map(str::to_string)
             .unwrap_or_else(|| placeholder(&p.widget));
-        let doc = p
+        // The types belong on the hover, where reading them is the whole
+        // interaction, and not beside a row where clicking is.
+        let summary = p
             .doc
             .lines()
             .find(|l| !l.trim().is_empty())
             .unwrap_or_default()
-            .trim()
-            .to_string();
+            .trim();
+        let doc = match p.types.is_empty() {
+            true => summary.to_string(),
+            false => format!("{summary}\n\n{}", p.types.join(" | ")),
+        };
         out.push(ArgumentOffer {
             param: p.name.clone(),
             label: p.name.clone(),
             value: seed(Some(p), control),
-            fallback: fallback.clone(),
-            note: p.types.join("|"),
-            doc: doc.clone(),
+            fallback,
+            note: p.widget.clone(),
+            doc,
+            choices: inline_choices(p, control),
         });
-        for (label, value) in values_for(p, control) {
-            out.push(ArgumentOffer {
-                param: p.name.clone(),
-                label: format!("{}: {label}", p.name),
-                value: Some(value),
-                fallback: fallback.clone(),
-                note: p.name.clone(),
-                doc: doc.clone(),
-            });
-        }
     }
     out
 }
 
-/// The concrete values worth offering beside a parameter's name.
+/// The values worth naming on the parameter's own line, as `(label, value)`.
 ///
-/// Only where the set is small and fixed: a scale, a colour map, a palette. A
-/// length or a number has no useful list, and a menu of guesses is worse than a
-/// field to type in.
-fn values_for(p: &ParamSchema, control: Control) -> Vec<(String, String)> {
+/// Only a set that is small, fixed, and reads as words: a scale, a toggle, the
+/// two or three names an enum admits. A length or a number has no useful list,
+/// and a menu of guesses is worse than a field to type in.
+///
+/// A colour map and a palette are deliberately *not* here, though their sets are
+/// fixed. Thirteen names on one line is not a line, and the thing that makes a
+/// map choosable is its gradient rather than its name -- so `map` is added as
+/// one argument and chosen with the picker that draws them. That is also what
+/// keeps this list one row per argument.
+fn inline_choices(p: &ParamSchema, control: Control) -> Vec<(String, String)> {
     let quoted = |names: &[&str]| -> Vec<(String, String)> {
         names
             .iter()
             .map(|n| ((*n).to_string(), format!("\"{n}\"")))
             .collect()
     };
-    if !p.choices.is_empty() && p.choices.len() <= 12 {
-        return quoted(&p.choices.iter().map(String::as_str).collect::<Vec<_>>());
-    }
-    match control {
-        Control::Scale => quoted(SCALE_NAMES),
-        Control::Colormap => COLORMAPS
-            .iter()
-            .map(|(m, _)| ((*m).to_string(), format!("color.map.{m}")))
-            .collect(),
-        Control::Cycle => CYCLES
-            .iter()
-            .map(|(n, expr, _)| ((*n).to_string(), cycle_source(expr)))
-            .collect(),
+    let choices = match control {
         Control::Toggle => vec![
             ("true".into(), "true".into()),
             ("false".into(), "false".into()),
         ],
-        _ => vec![],
+        Control::Scale if p.choices.is_empty() => quoted(SCALE_NAMES),
+        Control::Colormap | Control::Cycle => vec![],
+        _ => quoted(&p.choices.iter().map(String::as_str).collect::<Vec<_>>()),
+    };
+    // What fits on one line beside the name. Five short words is about a row's
+    // worth; past that the row wraps and stops reading as one choice among
+    // several, so the parameter is added first and chosen from its own control.
+    let width: usize = choices.iter().map(|(l, _)| l.chars().count() + 2).sum();
+    match choices.len() <= 5 && width <= 40 {
+        true => choices,
+        false => vec![],
     }
 }
 

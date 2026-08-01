@@ -631,13 +631,32 @@ impl<'a> Inspector<'a> {
         // cover the arguments below it. `pick::popup` keeps it up across the
         // press and release of a click, which is the part focus alone cannot do.
         let open = field.has_focus();
-        let matching = pick::matching(&offers, &typed, |o| o.label.as_str());
-        // The values outlive the borrowed rows they are shown in.
+        // A row matches on its own name or on any value it names, so `smo` finds
+        // the row that carries `smooth`.
+        let matching: Vec<&lilook_core::ArgumentOffer> = offers
+            .iter()
+            .filter(|o| {
+                pick::matches(
+                    &pick::haystack(&o.label, o.choices.iter().map(|(l, _)| l.as_str())),
+                    &typed,
+                )
+            })
+            .collect();
+        // These outlive the borrowed rows they are shown in.
         let values: Vec<String> = matching.iter().map(|o| o.written()).collect();
+        let labels: Vec<Vec<String>> = matching
+            .iter()
+            .map(|o| o.choices.iter().map(|(l, _)| l.clone()).collect())
+            .collect();
         let rows: Vec<pick::Offer> = matching
             .iter()
             .zip(&values)
-            .map(|(o, v)| pick::Offer::new(&o.label, &o.note, v).hint(&o.doc))
+            .zip(&labels)
+            .map(|((o, v), c)| {
+                pick::Offer::new(&o.label, &o.note, v)
+                    .hint(&o.doc)
+                    .choices(c)
+            })
             .collect();
 
         let popup_id = filter_id.with("popup");
@@ -651,12 +670,23 @@ impl<'a> Inspector<'a> {
             && !rows.is_empty()
             && !typed.trim().is_empty()
             && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        let taken = clicked.or(entered.then_some(pick::Picked {
+            row: 0,
+            choice: None,
+        }));
 
-        if let Some(i) = clicked.or(entered.then_some(0)) {
+        if let Some(p) = taken {
+            let offer = matching[p.row];
             self.events.push(UiEvent::Insert {
                 node: call.id,
-                param: matching[i].param.clone(),
-                value: values[i].clone(),
+                param: offer.param.clone(),
+                // The value the pointer was on, where it was on one -- picking
+                // `smooth` and getting `pixelated` is the failure this exists to
+                // make impossible.
+                value: match p.choice.and_then(|k| offer.choices.get(k)) {
+                    Some((_, value)) => value.clone(),
+                    None => values[p.row].clone(),
+                },
             });
             // Done: the field empties and lets go, so the popup closes rather
             // than offering the argument that was just added.

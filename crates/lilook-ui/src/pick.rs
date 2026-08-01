@@ -21,11 +21,17 @@ use egui::Color32;
 
 use crate::value::parse_color;
 
-/// How many offers a popup shows at once.
+/// How tall a popup gets before it scrolls, in points -- about a dozen rows,
+/// which fits under a caret without covering the code being typed.
 ///
-/// Twelve fits under a caret without covering the code being typed, and a longer
-/// list is answered by typing another letter rather than by scrolling.
-pub const LIMIT: usize = 12;
+/// A *height*, not a count. It was a count, capped at twelve, and the twelve
+/// were taken off the front of a list that runs name, then values, then the next
+/// name: on `lq.colormesh` the cut fell exactly between `interpolation` and its
+/// `pixelated` and `smooth`. The row you could see wrote the first value
+/// whatever you aimed at, and the rows that wrote the other one were not on
+/// screen to be aimed at. Everything that matches is in the list now, and the
+/// list scrolls.
+pub const MAX_HEIGHT: f32 = 260.0;
 
 /// How wide a popup is, in points. Fixed, so rows are a stable target and the
 /// list does not resize under the pointer as the filter narrows it.
@@ -40,6 +46,9 @@ pub struct Offer<'a> {
     pub value: &'a str,
     /// A sentence for the hover, where the caller has one.
     pub hint: &'a str,
+    /// Values this row can write instead of its own, each shown as its own
+    /// target on the same line. Picking one comes back as [`Picked::choice`].
+    pub choices: &'a [String],
 }
 
 impl<'a> Offer<'a> {
@@ -49,6 +58,7 @@ impl<'a> Offer<'a> {
             note,
             value,
             hint: "",
+            choices: &[],
         }
     }
 
@@ -56,6 +66,19 @@ impl<'a> Offer<'a> {
         self.hint = hint;
         self
     }
+
+    pub fn choices(mut self, choices: &'a [String]) -> Self {
+        self.choices = choices;
+        self
+    }
+}
+
+/// What was taken from a popup: a row, and which of its named values -- if the
+/// pointer was on one rather than on the row itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Picked {
+    pub row: usize,
+    pub choice: Option<usize>,
 }
 
 /// Does what has been typed select this label?
@@ -76,20 +99,27 @@ pub fn matches(label: &str, typed: &str) -> bool {
             .any(|w| !w.is_empty() && w.starts_with(&typed))
 }
 
-/// The offers worth showing for what has been typed, capped at [`LIMIT`].
-pub fn matching<'a, T>(items: &'a [T], typed: &str, label: impl Fn(&T) -> &str) -> Vec<&'a T> {
-    items
-        .iter()
-        .filter(|it| matches(label(it), typed))
-        .take(LIMIT)
-        .collect()
+/// What a row is searched by: its label and every value it names, so typing
+/// `smo` finds the `interpolation` row that carries `smooth`.
+///
+/// Uncapped on purpose, wherever this is used to filter: the popup bounds its
+/// *height* and scrolls, so nothing is offered-but-unreachable.
+pub fn haystack<'a>(label: &str, choices: impl Iterator<Item = &'a str>) -> String {
+    let mut out = label.to_string();
+    for c in choices {
+        out.push(' ');
+        out.push_str(c);
+    }
+    out
 }
 
-/// The completion popup, anchored where the choice is being made. Returns the
-/// index accepted, if one was.
+/// The completion popup, anchored where the choice is being made. Returns what
+/// was taken, if anything.
 ///
 /// One click is the whole interaction: an offer carries its value, so accepting
-/// it writes `interpolation: "smooth"` rather than leaving a name to be filled in.
+/// it writes `interpolation: "smooth"` rather than leaving a name to be filled
+/// in. Where a row names its values, each is its own target and the answer says
+/// which one -- clicking the word `smooth` must not write `pixelated`.
 ///
 /// `open` is the caller's gate -- a caret in the buffer, focus in the add field
 /// -- and it is deliberately not the only one. A click is a press in one frame
@@ -105,7 +135,7 @@ pub fn popup(
     anchor: egui::Pos2,
     offers: &[Offer<'_>],
     open: bool,
-) -> Option<usize> {
+) -> Option<Picked> {
     let shown = id.with("shown");
     let pass = ctx.cumulative_pass_nr();
     let held = ctx
@@ -133,25 +163,45 @@ pub fn popup(
                 // frame -- painted as part of the row, hit-tested as background.
                 ui.set_min_width(WIDTH);
                 ui.set_max_width(WIDTH);
-                for (i, o) in offers.iter().enumerate() {
-                    // Derived from the popup's own id, so a test can find a row
-                    // and click a chosen part of it -- the picture, say.
-                    let row_id = id.with(("row", i));
-                    let r = click_row(ui, row_id, false, |ui| {
-                        preview(ui, o.value);
-                        ui.label(o.label);
-                        if !o.note.is_empty() {
-                            ui.weak(o.note);
+                egui::ScrollArea::vertical()
+                    .max_height(MAX_HEIGHT)
+                    .show(ui, |ui| {
+                        for (i, o) in offers.iter().enumerate() {
+                            // Derived from the popup's own id, so a test can find
+                            // a row, or a value inside one, and click it.
+                            let row_id = id.with(("row", i));
+                            let mut chosen = None;
+                            let r = click_row(ui, row_id, false, |ui| {
+                                preview(ui, o.value);
+                                ui.label(o.label);
+                                if !o.note.is_empty() {
+                                    ui.weak(o.note);
+                                }
+                                for (k, c) in o.choices.iter().enumerate() {
+                                    if chip(ui, row_id.with(("choice", k)), c).clicked() {
+                                        chosen = Some(k);
+                                    }
+                                }
+                            });
+                            let r = match o.hint.is_empty() {
+                                true => r,
+                                false => r.on_hover_text(o.hint),
+                            };
+                            // A value the pointer was actually on wins over the
+                            // row that contains it.
+                            if chosen.is_some() {
+                                accepted = Some(Picked {
+                                    row: i,
+                                    choice: chosen,
+                                });
+                            } else if r.clicked() {
+                                accepted = Some(Picked {
+                                    row: i,
+                                    choice: None,
+                                });
+                            }
                         }
                     });
-                    let r = match o.hint.is_empty() {
-                        true => r,
-                        false => r.on_hover_text(o.hint),
-                    };
-                    if r.clicked() {
-                        accepted = Some(i);
-                    }
-                }
             });
         });
     match accepted {
@@ -165,41 +215,68 @@ pub fn popup(
     accepted
 }
 
-/// A whole row as one click target, hover highlight included.
+/// A whole row as one click target, hover highlight included -- and anything
+/// inside it may be a target of its own.
 ///
 /// Whatever `contents` lays out -- a colour ramp, a palette, a name, a note --
-/// shares one response. Nothing in a row is scenery: if it is in the row, it
-/// selects the row.
+/// belongs to the row's response, so nothing in a row is scenery. But a widget
+/// the contents create keeps its own click: the row is claimed **before** the
+/// contents are laid out, so egui hit-tests the later, inner widget first. That
+/// ordering is the whole reason this is not `ui.horizontal` followed by an
+/// `interact` -- that way round, the row swallowed every value chip in it.
 pub fn click_row(
     ui: &mut egui::Ui,
     id: egui::Id,
     selected: bool,
     contents: impl FnOnce(&mut egui::Ui),
 ) -> egui::Response {
-    // Reserved before the contents are laid out, because the highlight has to be
-    // painted *under* them and egui paints in call order.
-    let bg = ui.painter().add(egui::Shape::Noop);
-    let inner = ui.horizontal(|ui| {
-        // A label is draggable text by default, and text that eats the pointer in
-        // the middle of a row is a row with a hole in it: the click lands on the
-        // name, the name starts a selection, and nothing is chosen.
-        ui.style_mut().interaction.selectable_labels = false;
-        contents(ui)
-    });
-
-    // Full width, so there is no dead strip to the right of a short name.
-    let mut rect = inner.response.rect;
-    rect.max.x = rect.max.x.max(ui.max_rect().right());
-    let rect = rect.expand2(egui::vec2(2.0, 1.0));
-
+    let height = ui.spacing().interact_size.y.max(18.0);
+    let (_, rect) = ui.allocate_space(egui::vec2(ui.available_width(), height));
     let r = ui.interact(rect, id, egui::Sense::click());
     if selected || r.hovered() {
         let visuals = ui.style().interact_selectable(&r, selected);
-        ui.painter().set(
-            bg,
-            egui::Shape::rect_filled(rect, visuals.corner_radius, visuals.weak_bg_fill),
+        ui.painter().rect_filled(
+            rect.expand2(egui::vec2(2.0, 1.0)),
+            visuals.corner_radius,
+            visuals.weak_bg_fill,
         );
     }
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(rect.shrink2(egui::vec2(3.0, 0.0)))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        |ui| {
+            // A label is draggable text by default, and text that eats the
+            // pointer in the middle of a row is a row with a hole in it: the
+            // click lands on the name, the name starts a selection, and nothing
+            // is chosen.
+            ui.style_mut().interaction.selectable_labels = false;
+            contents(ui);
+        },
+    );
+    r
+}
+
+/// One named value, sitting on its parameter's line and answering for itself.
+///
+/// Small and quiet until the pointer is on it, because a row of these is meant
+/// to read as *one* line -- `interpolation  pixelated smooth` -- rather than as
+/// a toolbar.
+pub fn chip(ui: &mut egui::Ui, id: egui::Id, text: &str) -> egui::Response {
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), font, egui::Color32::PLACEHOLDER);
+    let pad = egui::vec2(5.0, 1.0);
+    let (_, rect) = ui.allocate_space(galley.size() + pad * 2.0);
+    let r = ui.interact(rect, id, egui::Sense::click());
+    let visuals = ui.style().interact(&r);
+    if r.hovered() {
+        ui.painter()
+            .rect_filled(rect, visuals.corner_radius, visuals.bg_fill);
+    }
+    ui.painter()
+        .galley(rect.min + pad, galley, visuals.text_color());
     r
 }
 

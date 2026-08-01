@@ -121,8 +121,16 @@ pub struct Completion {
     pub label: String,
     /// What to put in the buffer.
     pub insert: String,
-    /// Type or explanation, shown beside it.
+    /// What kind of thing this is, shown beside it. Never a list of values a
+    /// click will not write -- see [`crate::ArgumentOffer::note`].
     pub note: String,
+    /// The longer explanation, for a hover: what the parameter is for and what
+    /// it accepts. Empty where there is nothing to add to the note.
+    pub doc: String,
+    /// Values this offer can write instead of its own, as `(label, insert)` --
+    /// shown on the same line, each its own thing to click. See
+    /// [`crate::ArgumentOffer::choices`].
+    pub choices: Vec<(String, String)>,
 }
 
 /// The call the caret is inside.
@@ -1329,6 +1337,8 @@ impl Session {
                     label: c.clone(),
                     insert: format!("\"{c}\""),
                     note: format!("a {} this takes", p.widget),
+                    doc: String::new(),
+                    choices: vec![],
                 })
                 .collect();
             let _ = &fallback;
@@ -1340,6 +1350,8 @@ impl Session {
                         label: (*m).into(),
                         insert: format!("color.map.{m}"),
                         note: (*note).into(),
+                        doc: String::new(),
+                        choices: vec![],
                     }))
                 }
                 Some(crate::Control::Cycle) => {
@@ -1347,6 +1359,8 @@ impl Session {
                         label: (*n).into(),
                         insert: crate::policy::cycle_source(expr),
                         note: (*note).into(),
+                        doc: String::new(),
+                        choices: vec![],
                     }))
                 }
                 _ => {}
@@ -1365,6 +1379,8 @@ impl Session {
                             label: (*label).into(),
                             insert: (*insert).into(),
                             note: (*note).into(),
+                            doc: String::new(),
+                            choices: vec![],
                         }),
                 );
             }
@@ -1372,6 +1388,8 @@ impl Session {
                 label: sn.clone(),
                 insert: sn.clone(),
                 note: "leave it to lilaq".into(),
+                doc: String::new(),
+                choices: vec![],
             }));
             return out;
         }
@@ -1390,13 +1408,15 @@ impl Session {
                     label: (*label).into(),
                     insert: (*insert).into(),
                     note: (*note).into(),
+                    doc: String::new(),
+                    choices: vec![],
                 })
                 .collect();
         }
         // Otherwise a parameter name, from the one table the inspector's add
-        // field also reads: each offered once with its safe value, and again per
-        // choice where it has a small fixed set. The value comes with the name
-        // so that accepting a completion leaves a figure that still compiles.
+        // field also reads: one per argument, carrying the values worth naming
+        // beside it. The value comes with the name so that accepting a
+        // completion leaves a figure that still compiles.
         crate::policy::argument_offers(&f.params, call)
             .into_iter()
             .map(|o| Completion {
@@ -1406,8 +1426,14 @@ impl Session {
                     // the name and leaves the caret where the value goes.
                     None => format!("{}: ", o.param),
                 },
+                choices: o
+                    .choices
+                    .iter()
+                    .map(|(label, value)| (label.clone(), format!("{}: {value}", o.param)))
+                    .collect(),
                 label: o.label,
                 note: o.note,
+                doc: o.doc,
             })
             .collect()
     }

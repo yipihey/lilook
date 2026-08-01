@@ -44,15 +44,18 @@ fn parameter_names_are_offered_where_a_name_goes() {
     assert!(title.insert.starts_with("xlabel:"), "{}", title.insert);
 }
 
-/// One table behind both panes.
+/// One table behind both panes, one row per argument.
 ///
 /// The source pane's popup and the inspector's add field are the same list built
 /// by `argument_offers`, so an argument is added in one act wherever it is added
-/// from: the offer carries the value, not just the name. The inspector used to
+/// from: the offer carries its values, not just the name. The inspector used to
 /// build its own list -- choose a name, press `add`, then go and find the value
 /// -- and the two disagreed about what adding an argument even meant.
+///
+/// One row per argument, with the values *on* it. It was one row per value as
+/// well, which made the list three times longer than the thing it listed.
 #[test]
-fn an_offer_carries_the_value_as_well_as_the_name() {
+fn an_offer_carries_the_values_as_well_as_the_name() {
     let s = session();
     let call = s
         .doc
@@ -66,23 +69,67 @@ fn an_offer_carries_the_value_as_well_as_the_name() {
         .expect("its schema");
     let offers = lilook_core::argument_offers(&f.params, call);
 
-    // A parameter with a small fixed set is offered per value, so picking
-    // `xscale: log` is one act rather than three.
+    // One offer per parameter, never one per value.
+    let names: Vec<&String> = offers.iter().map(|o| &o.param).collect();
+    let mut unique = names.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(names.len(), unique.len(), "one row each: {names:?}");
+    for o in &offers {
+        assert_eq!(o.label, o.param, "the row is the parameter");
+    }
+
+    // A parameter with a small fixed set carries its values, each with the text
+    // that writes it, so picking `log` is one act rather than three.
     let scale = offers
         .iter()
-        .find(|o| o.label == "xscale: log")
-        .expect("a scale's own values");
-    assert_eq!(scale.param, "xscale");
-    assert_eq!(scale.value.as_deref(), Some("\"log\""));
+        .find(|o| o.param == "xscale")
+        .expect("a scale to set");
+    assert_eq!(
+        scale.choices,
+        vec![
+            ("linear".to_string(), "\"linear\"".to_string()),
+            ("log".to_string(), "\"log\"".to_string()),
+            ("symlog".to_string(), "\"symlog\"".to_string()),
+            ("datetime".to_string(), "\"datetime\"".to_string()),
+        ]
+    );
+
+    // A colour map does not: thirteen names is not a line, and a map is chosen
+    // by its gradient rather than its name -- so `map` is added, and picked from
+    // the control that draws them.
+    let mesh = s
+        .doc
+        .calls()
+        .iter()
+        .find(|c| c.short_name() == "colormesh")
+        .expect("the colormesh");
+    let mf = s
+        .schema
+        .function_for_callee(&mesh.callee)
+        .expect("its schema");
+    let mesh_offers = lilook_core::argument_offers(&mf.params, mesh);
+    let interpolation = mesh_offers
+        .iter()
+        .find(|o| o.param == "interpolation")
+        .expect("interpolation");
+    assert_eq!(
+        interpolation
+            .choices
+            .iter()
+            .map(|(l, _)| l.as_str())
+            .collect::<Vec<_>>(),
+        vec!["pixelated", "smooth"],
+    );
+    assert!(
+        mesh_offers.iter().all(|o| o.param != "map"),
+        "map is already set here"
+    );
 
     // A parameter lilook cannot name a value for still writes something the
     // figure survives: the documented default, sentinel or not. `xscale: none`
     // parses and does not compile, and this is the assertion that says so.
-    let bare = offers
-        .iter()
-        .find(|o| o.label == "xscale")
-        .expect("the name on its own");
-    assert_eq!(bare.written(), "auto");
+    assert_eq!(scale.written(), "auto");
 
     // Already written, so not offered again -- and a positional is never offered
     // at all, because typst refuses one passed by name.
@@ -105,13 +152,24 @@ fn an_offer_carries_the_value_as_well_as_the_name() {
         );
     }
 
-    // And the popup says the same thing, because it is built from this.
-    let names: Vec<String> = s
-        .completions(at("yscale") - 1)
-        .into_iter()
-        .map(|c| c.label)
-        .collect();
-    assert!(names.contains(&"xscale: log".to_string()), "{names:?}");
+    // And the popup says the same thing, because it is built from this: the
+    // parameter as a row, its values on it, each with the text that writes it.
+    let offered = s.completions(at("yscale") - 1);
+    let xscale = offered
+        .iter()
+        .find(|c| c.label == "xscale")
+        .expect("xscale is offered");
+    assert!(
+        xscale
+            .choices
+            .contains(&("log".to_string(), "xscale: \"log\"".to_string())),
+        "{:?}",
+        xscale.choices
+    );
+    assert!(
+        !offered.iter().any(|c| c.label.contains(':')),
+        "one row per argument in the text pane too"
+    );
 }
 
 #[test]

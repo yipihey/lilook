@@ -312,15 +312,16 @@ fn what_is_typed_into_add_argument_outlives_the_inspector_that_drew_it() {
     assert_ne!(id, lilook_ui::add_argument_filter_id(call.id + 1));
 }
 
-/// One click adds the whole argument, value included.
+/// One click adds the whole argument, and the click lands where it looks.
 ///
-/// The behaviour the source pane always had and the inspector did not: its combo
-/// made you pick a name, press `add`, and then find the value -- three acts for
-/// something the other pane did in one, over the same list. Driven through real
-/// pointer input, because "the row is a click target" is exactly the claim that
-/// cannot be made by calling a function.
+/// Two claims in one, both of which need real pointer input. Clicking a row adds
+/// that argument with a value the figure survives -- the behaviour the source
+/// pane always had and the inspector's combo did not, where it took three acts.
+/// And clicking a *value named on that row* writes that value: `interpolation`
+/// shows `pixelated` and `smooth`, and clicking `smooth` wrote `pixelated` until
+/// the values became targets of their own.
 #[test]
-fn one_click_on_an_offer_adds_the_whole_argument() {
+fn one_click_adds_the_argument_and_the_value_that_was_clicked() {
     let schema = schema();
     let doc = Document::new(SRC);
     let call = doc
@@ -332,12 +333,16 @@ fn one_click_on_an_offer_adds_the_whole_argument() {
         .function_for_callee(&call.callee)
         .expect("its schema");
     let offers = lilook_core::argument_offers(&f.params, call);
-    // The row the popup will show second, which is a value row for a scale on
-    // this call: `xscale: log`, written whole.
+    // `xscale`, which names its four scales on its own line.
     let wanted = offers
         .iter()
-        .position(|o| o.label == "xscale: log")
-        .expect("a scale's own values");
+        .position(|o| o.param == "xscale")
+        .expect("a scale to set");
+    let log = offers[wanted]
+        .choices
+        .iter()
+        .position(|(l, _)| l == "log")
+        .expect("log is one of them");
 
     let ctx = egui::Context::default();
     let frame = |input: egui::RawInput| {
@@ -345,50 +350,67 @@ fn one_click_on_an_offer_adds_the_whole_argument() {
         let _ = ctx.run_ui(input, |ui| insp.ui(ui, call));
         insp.events
     };
+    let click_at = |at: egui::Pos2| {
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::PointerMoved(at));
+        for pressed in [true, false] {
+            input.events.push(egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            });
+        }
+        input
+    };
 
     // The popup is gated on the field having focus, the way the source pane's is
     // gated on the caret being in the buffer.
     let field = lilook_ui::add_argument_filter_id(call.id).with("field");
     ctx.memory_mut(|m| m.request_focus(field));
 
-    // Where that row landed. Row ids are derived from the popup's id so that a
-    // test can aim at a chosen part of one. Several frames, because an `Area`
-    // that has never been laid out does not know its own height and is placed
-    // again once it does -- aiming at the first frame's rect misses by a row.
-    let row = lilook_ui::add_argument_filter_id(call.id)
+    // Where the row and its values landed. Ids are derived from the popup's own
+    // so that a test can aim at a chosen part of a row. Several frames, because
+    // an `Area` that has never been laid out does not know its own height and is
+    // placed again once it does -- aiming at the first frame's rect misses.
+    let row_id = lilook_ui::add_argument_filter_id(call.id)
         .with("popup")
         .with(("row", wanted));
-    let mut rect = egui::Rect::NOTHING;
+    let chip_id = row_id.with(("choice", log));
+    let (mut row, mut chip) = (egui::Rect::NOTHING, egui::Rect::NOTHING);
     for _ in 0..5 {
         assert!(frame(egui::RawInput::default()).is_empty(), "just looking");
-        rect = ctx.read_response(row).expect("the row was laid out").rect;
+        row = ctx.read_response(row_id).expect("the row").rect;
+        chip = ctx.read_response(chip_id).expect("the value on it").rect;
     }
+    assert!(row.contains_rect(chip), "the value sits on its row");
 
-    let mut input = egui::RawInput::default();
-    let at = rect.center();
-    input.events.push(egui::Event::PointerMoved(at));
-    input.events.push(egui::Event::PointerButton {
-        pos: at,
-        button: egui::PointerButton::Primary,
-        pressed: true,
-        modifiers: egui::Modifiers::default(),
-    });
-    input.events.push(egui::Event::PointerButton {
-        pos: at,
-        button: egui::PointerButton::Primary,
-        pressed: false,
-        modifiers: egui::Modifiers::default(),
-    });
-    let events = frame(input);
-
+    // On the value: `log`, not the scale's own `auto`.
     assert_eq!(
-        events,
+        frame(click_at(chip.center())),
         vec![UiEvent::Insert {
             node: call.id,
             param: "xscale".into(),
             value: "\"log\"".into(),
         }],
-        "one click, one whole argument"
+        "the value the pointer was on"
+    );
+
+    // On the row itself, left of every value: the parameter, with what lilook
+    // would choose for it.
+    let name = egui::pos2(row.left() + 4.0, row.center().y);
+    assert!(!chip.contains(name), "aiming at the name, not a value");
+    ctx.memory_mut(|m| m.request_focus(field));
+    for _ in 0..3 {
+        frame(egui::RawInput::default());
+    }
+    assert_eq!(
+        frame(click_at(name)),
+        vec![UiEvent::Insert {
+            node: call.id,
+            param: "xscale".into(),
+            value: "auto".into(),
+        }],
     );
     // And the field lets go of what was typed, so the popup does not stay open
     // offering the argument that was just added.
