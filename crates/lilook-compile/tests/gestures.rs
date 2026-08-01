@@ -1268,3 +1268,191 @@ fn a_reversed_map_draws() {
         "reversed is still the same map"
     );
 }
+
+/// What the library asks the compiler about a value someone else wrote.
+///
+/// `check_expr` says the text reparses; this says it is a thing that can be
+/// drawn with. The distinction only matters for imports -- lilook builds its own
+/// values out of colours the user picked -- and it is exactly there that a value
+/// can be anything at all.
+#[test]
+fn the_import_check_tells_colours_from_nonsense() {
+    use lilook_core::Prefs;
+
+    let mut b = Backend::new(std::env::temp_dir(), "");
+    let errors = |b: &mut Backend<_>, value: &str| -> Vec<String> {
+        let (_, diagnostics) = b.query(&Prefs::check_query(value));
+        diagnostics
+            .iter()
+            .filter(|d| d.severity == lilook_core::Severity::Error)
+            .map(|d| d.message.clone())
+            .collect()
+    };
+
+    // Nothing exotic: a real palette, a real map, and a reversed one.
+    for good in [
+        r##"(rgb("#d55e00"), rgb("#e69f00"))"##,
+        "(red, blue, green)",
+        "color.map.viridis",
+        "color.map.magma.rev()",
+        "(luma(0%), luma(100%))",
+        "gradient.linear(red, blue)",
+        "(1pt + red, 2pt + blue)",
+    ] {
+        let found = errors(&mut b, good);
+        if found.iter().any(|m| m.contains("package")) {
+            return; // no network for the package cache; the same skip as elsewhere
+        }
+        assert!(found.is_empty(), "{good} should pass: {found:?}");
+    }
+
+    // And the ways an imported value goes wrong.
+    for (bad, why) in [
+        ("(1, 2, 3)", "numbers"),
+        (r#"("red", "blue")"#, "words"),
+        ("()", "empty"),
+        ("42", "not a list"),
+        ("accent_colour_from_their_document", "unknown name"),
+    ] {
+        let found = errors(&mut b, bad);
+        assert!(!found.is_empty(), "{bad} should be refused ({why})");
+    }
+}
+
+/// A library imported with a real compiler on the other end.
+///
+/// The pieces are tested apart -- the check expression against typst, the queue
+/// and the routing against a fabricated answer -- and this is the one that says
+/// they fit: drop a file in, let the compiler answer, and see what ends up in the
+/// library.
+#[test]
+fn importing_puts_each_value_to_the_compiler() {
+    use lilook_core::{Kind, Prefs, Schema, Session};
+
+    let mut b = Backend::new(std::env::temp_dir(), "");
+    let mut s = Session::new(
+        "#import \"@preview/lilaq:0.6.0\" as lq\n".to_string(),
+        Schema::from_json(lilook_core::schema::BUNDLED).expect("bundled schema"),
+    );
+
+    let mut theirs = Prefs::default();
+    theirs
+        .save(Kind::Cycle, "good", r##"(rgb("#d55e00"), rgb("#e69f00"))"##)
+        .expect("reparses");
+    theirs
+        .save(Kind::Colormap, "alsogood", "color.map.magma.rev()")
+        .expect("reparses");
+    // Reparses, draws nothing: exactly what the parser cannot tell.
+    theirs
+        .save(Kind::Cycle, "bad", "(1, 2, 3)")
+        .expect("reparses");
+    theirs
+        .save(Kind::Cycle, "missing", "their_document_accent")
+        .expect("reparses");
+
+    s.import_library(&theirs.to_toml());
+    let mut rounds = 0;
+    loop {
+        s.pump_checks();
+        let Some(expr) = s.queued_query.take() else {
+            break;
+        };
+        let (answer, diagnostics) = b.query(&expr);
+        s.accept_answer(&expr, answer, &diagnostics);
+        rounds += 1;
+        assert!(rounds < 20, "the queue should drain, not spin");
+    }
+
+    assert_eq!(rounds, 4, "each value asked about once");
+    assert!(s.prefs.get(Kind::Cycle, "good").is_some(), "{}", s.status);
+    assert!(
+        s.prefs.get(Kind::Colormap, "alsogood").is_some(),
+        "{}",
+        s.status
+    );
+    assert!(
+        s.prefs.get(Kind::Cycle, "bad").is_none(),
+        "kept out: {}",
+        s.status
+    );
+    assert!(
+        s.prefs.get(Kind::Cycle, "missing").is_none(),
+        "a name their document had and this one does not: {}",
+        s.status
+    );
+    assert!(
+        s.status.contains("2 added") && s.status.contains("bad") && s.status.contains("missing"),
+        "and said so in one line: {}",
+        s.status
+    );
+}
+
+/// Starting a colour map of your own from a built-in gives you the built-in.
+///
+/// The colormap editor's one dishonesty until now: `new…` on `color.map.viridis`
+/// seeded from lilook's five-stop *preview* sketch, which is not viridis. The
+/// compiler is the one that knows, so it is asked -- and typst's own maps turn
+/// out to be nine stops, not the 256 one might fear, so the answer is the map
+/// itself with nothing thinned out.
+#[test]
+fn a_map_of_your_own_starts_from_the_real_map() {
+    use lilook_core::{Schema, Session, UiEvent};
+
+    let mut b = Backend::new(std::env::temp_dir(), "");
+    let mut s = Session::new(
+        "#import \"@preview/lilaq:0.6.0\" as lq\n".to_string(),
+        Schema::from_json(lilook_core::schema::BUNDLED).expect("bundled schema"),
+    );
+
+    s.handle(
+        vec![UiEvent::AskColormapStops {
+            map: "color.map.viridis".into(),
+        }],
+        0.0,
+    );
+    s.pump_checks();
+    let expr = s.queued_query.take().expect("a question");
+    let (answer, diagnostics) = b.query(&expr);
+    if diagnostics.iter().any(|d| d.message.contains("package")) {
+        return;
+    }
+    s.accept_answer(&expr, answer, &diagnostics);
+
+    let (map, stops) = s.map_stops.clone().expect("an answer");
+    assert_eq!(
+        map, "color.map.viridis",
+        "about the map that was asked about"
+    );
+    assert!(
+        stops.len() > 5,
+        "the real map, not the sketch: {}",
+        stops.len()
+    );
+    assert_eq!(
+        stops.first().map(String::as_str),
+        Some("rgb(\"#440154\")"),
+        "viridis starts where viridis starts"
+    );
+    for stop in &stops {
+        assert!(
+            lilook_core::check_expr(stop).is_ok(),
+            "and every stop is writable typst: {stop}"
+        );
+    }
+
+    // The whole point: what comes back can be saved and drawn with.
+    let value = lilook_ui::pick::cycle_array(&stops);
+    let src = format!(
+        r#"#import "@preview/lilaq:0.6.0" as lq
+#set page(width: auto, height: auto, margin: 5pt)
+#let xs = lq.linspace(0, 4, num: 5)
+#lq.diagram(lq.colormesh(xs, xs, (x, y) => x * y, map: {value}))
+"#
+    );
+    let r = b.render(&src, 1.0);
+    assert!(
+        !r.failed(),
+        "and draws: {:?}",
+        r.errors().map(|d| d.message.clone()).collect::<Vec<_>>()
+    );
+}

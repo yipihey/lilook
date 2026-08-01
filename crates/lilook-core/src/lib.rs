@@ -34,8 +34,9 @@ pub use edit::{minimal_replacement, Anchor, AppliedEdit, CoalesceKey, History, T
 pub use events::{CanvasEvent, UiEvent};
 pub use intent::Intent;
 pub use policy::{
-    argument_offers, cycle_source, seed_for_test, sentinel_of, widget_control, ArgumentOffer,
-    Control, COLORMAPS, CYCLES, FIGURE_TEXT_SIZES, FIGURE_WIDTHS, TYPST_HELPERS,
+    argument_offers, colormap_stops_query, cycle_source, seed_for_test, sentinel_of,
+    widget_control, ArgumentOffer, Control, COLORMAPS, CYCLES, FIGURE_TEXT_SIZES, FIGURE_WIDTHS,
+    TYPST_HELPERS,
 };
 pub use prefs::{Kind, Loaded, Merged, Prefs, Saved};
 pub use render::{Blame, Diagnostic, Image, Page, Render, Severity};

@@ -47,6 +47,14 @@ pub struct Context<'a> {
     /// ones. Borrowed, and empty by default: an inspector with no library is the
     /// same inspector with a shorter menu.
     pub saved: &'a [lilook_core::Saved],
+    /// The true stops of a colour map, when the compiler has just been asked for
+    /// them: `(the map that was asked about, its colours as source text)`.
+    ///
+    /// Only a built-in needs this. `color.map.viridis` is a name -- lilook has
+    /// never had its colours, only a five-stop sketch for the preview strip --
+    /// and starting a map of your own from a sketch would hand back something
+    /// that is not the map it claims to be.
+    pub map_stops: Option<&'a (String, Vec<String>)>,
 }
 
 /// Adapt a control to the value actually written there.
@@ -464,11 +472,44 @@ impl<'a> Inspector<'a> {
                     {
                         picked = Some(pick::reverse(&current));
                     }
+                    let waiting = pick::cycle_parts(&current).is_empty();
                     if pick::chip(ui, ui.id().with((node, "new-map")), "new…")
-                        .on_hover_text("build a colour map of your own, starting from this one")
+                        .on_hover_text(match waiting {
+                            true => {
+                                "build a colour map of your own, starting from this one -- \
+                                     its real colours, which lilook asks the compiler for"
+                            }
+                            false => "build a colour map of your own, starting from this one",
+                        })
                         .clicked()
                     {
-                        edit = Some(Edit::Open(current.clone()));
+                        edit = Some(match waiting {
+                            // A name. Ask what it is made of; the editor opens
+                            // when the answer arrives, a compile later.
+                            true => Edit::Ask(current.clone()),
+                            false => Edit::Open(current.clone()),
+                        });
+                    }
+                    // The answer to that question, arriving.
+                    if let Some((asked, stops)) = self.context.map_stops {
+                        if *asked == current {
+                            let taken = lilook_core::Prefs {
+                                version: lilook_core::Prefs::VERSION,
+                                saved: self.context.saved.to_vec(),
+                            };
+                            let suggested = taken.free_name(
+                                lilook_core::Kind::Colormap,
+                                &format!("my {}", pick::map_name(&current)),
+                            );
+                            open_editor_with(
+                                ui,
+                                lilook_core::Kind::Colormap,
+                                node,
+                                &name,
+                                &suggested,
+                                stops.clone(),
+                            );
+                        }
                     }
                     if let Some(v) = picked {
                         ev.push(set(node, &name, v));
@@ -487,6 +528,7 @@ impl<'a> Inspector<'a> {
                             kind: lilook_core::Kind::Colormap,
                             name: n,
                         }),
+                        Some(Edit::Ask(map)) => ev.push(UiEvent::AskColormapStops { map }),
                         None => {}
                     }
                 }
@@ -561,6 +603,7 @@ impl<'a> Inspector<'a> {
                         ev.push(set(node, &name, lilook_core::cycle_source(&v)));
                     }
                     match edit {
+                        Some(Edit::Ask(_)) => {}
                         Some(Edit::Open(from)) => {
                             let kind = lilook_core::Kind::Cycle;
                             // Named before it is opened, so `save` is never
@@ -943,6 +986,9 @@ impl<'a> Inspector<'a> {
 enum Edit {
     /// Start a palette of your own from this expression.
     Open(String),
+    /// Ask the compiler what this map is made of, and start from that. Only a
+    /// name needs asking; a list of colours is already the answer.
+    Ask(String),
     /// Take this one out of the library.
     Forget(String),
 }
@@ -975,20 +1021,38 @@ pub fn cycle_editor_id(node: usize) -> egui::Id {
     egui::Id::new((node, "palette-editor"))
 }
 
+/// Open the editor on colours that are already known -- the compiler's answer
+/// about a built-in map, rather than anything lilook guessed.
+pub fn open_editor_with(
+    ui: &mut egui::Ui,
+    kind: lilook_core::Kind,
+    node: usize,
+    param: &str,
+    name: &str,
+    colors: Vec<String>,
+) {
+    let state = PaletteEdit {
+        kind,
+        param: param.to_string(),
+        name: name.to_string(),
+        colors,
+    };
+    ui.data_mut(|d| d.insert_temp(cycle_editor_id(node), state));
+}
+
 /// Seed the editor from whatever the figure is using now.
 ///
 /// A value that is already an array of colours opens as its own colours --
 /// exactly, from its source text. Anything else opens from what lilook can say
-/// about it, and the two cases differ in an important way:
+/// about it: a palette falls back to lilaq's own, which is what a diagram draws
+/// with when nothing else is said, so the editor starts from what is on screen.
 ///
-/// - a palette falls back to lilaq's own, which is what a diagram draws with
-///   when nothing else is said, so the editor starts from what is on screen;
-/// - a **colour map named by typst** -- `color.map.viridis` -- falls back to
-///   lilook's *five-stop preview* of it, because the real map is 256 entries
-///   inside typst and lilook has never had them. That is a fine place to start
-///   a map of your own and a lie if it were presented as viridis, so it is
-///   named as yours from the moment it opens and the hover says where the
-///   colours came from.
+/// A colour map named by typst does *not* come through here. `color.map.viridis`
+/// is a name, and lilook has only ever carried a five-stop sketch of it for the
+/// preview strip -- starting a map of your own from a sketch would hand back
+/// something that is not the map it claims to be. That case asks the compiler
+/// and arrives through [`open_editor_with`]; the fallback below is what is left
+/// if the compiler cannot answer.
 pub fn open_cycle_editor(
     ui: &mut egui::Ui,
     kind: lilook_core::Kind,

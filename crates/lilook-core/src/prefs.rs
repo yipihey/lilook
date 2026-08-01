@@ -84,7 +84,7 @@ impl Default for Prefs {
 }
 
 /// What came of taking in another library.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Merged {
     /// Arrived under the name it had.
     pub added: usize,
@@ -98,6 +98,15 @@ pub struct Merged {
 }
 
 impl Merged {
+    /// Fold another report into this one, for an import that is decided a piece
+    /// at a time as the compiler answers.
+    pub fn absorb(&mut self, other: Merged) {
+        self.added += other.added;
+        self.already += other.already;
+        self.renamed.extend(other.renamed);
+        self.refused.extend(other.refused);
+    }
+
     /// What to tell the user, in one line.
     pub fn summary(&self) -> String {
         let mut parts = Vec::new();
@@ -273,6 +282,37 @@ impl Prefs {
 
     /// A name that is not taken yet, for "save this as…" starting from a
     /// suggestion. `mine`, then `mine 2`, and so on.
+    /// The expression that decides whether a saved value is usable, put to the
+    /// compiler rather than to a parser.
+    ///
+    /// `check_expr` only says the text reparses. That is enough for something
+    /// lilook itself just built out of colours the user picked, and not enough
+    /// for a value that arrived in someone else's file, where `(1, 2, 3)` and
+    /// `(accnt, red)` both reparse and neither draws.
+    ///
+    /// The test is deliberately a *blacklist*: a list, not empty, of things that
+    /// are not numbers or words. Colours, gradients, strokes and whatever else
+    /// typst grows all pass; wrongly refusing a value someone really uses would
+    /// be worse than letting an odd one through, because the odd one fails
+    /// visibly at the first figure that draws it.
+    pub fn check_query(value: &str) -> String {
+        // A code block, one statement per line: typst separates statements by a
+        // line break or a semicolon, and a block written as one long line is a
+        // syntax error waiting for whoever edits it next.
+        format!(
+            "{{\n\
+             let v = ({value})\n\
+             assert(type(v) == array or type(v) == gradient, message: \"not a list of colours\")\n\
+             if type(v) == array {{\n\
+             assert(v.len() > 0, message: \"an empty list\")\n\
+             assert(v.all(c => type(c) not in (int, float, str, bool, type(none))), \
+             message: \"a list of numbers or words, not of colours\")\n\
+             }}\n\
+             v\n\
+             }}"
+        )
+    }
+
     /// Rename something in the library.
     ///
     /// The name is how a saved thing is chosen and how a theme is bound in a

@@ -546,3 +546,15 @@ pub const TYPST_HELPERS: &[(&str, &str, &str)] = &[
         "a colour ramp of your own",
     ),
 ];
+
+/// Ask typst what a colour map is made of.
+///
+/// `color.map.viridis` is a *name*: the colours belong to typst, and lilook has
+/// only ever carried a five-stop sketch of each for the preview strip. Starting
+/// a map of your own from that sketch would hand back something that is not the
+/// map it says it is -- so the compiler is asked, and it answers with the map
+/// itself. There are nine stops in typst's own maps, not the 256 one might fear,
+/// so the answer is small and needs no thinning.
+pub fn colormap_stops_query(map: &str) -> String {
+    format!("({map}).map(c => c.to-hex())")
+}

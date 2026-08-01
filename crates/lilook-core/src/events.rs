@@ -103,4 +103,11 @@ pub enum UiEvent {
     /// Take one off the shelf. Also not an edit: a figure that already uses it
     /// carries the value, not the name.
     RemovePref { kind: crate::Kind, name: String },
+    /// What is this colour map actually made of?
+    ///
+    /// `color.map.viridis` is a name, and lilook has only ever had a five-stop
+    /// sketch of it for the preview strip. Building a map of your own from a
+    /// sketch would hand back something that is not the map it says it is, so
+    /// the compiler is asked instead -- it is the one that knows.
+    AskColormapStops { map: String },
 }

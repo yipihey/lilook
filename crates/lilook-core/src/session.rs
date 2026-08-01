@@ -223,6 +223,22 @@ pub struct Session {
     pub requests: Requests,
     pub link: Option<Link>,
     pub queued_query: Option<String>,
+    /// Imported values waiting to be put to the compiler, the one in flight
+    /// with the expression it was asked about, and what the import has come to
+    /// so far.
+    ///
+    /// Only imports queue here. A value lilook built itself is made of colours
+    /// the user picked and is applied to the document as it is saved, so the
+    /// ordinary compile already answers for it; a value from someone else's file
+    /// has never been near a compiler.
+    check_queue: std::collections::VecDeque<crate::Saved>,
+    checking: Option<(String, crate::Saved)>,
+    check_report: crate::Merged,
+    /// A colour map whose true colours the editor is waiting on, the question in
+    /// flight, and the answer once it comes.
+    wanted_stops: Option<String>,
+    asking_stops: Option<(String, String)>,
+    pub map_stops: Option<(String, Vec<String>)>,
     /// Blame asked for from inside a frame, emitted on the next one.
     pub queued_blame: Vec<String>,
     /// A figure extracted from inside a frame, handed over on the next one.
@@ -273,6 +289,12 @@ impl Session {
             requests: Requests::default(),
             link: None,
             queued_query: None,
+            check_queue: Default::default(),
+            checking: None,
+            check_report: Default::default(),
+            wanted_stops: None,
+            asking_stops: None,
+            map_stops: None,
             queued_blame: vec![],
             queued_write: None,
             changed_files: vec![],
@@ -420,6 +442,11 @@ impl Session {
                         self.prefs_dirty = true;
                         self.status = format!("{} {name} removed from your library", kind.as_str());
                     }
+                }
+                UiEvent::AskColormapStops { map } => {
+                    self.map_stops = None;
+                    self.wanted_stops = Some(map);
+                    self.status = "asking what that map is made of…".into();
                 }
             }
         }
@@ -809,6 +836,98 @@ impl Session {
         self.link = Some(Link::Asking { path, expr });
     }
 
+    /// Take in another library: someone else's file, or a copy of your own.
+    ///
+    /// Themes are admitted straight away and palettes and colour maps are put to
+    /// the compiler first. That is not an oversight about themes -- a theme is a
+    /// closure, and typst resolves what is inside a closure when it is *called*,
+    /// so evaluating the definition would prove nothing. A theme is answered for
+    /// by the document that uses it, at the compile that follows.
+    pub fn import_library(&mut self, text: &str) -> String {
+        let other = match crate::Prefs::from_toml(text) {
+            Ok(other) => other,
+            Err(why) => return format!("that is not a lilook library -- {why}"),
+        };
+        let mut now = crate::Prefs {
+            version: crate::Prefs::VERSION,
+            saved: vec![],
+        };
+        let mut queued = 0;
+        for entry in other.saved {
+            match entry.kind {
+                crate::Kind::Theme => now.saved.push(entry),
+                _ => {
+                    queued += 1;
+                    self.check_queue.push_back(entry);
+                }
+            }
+        }
+        let report = self.prefs.merge(now);
+        if report.added > 0 || !report.renamed.is_empty() {
+            self.prefs_dirty = true;
+        }
+        self.check_report.absorb(report);
+        match queued {
+            0 => self.finish_import(),
+            n => format!("checking {n} against the compiler…"),
+        }
+    }
+
+    /// Put the next imported value to the compiler, if the query slot is free.
+    ///
+    /// One at a time, and never ahead of a question the user is waiting on: a
+    /// link asks through the same slot, and it asks because someone clicked.
+    pub fn pump_checks(&mut self) {
+        if self.checking.is_some() || self.asking_stops.is_some() || self.queued_query.is_some() {
+            return;
+        }
+        // Someone is waiting behind this one: the editor does not open until the
+        // map answers, so it goes before the import queue.
+        if let Some(map) = self.wanted_stops.take() {
+            let expr = crate::colormap_stops_query(&map);
+            self.queued_query = Some(expr.clone());
+            self.asking_stops = Some((expr, map));
+            return;
+        }
+        let Some(next) = self.check_queue.pop_front() else {
+            return;
+        };
+        let expr = crate::Prefs::check_query(&next.value);
+        self.queued_query = Some(expr.clone());
+        self.checking = Some((expr, next));
+    }
+
+    /// An imported value the compiler has now seen.
+    fn admit_checked(&mut self, entry: crate::Saved, diagnostics: &[Diagnostic]) {
+        let refused: Option<String> = diagnostics
+            .iter()
+            .find(|d| d.severity == Severity::Error)
+            .map(|d| d.message.clone());
+        match refused {
+            Some(why) => self.check_report.refused.push((entry.name.clone(), why)),
+            None => {
+                let one = crate::Prefs {
+                    version: crate::Prefs::VERSION,
+                    saved: vec![entry],
+                };
+                let report = self.prefs.merge(one);
+                if report.added > 0 || !report.renamed.is_empty() {
+                    self.prefs_dirty = true;
+                }
+                self.check_report.absorb(report);
+            }
+        }
+        if self.check_queue.is_empty() && self.checking.is_none() {
+            self.status = self.finish_import();
+        }
+    }
+
+    /// Say what the import came to, and start the next one from nothing.
+    fn finish_import(&mut self) -> String {
+        let report = std::mem::take(&mut self.check_report);
+        format!("from that library: {}", report.summary())
+    }
+
     /// Take the answer to the query in `Requests::query`.
     ///
     /// `expr` is echoed back so a stale answer -- one for a link the user has
@@ -819,6 +938,38 @@ impl Session {
         answer: Option<crate::Answer>,
         diagnostics: &[Diagnostic],
     ) {
+        // A check and a link ask through the same slot, so the expression that
+        // came back is what says which of them this answers.
+        if self
+            .asking_stops
+            .as_ref()
+            .is_some_and(|(asked, _)| asked == expr)
+        {
+            let (_, map) = self.asking_stops.take().expect("just matched");
+            match answer {
+                Some(crate::Answer::Strings(hexes)) if !hexes.is_empty() => {
+                    let stops = hexes.iter().map(|h| format!("rgb(\"{h}\")")).collect();
+                    self.status = format!("{} colours in that map", hexes.len());
+                    self.map_stops = Some((map, stops));
+                }
+                // No answer means the map is not something typst can list --
+                // the editor stays shut rather than opening on a guess.
+                _ => {
+                    self.status = format!("could not read the colours of {map}");
+                    self.map_stops = None;
+                }
+            }
+            return;
+        }
+        if self
+            .checking
+            .as_ref()
+            .is_some_and(|(asked, _)| asked == expr)
+        {
+            let (_, entry) = self.checking.take().expect("just matched");
+            self.admit_checked(entry, diagnostics);
+            return;
+        }
         let Some(Link::Asking { path, expr: asked }) = &self.link else {
             return;
         };

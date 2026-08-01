@@ -11,7 +11,30 @@ fn editor() -> Editor {
     )
 }
 
-/// Dropping a library on the window adds it to yours.
+/// Answer whatever the editor is asking about, as a compiler would.
+///
+/// `ok` decides whether the value is accepted, which is what lets these tests
+/// drive the whole import loop without a compiler in the room.
+fn answer(e: &mut Editor, ok: bool) -> bool {
+    e.pump_checks();
+    let Some(expr) = e.queued_query.take() else {
+        return false;
+    };
+    let diagnostics = match ok {
+        true => vec![],
+        false => vec![lilook_core::Diagnostic {
+            severity: lilook_core::Severity::Error,
+            message: "not a list of colours".into(),
+            range: None,
+            hints: vec![],
+        }],
+    };
+    e.accept_answer(&expr, None, &diagnostics);
+    true
+}
+
+/// Dropping a library on the window adds it to yours -- once the compiler has
+/// agreed that what is in it can be drawn with.
 ///
 /// The whole import gesture, because neither shell has a file dialog and the
 /// browser would otherwise need a second way of getting bytes in.
@@ -27,9 +50,65 @@ fn a_dropped_library_is_taken_in() {
 
     let mut e = editor();
     let said = e.import_library(&theirs.to_toml());
-    assert_eq!(e.prefs.saved.len(), 2, "both arrived: {said}");
+    assert!(said.contains("checking"), "not yet -- asking first: {said}");
+    assert!(
+        e.prefs.saved.is_empty(),
+        "nothing offered before it is checked"
+    );
+
+    while answer(&mut e, true) {}
+    assert_eq!(e.prefs.saved.len(), 2, "both arrived: {}", e.status);
     assert!(e.prefs_dirty, "and will be written out");
-    assert!(said.contains("2 added"), "said what happened: {said}");
+    assert!(
+        e.status.contains("2 added"),
+        "said what happened: {}",
+        e.status
+    );
+}
+
+/// A value the compiler refuses never reaches the library.
+///
+/// This is the case `check_expr` cannot see: `(1, 2, 3)` reparses perfectly and
+/// draws nothing. Before, it went into the menu and failed at whichever figure
+/// the user first chose it for.
+#[test]
+fn a_value_the_compiler_refuses_is_kept_out() {
+    let mut theirs = Prefs::default();
+    theirs
+        .save(Kind::Cycle, "wrong", "(1, 2, 3)")
+        .expect("reparses");
+
+    let mut e = editor();
+    e.import_library(&theirs.to_toml());
+    while answer(&mut e, false) {}
+
+    assert!(e.prefs.saved.is_empty(), "not in the library");
+    assert!(!e.prefs_dirty, "and nothing to write out");
+    assert!(
+        e.status.contains("refused") && e.status.contains("wrong"),
+        "named, not dropped quietly: {}",
+        e.status
+    );
+}
+
+/// A theme is admitted without asking, and that is deliberate.
+///
+/// Typst resolves what is inside a closure when it is *called*, so evaluating a
+/// theme's definition proves nothing about it. The document that uses it answers
+/// for it, at the compile that follows.
+#[test]
+fn a_theme_is_not_put_to_the_compiler() {
+    let mut theirs = Prefs::default();
+    theirs.save(Kind::Theme, "mine", "it => it").expect("saved");
+
+    let mut e = editor();
+    let said = e.import_library(&theirs.to_toml());
+    assert!(
+        e.prefs.get(Kind::Theme, "mine").is_some(),
+        "straight in: {said}"
+    );
+    e.pump_checks();
+    assert!(e.queued_query.is_none(), "and nothing was asked");
 }
 
 /// Yours wins its name; theirs is kept beside it rather than dropped.
@@ -45,6 +124,8 @@ fn an_import_keeps_both_sides() {
         .expect("theirs");
 
     let said = e.import_library(&theirs.to_toml());
+    while answer(&mut e, true) {}
+    let said = format!("{said} {}", e.status);
     assert_eq!(e.prefs.of(Kind::Cycle).count(), 2, "both: {said}");
     assert_eq!(
         e.prefs.get(Kind::Cycle, "warm").map(|s| s.value.as_str()),

@@ -378,6 +378,9 @@ impl Editor {
 
         let ctx = self.ctx.clone().expect("a context for this frame");
         self.want_compile(&ctx);
+        // Anything imported and not yet put to the compiler goes now, if the
+        // slot is free.
+        self.pump_checks();
         self.requests.query = self.queued_query.take();
         self.requests.blame = std::mem::take(&mut self.queued_blame);
         self.requests.write_figure = self.queued_write.take();
@@ -480,10 +483,15 @@ impl Editor {
                                 .map(|s| s.points.len()),
                             slot_sources: &sources,
                             saved: &self.prefs.saved,
+                            map_stops: self.map_stops.as_ref(),
                         };
                         let mut insp = Inspector::new(f).with_context(context);
                         insp.ui(ui, &call);
                         events = std::mem::take(&mut insp.events);
+                        // Handed over once. Left standing, it would re-seed the
+                        // editor on every frame and wipe whatever the user had
+                        // just changed in it.
+                        self.map_stops = None;
                     }
                     None => {
                         ui.label("no call site selected");
@@ -1685,24 +1693,6 @@ impl Editor {
         if let Some(name) = use_saved {
             self.use_saved_theme(&name);
             self.mark_dirty();
-        }
-    }
-
-    /// Take in another library, from a file someone sent or a copy of your own.
-    ///
-    /// Public because the gesture that reaches it is the shell's: a file dropped
-    /// on the window. Merging rather than replacing, and keeping what is here on
-    /// a clash -- see `Prefs::merge`.
-    pub fn import_library(&mut self, text: &str) -> String {
-        match lilook_core::Prefs::from_toml(text) {
-            Ok(other) => {
-                let report = self.prefs.merge(other);
-                if report.added > 0 || !report.renamed.is_empty() {
-                    self.prefs_dirty = true;
-                }
-                format!("from that library: {}", report.summary())
-            }
-            Err(why) => format!("that is not a lilook library -- {why}"),
         }
     }
 

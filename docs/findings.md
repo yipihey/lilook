@@ -2274,3 +2274,40 @@ And a note on evidence: while chasing a preview that looked wrong in a
 screenshot, the *capture* turned out to be rotating colour channels. The previews
 are now gated on egui's own shapes, which are what the app actually asks for.
 A picture of the program is not the program.
+
+## Asking the compiler, and the difference between reparsing and drawing
+
+2026-08-01. The library is finished by putting values to the one thing that can
+actually judge them.
+
+**`check_expr` says a value reparses. That is a different claim from "this can be
+drawn with", and the gap is exactly the size of an import.** A value lilook built
+itself is made of colours the user picked and is applied to the document as it is
+saved, so the ordinary compile already answers for it. A value out of someone
+else's file has never been near a compiler, and `(1, 2, 3)` and
+`their_document_accent` both reparse perfectly and draw nothing.
+
+So an imported palette or colour map is now staged rather than admitted: put to
+the compiler one at a time through the query slot that already exists, and let
+into the library only when it comes back clean. Refused ones are named. The test
+is deliberately a **blacklist** -- a non-empty list of things that are not
+numbers or words -- because wrongly refusing a value someone really uses is worse
+than letting an odd one through: the odd one fails visibly at the first figure
+that draws it, and the refusal fails invisibly forever.
+
+**A theme is admitted without asking, and that is not a shortcut.** Typst
+resolves what is inside a closure when it is *called*, so evaluating a theme's
+definition proves nothing about its body. The document that uses it answers for
+it, at the compile that follows. Checking it would be theatre.
+
+**And the colormap editor's last dishonesty is gone.** `new…` on
+`color.map.viridis` seeded from lilook's five-stop preview sketch, which is not
+viridis. It now asks the compiler and opens when the answer arrives. The
+surprise: typst's own maps are **nine** stops, not the 256 this file previously
+assumed -- so the answer is the map itself, exactly, with nothing thinned out,
+and it is small enough to edit by hand. The preview strips keep the compiled-in
+sketch, because a menu draws its ramps before anything has been asked.
+
+The shape of that fix is worth keeping: the honest way out of an approximation is
+usually to ask whoever owns the real answer, and the reason not to is usually an
+assumption about cost that nobody has checked.
