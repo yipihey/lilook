@@ -1515,6 +1515,33 @@ impl Editor {
                         .on_hover_text("open the .lil to edit it");
                 }
             });
+            // Only offered where a legend already exists to move -- lilaq
+            // draws one automatically the moment a series has a `label:`,
+            // so this is common, but a diagram with nothing labelled has no
+            // legend for auto-placement to act on.
+            let has_legend = self
+                .scenes
+                .iter()
+                .find(|s| s.figure == fig)
+                .is_some_and(|s| {
+                    s.decorations
+                        .iter()
+                        .any(|(k, _)| *k == lilook_core::scene::Decoration::Legend)
+                });
+            if has_legend
+                && ui
+                    .small_button("auto-position legend")
+                    .on_hover_text(
+                        "Move the legend to whichever of the nine positions covers \
+                         the least drawn data -- lilaq's own `loc=\"best\"`, spiked \
+                         here ahead of a possible upstream patch. Any fill or stroke \
+                         already set is kept.",
+                    )
+                    .clicked()
+            {
+                self.auto_position_legend(fig);
+                self.mark_dirty();
+            }
         }
         // Twin axis, offered where the series is: a second y-axis is a property
         // of one series, not of the diagram.

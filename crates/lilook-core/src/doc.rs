@@ -1145,6 +1145,72 @@ pub fn resolves_anywhere(value: &str) -> bool {
     out.is_empty()
 }
 
+/// Every `key: value` pair of a dict literal, as (name, value byte-range) --
+/// a real parse rather than a hand-rolled comma split, so a value containing
+/// its own comma (`rgb(1, 2, 3)`, a nested dict) cannot be mistaken for a
+/// second field.
+fn dict_entries(text: &str) -> Vec<(String, Range<usize>)> {
+    fn find_dict<'a>(node: &LinkedNode<'a>) -> Option<LinkedNode<'a>> {
+        if node.kind() == SyntaxKind::Dict {
+            return Some(node.clone());
+        }
+        node.children().find_map(|c| find_dict(&c))
+    }
+    let root = typst_syntax::parse_code(text);
+    let node = LinkedNode::new(&root);
+    let Some(dict) = find_dict(&node) else {
+        return vec![];
+    };
+    dict.children()
+        .filter(|c| c.kind() == SyntaxKind::Named)
+        .filter_map(|named| {
+            let mut kids = named.children().filter(|c| !c.kind().is_trivia());
+            let key = kids.next()?;
+            let _colon = kids.next()?;
+            let value = kids.next()?;
+            (key.kind() == SyntaxKind::Ident)
+                .then(|| (text[key.range()].to_string(), value.range()))
+        })
+        .collect()
+}
+
+/// Set `key: value` in a dict literal's text, preserving every other field
+/// exactly as written.
+///
+/// `MoveLegend` used to overwrite `legend:` wholesale on every drag -- the
+/// comment above it said parsing what the user wrote there was out of scope.
+/// It was already parsed: this is that parse, reused. A `fill` set once (by
+/// hand, or by nothing more than lilaq's own default) now survives a second
+/// drag instead of being silently discarded.
+///
+/// Falls back to a fresh `(key: value)` only when `existing` is not a dict
+/// lilook can read at all -- a bare `none`, or a reference to a user's own
+/// binding. That is never worse than before, when every case did this.
+pub fn merge_dict_field(existing: &str, key: &str, value: &str) -> String {
+    let entries = dict_entries(existing);
+    let mut out = String::from("(");
+    let mut replaced = false;
+    for (i, (name, range)) in entries.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        if name == key {
+            out.push_str(&format!("{key}: {value}"));
+            replaced = true;
+        } else {
+            out.push_str(&format!("{name}: {}", &existing[range.clone()]));
+        }
+    }
+    if !replaced {
+        if !entries.is_empty() {
+            out.push_str(", ");
+        }
+        out.push_str(&format!("{key}: {value}"));
+    }
+    out.push(')');
+    out
+}
+
 /// Element ranges of a literal array node, or empty for anything else.
 ///
 /// Typst writes a one-element array as `(1,)`, so the trailing comma is part of

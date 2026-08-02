@@ -56,8 +56,28 @@ pub fn num(v: f64) -> String {
 }
 
 /// A colour literal lilook can show as a swatch and write back.
+///
+/// lilaq's own defaults lean on `.transparentize(N%)` -- the legend's fill is
+/// `white.transparentize(20%)` -- so recognising only flat colours would
+/// leave the commonest translucent fill in the package unrecognised as a
+/// colour at all, degrading straight to the raw source editor.
 pub fn parse_color(s: &str) -> Option<Color32> {
     let s = s.trim();
+    if let Some((base, pct)) = s
+        .strip_suffix(')')
+        .and_then(|r| r.rsplit_once(".transparentize("))
+    {
+        let pct: f32 = pct.strip_suffix('%')?.trim().parse().ok()?;
+        let base = parse_color(base)?;
+        let keep = (1.0 - pct / 100.0).clamp(0.0, 1.0);
+        let [r, g, b, a] = base.to_srgba_unmultiplied();
+        return Some(Color32::from_rgba_unmultiplied(
+            r,
+            g,
+            b,
+            (a as f32 * keep).round() as u8,
+        ));
+    }
     if let Some(hex) = s
         .strip_prefix("rgb(")
         .and_then(|r| r.strip_suffix(')'))
@@ -295,6 +315,25 @@ mod tests {
         assert_eq!(parse_color("luma(50%)"), Some(Color32::from_gray(127)));
         assert_eq!(parse_color("color.map.viridis"), None);
         assert_eq!(parse_color("accent"), None);
+    }
+
+    #[test]
+    fn transparentize_is_alpha_not_an_opaque_expression() {
+        // lilaq's own legend default: white at 80% opacity.
+        let fill = parse_color("white.transparentize(20%)").unwrap();
+        assert_eq!(fill, Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 204));
+        // A named colour composes with it too.
+        assert_eq!(
+            parse_color("red.transparentize(50%)"),
+            Some(Color32::from_rgba_unmultiplied(0xff, 0x41, 0x36, 128))
+        );
+        // Unrecognised until now: this used to fall back to the raw source
+        // editor, the same as any other opaque expression.
+        assert_eq!(
+            color_source(fill, "white.transparentize(20%)"),
+            "white.transparentize(20%)",
+            "unchanged, so opening the picker does not rewrite the source"
+        );
     }
 
     #[test]

@@ -139,7 +139,10 @@ fn tools() -> Value {
                         {op, ...}: set|add|remove {node,param,value}; \
                         set_slot {node,index,value}; delete {node}; duplicate {node}; \
                         move_point {node,index,to:[x,y]}; set_limits {figure,x:[lo,hi],y:[lo,hi]}; \
-                        set_size {figure,width_pt,height_pt}; style {element,param,value} \
+                        set_size {figure,width_pt,height_pt}; \
+                        auto_legend {figure} (places legend: at whichever of the nine \
+                        positions covers the least drawn data, keeping any fill/stroke \
+                        already set); style {element,param,value} \
                         (adds a #show rule); theme {name} or {name:null} to clear; \
                         fork_theme {name}; rename_theme {name}; replace {range:[a,b],value}; \
                         source {value}; fix {label} (applies a fix `render` offered); \
@@ -440,6 +443,11 @@ impl Server {
                     width_pt: o.get("width_pt").and_then(Value::as_f64),
                     height_pt: o.get("height_pt").and_then(Value::as_f64),
                 }]),
+                "auto_legend" => self.session.auto_position_legend(
+                    o.get("figure")
+                        .and_then(Value::as_u64)
+                        .ok_or("need figure")? as usize,
+                ),
                 "style" => {
                     let element = sval(o, "element")?;
                     let lq = self.session.doc.lilaq_alias();

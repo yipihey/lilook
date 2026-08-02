@@ -145,6 +145,37 @@ fn an_agent_can_discover_edit_and_verify_a_figure() {
     );
 }
 
+/// `auto_legend` over the real protocol: an agent's route to the same
+/// least-overlap placement the canvas gesture uses, reachable without ever
+/// touching a pointer.
+#[test]
+fn auto_legend_places_the_legend_clear_of_the_data() {
+    let dir = std::env::temp_dir().join("lilook-mcp-auto-legend");
+    let _ = std::fs::create_dir_all(&dir);
+    let source = r#"#import \"@preview/lilaq:0.6.0\" as lq\n#set page(width: 12cm, height: 9cm, margin: 8pt)\n#lq.diagram(width: 8cm, height: 6cm, xlim: (0, 10), ylim: (0, 10), lq.plot((9, 9.2, 9.4, 9.5), (9, 9.2, 9.4, 9.5), label: [corner]))\n"#;
+    let out = drive(
+        &dir,
+        &[
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#,
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"lilook_edit","arguments":{{"ops":[{{"op":"source","value":"{source}"}}]}}}}}}"#
+            ),
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"lilook_edit","arguments":{"ops":[{"op":"auto_legend","figure":0}]}}}"#,
+            r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"lilook_doc","arguments":{}}}"#,
+        ],
+    );
+    if out.len() < 4 || out[1].contains("package") || out[1].contains("network") {
+        eprintln!("lilaq unavailable or unexpected reply count; skipping");
+        return;
+    }
+    assert!(!out[2].contains("ERROR"), "{}", out[2]);
+    assert!(
+        out[3].contains("bottom + left"),
+        "the corner farthest from the data: {}",
+        out[3]
+    );
+}
+
 /// An unknown op is refused by name rather than silently ignored.
 #[test]
 fn an_unknown_op_says_so() {

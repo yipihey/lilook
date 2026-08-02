@@ -2169,6 +2169,38 @@ impl Session {
         });
     }
 
+    /// Write `legend:`'s `position` field, keeping every other field the
+    /// dict already carries -- `fill`, `dx`/`dy`, a user's own `stroke`.
+    ///
+    /// Used by both the drag gesture and auto-placement, so neither one can
+    /// undo styling the other (or the user) set. `legend:` used to be
+    /// overwritten wholesale on every write; that meant a `fill` survived
+    /// exactly one drag.
+    fn set_legend_position(&mut self, figure: usize, position: &str) {
+        let existing = self
+            .doc
+            .call(figure)
+            .and_then(|c| c.named.iter().find(|a| a.name == "legend"))
+            .map(|a| a.text.clone())
+            .unwrap_or_default();
+        let value = crate::doc::merge_dict_field(&existing, "position", position);
+        self.set_or_insert(figure, "legend", value);
+    }
+
+    /// Place `legend:` at whichever of the nine positions covers the least
+    /// drawn data -- lilaq's own analogue of matplotlib's `loc="best"`,
+    /// spiked here ahead of a possible lilaq patch. See
+    /// [`crate::scene::Scene::best_legend_position`] for how "least" is
+    /// scored without a real legend frame to test against.
+    pub fn auto_position_legend(&mut self, figure: usize) {
+        let Some(scene) = self.scenes.iter().find(|s| s.figure == figure) else {
+            self.status = "nothing has compiled yet".into();
+            return;
+        };
+        let position = scene.best_legend_position();
+        self.set_legend_position(figure, position);
+    }
+
     /// The `dx`/`dy` a decoration already carries.
     fn offsets_of(doc: &Document, figure: usize, kind: crate::scene::Decoration) -> (f64, f64) {
         let Some(call) = doc.call(figure) else {
@@ -2418,10 +2450,7 @@ impl Session {
                         continue;
                     };
                     let position = scene.nearest_legend_position(to);
-                    // The whole dictionary, because `legend:` takes one and
-                    // rewriting a field inside it would mean parsing what the
-                    // user wrote there.
-                    self.set_or_insert(figure, "legend", format!("(position: {position})"));
+                    self.set_legend_position(figure, position);
                 }
                 CanvasEvent::MoveDecoration {
                     figure,

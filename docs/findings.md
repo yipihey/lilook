@@ -2344,3 +2344,59 @@ ColorBrewer for the diverging three, Okabe--Ito and Paul Tol for the palettes.
 gradients -- it rotates colour channels, which is how a correct preview came to
 look wrong twice. Colour is now checked against egui's shapes, and pictures are
 kept for questions about *layout*, which they answer honestly.
+
+## The legend was already translucent, and lilook's colour picker could not see it
+
+2026-08-02. Asked to "make the default legend alpha 0.8" -- measuring first,
+per habit, found lilaq's own default already is: `lq.legend`'s `fill` is
+`white.transparentize(20%)` (`.vendor/lilaq/src/model/legend.typ:28`), 80%
+opacity, not the opaque `white` a hasty guess would assume. So there was
+nothing to change in lilaq's own default -- the actual gap was in lilook.
+
+`parse_color` (`lilook-ui/src/value.rs`) understood `rgb(..)`, `luma(..)` and
+named colours, and nothing that calls `.transparentize()`. lilaq's *own*
+idiomatic way of writing a translucent colour was therefore invisible to the
+inspector's colour picker: the widget fell back to `Control::Source` (raw
+text) the moment it met the value the package itself ships as a default.
+Fixed by teaching `parse_color` the one method call that matters here --
+recursively parsing the base colour and scaling its alpha -- so the swatch
+now shows the true 80% opacity and an edit through the picker preserves it
+(already-correct machinery: `color_source` has serialised an alpha byte
+since before this, the gap was purely on the read side).
+
+**Second finding, a real clobbering bug, found by asking "what happens if you
+drag this legend twice".** `MoveLegend`'s handler rewrote `legend: (..)`
+wholesale on every drag, with a comment explaining why: parsing what the user
+wrote there was out of scope. It wasn't -- `doc.rs` already parses everything
+else with `typst_syntax`, and a real parse of a dict literal is `dict_entries`
+plus `merge_dict_field`, maybe forty lines. A `fill` set once, by a user or by
+nothing more than lilaq's own default, now survives every later reposition;
+before this fix it survived exactly one drag.
+
+**Auto-placement's real bug wasn't in the concept, it was in the tiebreak,**
+and a fixture with the data actually plotted is what caught it. The first
+version scored each of the nine positions by how many recovered points (in
+data space, pushed through `Transform::to_page` into the same fractional
+frame `nearest_legend_position` already uses) fell inside an assumed box at
+that corner. Against a tight data cluster near one corner, *every other*
+corner scored zero -- and `min_by_key` over a tie returns whichever sorts
+first, which is "top + left" by nothing more meaningful than array order. A
+debug print of the actual data → page → fraction mapping (kept out of the
+committed test, but worth recording that it's how the bug was found rather
+than guessed at) showed the scoring itself was right; only the tiebreak
+wasn't. The fix adds a second term, active only among zero-overlap
+candidates: the corner whose box sits farthest on average from the data,
+weighted so it can never outrank real containment. `bottom + left` is what a
+person would also pick for data climbing to the top right, and now it's what
+the algorithm picks too.
+
+**What's still an approximation, on purpose.** The probe recovers a legend's
+anchor point, never its frame -- lilaq has nothing to query for a legend's
+rendered size, unlike the bracket-marker pair-of-points trick `colorbar`
+gets from `SELECTABLE`. So the "box" at each candidate corner is assumed, not
+measured: a fixed width and a height that grows with series count. Good
+enough to route around a cluster in a corner; not a real collision test
+against an arbitrary legend shape. The honest fix is upstream -- lilaq
+reporting a legend's actual extent -- which is exactly why this shipped in
+lilook first, as the plan said: a spike to prove the idea before asking
+lilaq to carry it.

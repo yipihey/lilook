@@ -732,6 +732,81 @@ impl Scene {
             .map(|p| p.0)
             .unwrap_or("top + left")
     }
+
+    /// Of the nine positions, the one covering the least drawn data --
+    /// lilaq's own analogue of matplotlib's `loc="best"`.
+    ///
+    /// The probe recovers a legend's anchor point but never its frame size
+    /// (lilaq has nothing to query for that), so there is no real box to test
+    /// for overlap. This scores by data *density* in an assumed box at each
+    /// corner instead: every recovered point is mapped into the same
+    /// fractional data-area space `nearest_legend_position` already uses. The
+    /// box's height grows with the number of series, since more legend
+    /// entries need a taller box -- the one piece of the real size this can
+    /// infer without ever laying the legend out.
+    ///
+    /// A point strictly inside a candidate's box always outweighs any number
+    /// of points outside it, but among corners that are equally clear of data
+    /// -- the common case, since a tight cluster leaves most corners at zero
+    /// -- the tiebreak is the corner *farthest* from the data on average, not
+    /// whichever sorts first. Without that second term every empty corner
+    /// looked identical and the answer was really "first empty corner in an
+    /// arbitrary array", which is not "best".
+    pub fn best_legend_position(&self) -> &'static str {
+        let (x0, y0, x1, y1) = self.area;
+        let (w, h) = ((x1 - x0).max(1.0), (y1 - y0).max(1.0));
+        let points: Vec<(f64, f64)> = self
+            .series
+            .iter()
+            .flat_map(|s| s.points.iter().copied())
+            .map(|p| self.transform.to_page(p))
+            .map(|(px, py)| ((px - x0) / w, (py - y0) / h))
+            .collect();
+
+        let fw = 0.32;
+        let entries = self.series.len().max(1) as f64;
+        let fh = (0.10 + 0.055 * entries).min(0.5);
+        // A box anchored at fractional corner (fx, fy): touching that edge or
+        // corner of the data area and spanning (fw, fh) inward from it.
+        let box_at = |fx: f64, fy: f64| {
+            let bx0 = fx * (1.0 - fw);
+            let by0 = fy * (1.0 - fh);
+            (bx0, by0, bx0 + fw, by0 + fh)
+        };
+        // Minimised: containment dominates by a factor no tiebreak can close
+        // (a data area is at most `sqrt(2)` across), and the remainder favours
+        // the corner whose box centre sits farthest from the data on average.
+        let score = |fx: f64, fy: f64| -> f64 {
+            if points.is_empty() {
+                return 0.0;
+            }
+            let (bx0, by0, bx1, by1) = box_at(fx, fy);
+            let (cx, cy) = ((bx0 + bx1) / 2.0, (by0 + by1) / 2.0);
+            let inside = points
+                .iter()
+                .filter(|(px, py)| (bx0..=bx1).contains(px) && (by0..=by1).contains(py))
+                .count();
+            let mean_dist: f64 = points
+                .iter()
+                .map(|(px, py)| ((px - cx).powi(2) + (py - cy).powi(2)).sqrt())
+                .sum::<f64>()
+                / points.len() as f64;
+            inside as f64 * 10.0 - mean_dist
+        };
+
+        // `top + right` first so a genuine tie -- no data recovered at all --
+        // resolves to lilaq's own default instead of an arbitrary corner.
+        let default = ("top + right", 1.0, 0.0);
+        std::iter::once(&default)
+            .chain(LEGEND_POSITIONS.iter().filter(|p| p.0 != default.0))
+            .min_by(|a, b| {
+                score(a.1, a.2)
+                    .partial_cmp(&score(b.1, b.2))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|p| p.0)
+            .unwrap_or(default.0)
+    }
 }
 
 #[cfg(test)]

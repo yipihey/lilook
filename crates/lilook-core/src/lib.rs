@@ -27,8 +27,9 @@ pub use data::{
     TooManyValues, MAX_EMBEDDED_VALUES,
 };
 pub use doc::{
-    check_expr, fit_argument, resolves_anywhere, series_shape_of, Axis, CallSite, Cursor, Document,
-    Editability, Figure, NamedArg, PositionalArg, SeriesShape, SetRule, Theme, Token, XY_SERIES,
+    check_expr, fit_argument, merge_dict_field, resolves_anywhere, series_shape_of, Axis,
+    CallSite, Cursor, Document, Editability, Figure, NamedArg, PositionalArg, SeriesShape,
+    SetRule, Theme, Token, XY_SERIES,
 };
 pub use edit::{minimal_replacement, Anchor, AppliedEdit, CoalesceKey, History, Transaction};
 pub use events::{CanvasEvent, UiEvent};

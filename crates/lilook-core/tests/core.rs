@@ -1180,6 +1180,43 @@ fn a_session_is_driveable_without_a_gui() {
     assert_eq!(s.doc.text(), SRC, "the session did not fully undo");
 }
 
+/// `merge_dict_field` is what makes rewriting one field of `legend: (..)` --
+/// or any other dict-shaped argument -- safe: every other field survives
+/// exactly as written.
+#[test]
+fn merge_dict_field_keeps_every_other_entry() {
+    use lilook_core::merge_dict_field;
+
+    assert_eq!(
+        merge_dict_field("(position: top + left)", "position", "bottom + right"),
+        "(position: bottom + right)"
+    );
+    // A field elsewhere in the dict, including one with its own commas and
+    // parens, must not be disturbed by the rewrite.
+    assert_eq!(
+        merge_dict_field(
+            "(position: top + left, fill: rgb(1, 2, 3, 200))",
+            "position",
+            "bottom + right"
+        ),
+        "(position: bottom + right, fill: rgb(1, 2, 3, 200))"
+    );
+    // Inserting a field that was not there yet is appended, not replaced.
+    assert_eq!(
+        merge_dict_field("(fill: white)", "position", "top + left"),
+        "(fill: white, position: top + left)"
+    );
+    // No existing dict at all: a fresh one, same as before this existed.
+    assert_eq!(
+        merge_dict_field("", "position", "top + left"),
+        "(position: top + left)"
+    );
+    assert_eq!(
+        merge_dict_field("(:)", "position", "top + left"),
+        "(position: top + left)"
+    );
+}
+
 /// Every byte offset resolves to the call a human would name.
 ///
 /// The second addressing axis. Everything else lilook does takes a call-site id;
