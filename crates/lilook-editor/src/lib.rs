@@ -26,6 +26,11 @@ const MAX_PIXEL_PER_PT: f32 = 6.0;
 /// Below this width the panels stop being panels. Three side-by-side columns
 /// that each want 200 points leave nothing for the figure on a phone.
 const NARROW_WIDTH: f32 = 640.0;
+/// A constant height for the diagnostics block, so a changing number of
+/// errors, hints or offered fixes never shifts the source pane below it
+/// while someone is typing. Enough for three or four short lines before its
+/// own scrollbar takes over.
+const DIAGNOSTICS_HEIGHT: f32 = 110.0;
 
 /// When this build was made, for the about box.
 const BUILD_DATE: &str = env!("LILOOK_BUILD_DATE");
@@ -518,6 +523,7 @@ impl Editor {
                 // Naming the field keeps the two borrows disjoint.
                 scenes: &self.session.scenes,
                 selected: Some(self.selected),
+                selected_decoration: self.selected_decoration,
                 editable: &editable,
             },
         );
@@ -605,7 +611,7 @@ impl Editor {
                 }
             });
             if ui
-                .button("⇥")
+                .button("tidy")
                 .on_hover_text(
                     "Tidy the source. A gesture appends an argument wherever the \
                      call happens to end, so a figure edited by pointing at it \
@@ -616,7 +622,7 @@ impl Editor {
                 self.tidy();
             }
             if ui
-                .button("⧉")
+                .button("copy")
                 .on_hover_text("copy the Typst source to the clipboard")
                 .clicked()
             {
@@ -629,7 +635,16 @@ impl Editor {
             ui.weak("source");
         });
         if !self.diagnostics.is_empty() {
-            self.diagnostics_ui(ui);
+            // A fixed height, not the content's -- so the number of
+            // diagnostics, their length, or a "find the cause"/fix button
+            // appearing never shifts the source pane below it while someone
+            // is typing right next to it. More than fits gets its own
+            // scrollbar instead of pushing everything else around.
+            egui::ScrollArea::vertical()
+                .id_salt("diagnostics")
+                .max_height(DIAGNOSTICS_HEIGHT)
+                .auto_shrink([false, false])
+                .show(ui, |ui| self.diagnostics_ui(ui));
             ui.separator();
         }
         // The shell's slot: a file that changed on disk, a link back to a
@@ -945,16 +960,21 @@ impl Editor {
             .zip(&labels)
             .map(|(c, l)| lilook_ui::pick::Offer::new(&c.label, &c.note, &c.insert).choices(l))
             .collect();
+        // Above and to the right of the caret, so the popup never sits under
+        // the word being typed: the anchor is the cursor's own top-right
+        // corner, and `LEFT_BOTTOM` makes that corner the popup's own --
+        // everything else grows up and to the right from it.
         let anchor = out.galley_pos
             + out
                 .galley
                 .pos_from_cursor(egui::text::CCursor::new(text[..at].chars().count()))
-                .left_bottom()
+                .right_top()
                 .to_vec2();
         let taken = lilook_ui::pick::popup(
             ui.ctx(),
             egui::Id::new("completions"),
             anchor,
+            egui::Align2::LEFT_BOTTOM,
             &rows,
             focused,
         )?;
@@ -1013,7 +1033,7 @@ impl Editor {
                         .selectable_label(self.selected == f.node, format!("{name}  #{}", f.node))
                         .clicked()
                     {
-                        self.selected = f.node;
+                        self.select(f.node);
                     }
                     for &s in &f.series {
                         let Some(call) = self.doc.call(s) else {
@@ -1035,7 +1055,23 @@ impl Editor {
                             (false, None) => format!("      {}", call.callee),
                         };
                         if ui.selectable_label(self.selected == s, label).clicked() {
-                            self.selected = s;
+                            self.select(s);
+                        }
+                    }
+                    // Decorations: arguments of the diagram, not call sites,
+                    // so they come from the compiled scene rather than the
+                    // document -- and only once they have actually rendered.
+                    let kinds: Vec<lilook_core::scene::Decoration> = self
+                        .scenes
+                        .iter()
+                        .find(|sc| sc.figure == f.node)
+                        .map(|sc| sc.decorations.iter().map(|(k, _)| *k).collect())
+                        .unwrap_or_default();
+                    for kind in kinds {
+                        let label = format!("      {}", kind.param());
+                        let sel = self.selected_decoration == Some((f.node, kind));
+                        if ui.selectable_label(sel, label).clicked() {
+                            self.select_decoration(f.node, kind);
                         }
                     }
                 }
@@ -1048,7 +1084,7 @@ impl Editor {
                             callee
                         };
                         if ui.selectable_label(self.selected == id, label).clicked() {
-                            self.selected = id;
+                            self.select(id);
                         }
                     }
                 }
@@ -1081,7 +1117,7 @@ impl Editor {
                         .selectable_label(self.selected == r.node, label)
                         .clicked()
                     {
-                        self.selected = r.node;
+                        self.select(r.node);
                     }
                 }
                 self.add_set_rule(ui, &rules);
@@ -1403,7 +1439,7 @@ impl Editor {
             .into_iter()
             .find(|r| r.element == element)
         {
-            self.selected = r.node;
+            self.select(r.node);
         }
     }
 
@@ -1845,7 +1881,7 @@ impl Editor {
             ui.horizontal(|ui| {
                 ui.weak("caused by");
                 if ui.link(&b.label).on_hover_text("select it").clicked() {
-                    self.selected = b.node;
+                    self.select(b.node);
                 }
             });
         }

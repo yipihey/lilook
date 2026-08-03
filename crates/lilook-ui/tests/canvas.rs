@@ -10,6 +10,7 @@ fn view<'a>(pages: &'a [PageTexture], scenes: &'a [lilook_core::scene::Scene]) -
         pages,
         scenes,
         selected: None,
+        selected_decoration: None,
         editable: &[],
     }
 }
@@ -292,6 +293,7 @@ fn drag(
                     pages,
                     scenes,
                     selected,
+                    selected_decoration: None,
                     editable,
                 },
             );

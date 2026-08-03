@@ -133,6 +133,7 @@ pub fn popup(
     ctx: &egui::Context,
     id: egui::Id,
     anchor: egui::Pos2,
+    pivot: egui::Align2,
     offers: &[Offer<'_>],
     open: bool,
 ) -> Option<Picked> {
@@ -151,6 +152,7 @@ pub fn popup(
     let mut accepted = None;
     let area = egui::Area::new(id)
         .fixed_pos(anchor)
+        .pivot(pivot)
         .order(egui::Order::Foreground)
         // Kept on screen: anchored at the caret on the last line of the source
         // pane, an unconstrained popup opens below the window edge.

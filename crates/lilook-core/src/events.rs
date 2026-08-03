@@ -15,6 +15,13 @@
 pub enum CanvasEvent {
     /// A call site was clicked: a series, or a diagram's background.
     Select(usize),
+    /// A decoration was clicked: a legend, a title, an axis label. These are
+    /// arguments of a diagram rather than call sites of their own, so they
+    /// carry the figure they belong to instead of a node id.
+    SelectDecoration {
+        figure: usize,
+        kind: crate::scene::Decoration,
+    },
     /// A gesture started: open a transaction.
     Begin,
     /// It finished: commit, so the whole gesture is one undo step.

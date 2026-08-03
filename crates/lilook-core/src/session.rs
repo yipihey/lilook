@@ -210,6 +210,13 @@ pub struct Session {
     pub doc: Document,
     pub schema: Schema,
     pub selected: usize,
+    /// A legend, title or axis label, if that -- rather than a series or the
+    /// figure's background -- is what was last clicked. Cleared by any
+    /// ordinary `Select`, since a decoration and a call site are never both
+    /// "the thing that's highlighted" at once. `selected` still names the
+    /// figure it belongs to, so the inspector opens the same figure a
+    /// decoration click was aimed at.
+    pub selected_decoration: Option<(usize, crate::scene::Decoration)>,
     pub status: String,
     pub scenes: Vec<Scene>,
     pub data_files: Vec<DataFile>,
@@ -276,6 +283,7 @@ impl Session {
             doc,
             schema,
             selected,
+            selected_decoration: None,
             status: String::new(),
             scenes: vec![],
             data_files: vec![],
@@ -307,10 +315,27 @@ impl Session {
         }
     }
 
+    /// Select a call site, clearing any decoration selection -- a series and
+    /// a legend are never both "the thing that's highlighted" at once, and
+    /// every place that moves the selection to a call site needs this same
+    /// pair of writes, so it lives once rather than once per caller.
+    pub fn select(&mut self, node: usize) {
+        self.selected = node;
+        self.selected_decoration = None;
+    }
+
+    /// Select a decoration -- a legend, a title, an axis label. `selected`
+    /// still names the figure it belongs to, so the inspector opens on the
+    /// figure whose argument the decoration actually is.
+    pub fn select_decoration(&mut self, figure: usize, kind: crate::scene::Decoration) {
+        self.selected = figure;
+        self.selected_decoration = Some((figure, kind));
+    }
+
     /// Replace the buffer, as an open-file does.
     pub fn open(&mut self, text: impl Into<String>) {
         self.doc = Document::new(text);
-        self.selected = self
+        let node = self
             .doc
             .calls()
             .iter()
@@ -318,6 +343,7 @@ impl Session {
             .or_else(|| self.doc.calls().first())
             .map(|c| c.id)
             .unwrap_or(0);
+        self.select(node);
         self.scenes.clear();
         self.link = None;
         self.dirty = true;
@@ -664,7 +690,7 @@ impl Session {
             Ok(()) => {
                 self.doc.commit();
                 self.dirty = true;
-                self.selected = 0;
+                self.select(0);
                 self.status = format!("deleted {what}");
             }
             Err(err) => self.status = err,
@@ -739,7 +765,7 @@ impl Session {
         // Select what was just pasted: it is the last call inside the figure.
         if let Some(f) = self.doc.figures().into_iter().find(|f| f.node == figure) {
             if let Some(last) = f.series.last() {
-                self.selected = *last;
+                self.select(*last);
             }
         }
     }
@@ -777,7 +803,7 @@ impl Session {
         self.doc.commit();
         if let Some(f) = self.doc.figures().into_iter().find(|f| f.node == figure) {
             if let Some(last) = f.series.last() {
-                self.selected = *last;
+                self.select(*last);
             }
         }
     }
@@ -2401,7 +2427,10 @@ impl Session {
     pub fn handle_canvas(&mut self, events: Vec<CanvasEvent>) {
         for e in events {
             match e {
-                CanvasEvent::Select(node) => self.selected = node,
+                CanvasEvent::Select(node) => self.select(node),
+                CanvasEvent::SelectDecoration { figure, kind } => {
+                    self.select_decoration(figure, kind)
+                }
                 CanvasEvent::Begin => {
                     self.doc.begin("canvas");
                     self.explicit_tx = true;

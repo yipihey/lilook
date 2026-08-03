@@ -104,3 +104,45 @@ fn repositioning_preserves_other_fields() {
     );
     assert!(recompile(&mut b, &mut s));
 }
+
+/// A title and axis labels are recovered as decorations exactly like a
+/// legend -- same `Scene.decorations`, same selection call -- which is what
+/// the tree and the canvas highlight both need to make them as pickable as
+/// a plot already is.
+#[test]
+fn title_and_axis_labels_are_selectable_decorations() {
+    use lilook_core::scene::Decoration;
+
+    const SRC: &str = r#"#import "@preview/lilaq:0.6.0" as lq
+#set page(width: 12cm, height: 9cm, margin: 8pt)
+#lq.diagram(
+  width: 8cm,
+  height: 6cm,
+  title: [Growth],
+  xlabel: [Time],
+  ylabel: [Count],
+  lq.plot((0, 1, 2), (0, 1, 4), label: [a]),
+)
+"#;
+    let mut b = Backend::new(std::env::temp_dir(), "");
+    let mut s = session(SRC);
+    if !recompile(&mut b, &mut s) {
+        return;
+    }
+    let figure = s.scenes[0].figure;
+    let kinds: Vec<Decoration> = s.scenes[0].decorations.iter().map(|(k, _)| *k).collect();
+    for want in [
+        Decoration::Title,
+        Decoration::XLabel,
+        Decoration::YLabel,
+        Decoration::Legend,
+    ] {
+        assert!(kinds.contains(&want), "missing {want:?} in {kinds:?}");
+    }
+
+    for kind in [Decoration::Title, Decoration::XLabel, Decoration::YLabel] {
+        s.select_decoration(figure, kind);
+        assert_eq!(s.selected, figure);
+        assert_eq!(s.selected_decoration, Some((figure, kind)));
+    }
+}

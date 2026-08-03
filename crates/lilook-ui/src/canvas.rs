@@ -137,6 +137,11 @@ pub struct CanvasInput<'a> {
     pub pages: &'a [PageTexture],
     pub scenes: &'a [Scene],
     pub selected: Option<usize>,
+    /// A legend, title or axis label that is the selection, rather than a
+    /// call site -- the canvas has no bounding box for one (lilaq gives up
+    /// only its anchor point), so it is highlighted at that point instead of
+    /// outlined the way a series or a figure is.
+    pub selected_decoration: Option<(usize, lilook_core::scene::Decoration)>,
     /// Series whose points can actually be moved -- the ones whose data is a
     /// literal array. Others draw hollow handles and refuse the drag rather
     /// than pretending and failing.
@@ -183,6 +188,7 @@ impl Canvas {
             pages,
             scenes,
             selected,
+            selected_decoration,
             editable,
         } = input;
         let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
@@ -541,15 +547,30 @@ impl Canvas {
 
         if response.clicked() {
             if let Some((page, pt)) = hover {
-                // Precedence: a point or its curve first, the diagram behind it
-                // second. Clicking the background of a figure selects the
-                // figure, which is how you get at its axes.
-                let target = hovered
-                    .as_ref()
-                    .map(|(_, hit)| hit.node)
-                    .or_else(|| figure_at(scenes, page, pt));
-                if let Some(node) = target {
-                    events.push(CanvasEvent::Select(node));
+                // A decoration first -- same precedence and the same
+                // tolerance the drag gesture already uses to grab one, so a
+                // legend near a data point is still a legend to click on.
+                let decoration = scenes
+                    .iter()
+                    .find(|s| s.page == page && s.contains_page_point(pt))
+                    .and_then(|scene| {
+                        scene
+                            .hit_decoration(pt, DECORATION_TOL)
+                            .map(|kind| (scene.figure, kind))
+                    });
+                if let Some((figure, kind)) = decoration {
+                    events.push(CanvasEvent::SelectDecoration { figure, kind });
+                } else {
+                    // Then a point or its curve, the diagram behind it last.
+                    // Clicking the background of a figure selects the figure,
+                    // which is how you get at its axes.
+                    let target = hovered
+                        .as_ref()
+                        .map(|(_, hit)| hit.node)
+                        .or_else(|| figure_at(scenes, page, pt));
+                    if let Some(node) = target {
+                        events.push(CanvasEvent::Select(node));
+                    }
                 }
             }
         }
@@ -570,6 +591,23 @@ impl Canvas {
                     scene.area,
                     accent.gamma_multiply(0.7),
                 );
+            }
+            // A decoration has no bounding box to outline -- the probe gives
+            // up only its anchor point, since lilaq has nothing to query for
+            // a legend's or a label's rendered size -- so it is marked at
+            // that point instead. Better than the alternative this replaces,
+            // which was nothing: a legend could be dragged with no way to
+            // tell it had been picked up at all.
+            if let Some((_, kind)) = selected_decoration.filter(|(f, _)| *f == scene.figure) {
+                if let Some((_, at)) = scene.decorations.iter().find(|(k, _)| *k == kind) {
+                    let center = viewport.to_screen(b.to_doc(*at));
+                    painter.circle_stroke(center, 9.0, Stroke::new(2.5, accent));
+                    painter.circle_stroke(
+                        center,
+                        9.0,
+                        Stroke::new(1.0, Color32::from_white_alpha(220)),
+                    );
+                }
             }
             for series in &scene.series {
                 if Some(series.node) != selected {

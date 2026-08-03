@@ -1180,6 +1180,78 @@ fn a_session_is_driveable_without_a_gui() {
     assert_eq!(s.doc.text(), SRC, "the session did not fully undo");
 }
 
+/// A decoration and a call site are never both "the selection" at once --
+/// selecting either clears the other -- and every operation that moves the
+/// selection to a call site (not just the canvas's own `Select` event) has
+/// to keep that true, since a stale `selected_decoration` would highlight a
+/// legend that isn't the thing being edited anymore.
+#[test]
+fn selecting_a_call_site_or_a_decoration_is_mutually_exclusive() {
+    use lilook_core::scene::Decoration;
+    use lilook_core::{CanvasEvent, Session};
+
+    const SRC: &str = r#"#import "@preview/lilaq:0.6.0" as lq
+#lq.diagram(lq.plot((0, 1, 2), (0, 1, 4), label: [a]))
+"#;
+    let schema = Schema::from_json(lilook_core::schema::BUNDLED).expect("bundled schema");
+    let mut s = Session::new(SRC, schema);
+    let figure = s
+        .doc
+        .calls()
+        .iter()
+        .find(|c| c.short_name() == "diagram")
+        .map(|c| c.id)
+        .expect("the diagram");
+    let series = s
+        .doc
+        .calls()
+        .iter()
+        .find(|c| c.is_xy_series())
+        .map(|c| c.id)
+        .expect("the series");
+
+    s.select_decoration(figure, Decoration::Legend);
+    assert_eq!(s.selected, figure);
+    assert_eq!(s.selected_decoration, Some((figure, Decoration::Legend)));
+
+    // An ordinary select -- from the tree, or the canvas's own event -- clears it.
+    s.select(series);
+    assert_eq!(
+        s.selected_decoration, None,
+        "selecting a series must clear it"
+    );
+
+    s.select_decoration(figure, Decoration::Title);
+    s.handle_canvas(vec![CanvasEvent::Select(series)]);
+    assert_eq!(
+        s.selected_decoration, None,
+        "the canvas's own Select event must clear it too, not just the direct call"
+    );
+
+    s.select_decoration(figure, Decoration::XLabel);
+    s.handle_canvas(vec![CanvasEvent::SelectDecoration {
+        figure,
+        kind: Decoration::YLabel,
+    }]);
+    assert_eq!(
+        s.selected_decoration,
+        Some((figure, Decoration::YLabel)),
+        "selecting a different decoration replaces it"
+    );
+
+    // Contrive the stale state directly -- a decoration selected, but
+    // `selected` pointing at the series duplicate_selection is about to act
+    // on -- since duplicate_selection moves the selection through `select()`
+    // and has to clear the decoration on the way.
+    s.select_decoration(figure, Decoration::Legend);
+    s.selected = series;
+    s.duplicate_selection();
+    assert_eq!(
+        s.selected_decoration, None,
+        "duplicate must clear a stale decoration selection"
+    );
+}
+
 /// `merge_dict_field` is what makes rewriting one field of `legend: (..)` --
 /// or any other dict-shaped argument -- safe: every other field survives
 /// exactly as written.

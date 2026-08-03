@@ -2400,3 +2400,72 @@ against an arbitrary legend shape. The honest fix is upstream -- lilaq
 reporting a legend's actual extent -- which is exactly why this shipped in
 lilook first, as the plan said: a spike to prove the idea before asking
 lilaq to carry it.
+
+## A decoration could be dragged and could not be selected
+
+2026-08-03, five reports at once from actually using the thing. Two were
+real bugs in code just shipped; three were gaps that had been there since
+M4.
+
+**Two glyphs, `⇥` and `⧉`, were never in egui's default font.** Both
+rendered as empty boxes -- the "icons not rendering" report. Neither carries
+meaning a sighted user could not get from a word, so they are `"tidy"` and
+`"copy"` now. The lesson isn't about these two characters specifically:
+nothing here renders an icon font, so any future button glyph needs
+checking against what egui actually bundles, not assumed from what looks
+right in a comment.
+
+**Diagnostics were sized to their own content, so the source pane moved
+under whoever was typing next to them.** Not a scrollbar problem -- a
+`ScrollArea` was already there, just not fixed to anything, so it shrank to
+fit however many errors and hints happened to exist that frame. Fixed with
+`max_height` and `auto_shrink([false, false])`: a constant 110pt whether
+there is one short error or four plus a blame and a fix button, with the
+overflow case -- more than fits -- getting the scrollbar the box already
+had, rather than the box getting taller.
+
+**A legend could be dragged and had no way to be selected at all.**
+`Decoration` -- legend, title, xlabel, ylabel -- was invented for M5's drag
+gesture and never reached the two things a series already had: a tree row,
+and something drawn when it is the selection. Both gaps had the same root
+cause: `Session.selected: usize` is a call-site id, and a decoration is not
+a call site -- it is an *argument* of one, discovered from the compiled
+scene rather than the document. So it needed its own field
+(`selected_decoration: Option<(usize, Decoration)>`), not a wider type for
+`selected`.
+
+The design questions were mostly about what "selected" means when two kinds
+of thing can be selected. Settled as: mutually exclusive (never both, since
+nothing needs to show two highlights at once), and a decoration selection
+still sets `selected` to its figure (so the inspector opens where the
+decoration's own argument already lives, in the diagram's own row). Every
+place that moves `selected` directly -- six of them, in the tree and in
+`duplicate_selection`/`delete_selection`/paste -- had to clear the
+decoration half too, or picking a series after a legend would leave the
+legend still drawn as selected. One `select()` helper, used everywhere,
+rather than trusting six call sites to remember the second field.
+
+The highlight itself is a circle at the anchor point, not an outline of the
+decoration's own extent -- the same limitation `best_legend_position` above
+already lives with: the probe gives up a point, never a frame. Consistent
+with that entry's own conclusion: better than nothing, honest about not
+being a real bounding box, and the real fix is upstream.
+
+**What's still not selectable, on purpose, for now: the axis itself.**
+`Decoration` has no `Axis` variant, and adding one is a bigger lift than the
+other four -- there is no existing query lilaq answers for where an axis
+line or its ticks landed, unlike a legend or a label, which typst can at
+least locate. Clicking the axis frame already selects the parent figure
+(whose `xlim`/`ylim`/`xscale`/`yscale` are ordinary rows in its own
+inspector), so it is not unreachable -- it just is not highlighted the way
+a decoration or a series point now is. Recorded here so it reads as a
+decision, not an oversight.
+
+**The completion popup anchored at the wrong corner of the cursor.**
+`egui::Area::fixed_pos` defaults to `Align2::LEFT_TOP`, and the anchor was
+the cursor's bottom-left -- so the popup grew down and right, under the
+word being typed. `pick::popup` gained a `pivot` parameter (the inspector's
+"add argument" popup keeps `LEFT_TOP`, anchored below a field, which was
+already correct); the source pane's completion now anchors at the cursor's
+top-right with `LEFT_BOTTOM`, so it opens up and to the right and never
+covers what is being typed.

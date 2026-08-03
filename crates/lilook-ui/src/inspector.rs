@@ -953,7 +953,14 @@ impl<'a> Inspector<'a> {
             .collect();
 
         let popup_id = filter_id.with("popup");
-        let clicked = pick::popup(ui.ctx(), popup_id, field.rect.left_bottom(), &rows, open);
+        let clicked = pick::popup(
+            ui.ctx(),
+            popup_id,
+            field.rect.left_bottom(),
+            egui::Align2::LEFT_TOP,
+            &rows,
+            open,
+        );
         // Enter takes the first match, which is what a field you type a name into
         // is for. The source pane has no equivalent: there, Enter is a newline.
         //
