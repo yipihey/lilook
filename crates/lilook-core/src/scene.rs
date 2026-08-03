@@ -297,12 +297,17 @@ pub struct SceneHit {
     pub distance_pt: f64,
 }
 
+/// A decoration's kind, its anchor point on the page, and its measured
+/// (width, height) when `measure` on the queried content succeeded -- absent
+/// only in the pathological case where measuring failed.
+pub type DecorationGeom = (Decoration, (f64, f64), Option<(f64, f64)>);
+
 /// One diagram, as it was laid out.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Scene {
-    /// Parts of the figure that are drawn but are not series, with where they
-    /// landed on the page. Pickable, and a legend is draggable.
-    pub decorations: Vec<(Decoration, (f64, f64))>,
+    /// Parts of the figure that are drawn but are not series. Pickable, and
+    /// a legend is draggable.
+    pub decorations: Vec<DecorationGeom>,
     /// The `lq.diagram` call site.
     pub figure: usize,
     /// Which page it landed on.
@@ -707,9 +712,20 @@ impl Scene {
     /// A generous radius: these are small marks, and the thing a user aims at is
     /// the legend box rather than the anchor typst reported.
     pub fn hit_decoration(&self, page_pt: (f64, f64), tol: f64) -> Option<Decoration> {
+        // A real box, when one was measured: the click only has to land
+        // inside it, not within `tol` of a single point -- a wide legend
+        // used to need aiming at its anchor corner specifically.
+        let in_box = self.decorations.iter().find(|(_, at, extent)| {
+            extent.is_some_and(|(w, h)| {
+                (at.0..=at.0 + w).contains(&page_pt.0) && (at.1..=at.1 + h).contains(&page_pt.1)
+            })
+        });
+        if let Some((k, _, _)) = in_box {
+            return Some(*k);
+        }
         self.decorations
             .iter()
-            .map(|(k, at)| {
+            .map(|(k, at, _)| {
                 let d = (at.0 - page_pt.0).hypot(at.1 - page_pt.1);
                 (*k, d)
             })
@@ -736,14 +752,12 @@ impl Scene {
     /// Of the nine positions, the one covering the least drawn data --
     /// lilaq's own analogue of matplotlib's `loc="best"`.
     ///
-    /// The probe recovers a legend's anchor point but never its frame size
-    /// (lilaq has nothing to query for that), so there is no real box to test
-    /// for overlap. This scores by data *density* in an assumed box at each
-    /// corner instead: every recovered point is mapped into the same
-    /// fractional data-area space `nearest_legend_position` already uses. The
-    /// box's height grows with the number of series, since more legend
-    /// entries need a taller box -- the one piece of the real size this can
-    /// infer without ever laying the legend out.
+    /// The box tested at each corner is the legend's own measured size --
+    /// `measure()` on the same content the probe already queries, converted
+    /// to a fraction of the data area -- so this is scoring against the real
+    /// footprint, not a guess at one. Only if nothing was measured (no
+    /// legend recovered at all) does it fall back to a fixed box shaped by
+    /// series count, which is what this used to do unconditionally.
     ///
     /// A point strictly inside a candidate's box always outweighs any number
     /// of points outside it, but among corners that are equally clear of data
@@ -763,9 +777,22 @@ impl Scene {
             .map(|(px, py)| ((px - x0) / w, (py - y0) / h))
             .collect();
 
-        let fw = 0.32;
-        let entries = self.series.len().max(1) as f64;
-        let fh = (0.10 + 0.055 * entries).min(0.5);
+        // The legend's own measured size, converted to a fraction of the
+        // data area -- exact, where the fixed guess below was a stand-in for
+        // exactly this. Only a legend still lacks a real box to fall back
+        // to: nothing queries a title's or a label's size here, since
+        // neither one is a candidate for this placement.
+        let measured = self
+            .decorations
+            .iter()
+            .find_map(|(k, _, extent)| (*k == Decoration::Legend).then_some(*extent).flatten());
+        let (fw, fh) = match measured {
+            Some((mw, mh)) => ((mw / w).min(0.9), (mh / h).min(0.9)),
+            None => {
+                let entries = self.series.len().max(1) as f64;
+                (0.32, (0.10 + 0.055 * entries).min(0.5))
+            }
+        };
         // A box anchored at fractional corner (fx, fy): touching that edge or
         // corner of the data area and spanning (fw, fh) inward from it.
         let box_at = |fx: f64, fy: f64| {

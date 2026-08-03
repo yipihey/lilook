@@ -1806,8 +1806,8 @@ fn a_legend_can_be_dragged_to_another_corner() {
     let legend = scene
         .decorations
         .iter()
-        .find(|(k, _)| *k == lilook_core::scene::Decoration::Legend)
-        .map(|(_, at)| *at)
+        .find(|(k, _, _)| *k == lilook_core::scene::Decoration::Legend)
+        .map(|(_, at, _)| *at)
         .expect("the legend was located");
 
     // It is where the source says it is: the top-left of the frame.
@@ -1851,8 +1851,8 @@ fn a_legend_can_be_dragged_to_another_corner() {
     let moved = app.editor().scenes()[0]
         .decorations
         .iter()
-        .find(|(k, _)| *k == lilook_core::scene::Decoration::Legend)
-        .map(|(_, at)| *at)
+        .find(|(k, _, _)| *k == lilook_core::scene::Decoration::Legend)
+        .map(|(_, at, _)| *at)
         .expect("still located");
     assert!(
         moved.0 > legend.0 && moved.1 > legend.1,
@@ -1873,7 +1873,7 @@ fn a_figures_other_parts_are_located_as_well() {
     let scene = app.editor().scenes()[0].clone();
     use lilook_core::scene::Decoration;
 
-    let kinds: Vec<Decoration> = scene.decorations.iter().map(|(k, _)| *k).collect();
+    let kinds: Vec<Decoration> = scene.decorations.iter().map(|(k, _, _)| *k).collect();
     assert!(kinds.contains(&Decoration::Legend), "{kinds:?}");
     assert!(
         kinds.contains(&Decoration::XLabel) && kinds.contains(&Decoration::YLabel),
@@ -1882,7 +1882,7 @@ fn a_figures_other_parts_are_located_as_well() {
 
     // Each sits at or around the frame it belongs to, which is what assigning
     // them geometrically is supposed to guarantee.
-    for (kind, at) in &scene.decorations {
+    for (kind, at, _) in &scene.decorations {
         assert!(
             at.0 > scene.area.0 - 80.0
                 && at.0 < scene.area.2 + 80.0
@@ -1912,7 +1912,7 @@ fn a_title_and_a_label_can_be_nudged_and_keep_their_text() {
 
     // The example labels both axes; the two are told apart by where they sit.
     let scene = app.editor().scenes()[0].clone();
-    let kinds: Vec<Decoration> = scene.decorations.iter().map(|(k, _)| *k).collect();
+    let kinds: Vec<Decoration> = scene.decorations.iter().map(|(k, _, _)| *k).collect();
     assert!(kinds.contains(&Decoration::XLabel), "{kinds:?}");
     assert!(
         kinds.contains(&Decoration::YLabel),
@@ -1921,14 +1921,14 @@ fn a_title_and_a_label_can_be_nudged_and_keep_their_text() {
     let x_at = scene
         .decorations
         .iter()
-        .find(|(k, _)| *k == Decoration::XLabel)
-        .map(|(_, p)| *p)
+        .find(|(k, _, _)| *k == Decoration::XLabel)
+        .map(|(_, p, _)| *p)
         .unwrap();
     let y_at = scene
         .decorations
         .iter()
-        .find(|(k, _)| *k == Decoration::YLabel)
-        .map(|(_, p)| *p)
+        .find(|(k, _, _)| *k == Decoration::YLabel)
+        .map(|(_, p, _)| *p)
         .unwrap();
     assert!(y_at.0 < scene.area.0, "the y label is left of the frame");
     assert!(x_at.1 > scene.area.1, "the x label is below its top");

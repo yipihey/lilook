@@ -424,12 +424,30 @@ pub fn inject_with(
         // One query for the whole document: which diagram each belongs to is decided
         // by where it landed, not by counting, so a figure with three diagrams and
         // two legends still gets it right.
+        //
+        // `measure(m)` alongside the position: unlike a colorbar, a decoration
+        // is not a call site to bracket, but it is real content once query
+        // finds it, and typst can lay that same content out again to learn its
+        // size -- a legend or a label does not stretch to fill a container, so
+        // measuring it gives the size it actually rendered at, not a guess.
+        let spot = |el: &str| {
+            format!(
+                "query({lq}.selector({lq}.{el})).map(m => {{\
+                   let p = m.location().position()\n\
+                   let s = measure(m)\n\
+                   (page: p.page, x: p.x, y: p.y, w: s.width, h: s.height)\n\
+                 }})"
+            )
+        };
         out.push_str(&format!(
             "\n#context [#metadata((\
-           legend: query({lq}.selector({lq}.legend)).map(m => m.location().position()), \
-           title: query({lq}.selector({lq}.title)).map(m => m.location().position()), \
-           label: query({lq}.selector({lq}.label)).map(m => m.location().position()) \
-         ))<{DECOR_LABEL}>]\n"
+           legend: {}, \
+           title: {}, \
+           label: {} \
+         ))<{DECOR_LABEL}>]\n",
+            spot("legend"),
+            spot("title"),
+            spot("label"),
         ));
     }
 
@@ -486,6 +504,11 @@ fn insertion_point(call: &CallSite, _text: &str) -> Option<usize> {
 /// A page and a point on it: where a marker ended up.
 type Spot = (usize, f64, f64);
 
+/// A decoration's kind, where it landed (with its page), and its measured
+/// (width, height) in page points when `measure` on it succeeded -- the
+/// pre-fold shape, before it is assigned to the diagram it belongs to.
+type RawDecoration = (lilook_core::scene::Decoration, Spot, Option<(f64, f64)>);
+
 #[derive(Debug, Default)]
 struct Raw {
     /// (figure, kind) -> (page, x pt, y pt)
@@ -496,7 +519,7 @@ struct Raw {
     non_numeric: HashMap<usize, (bool, bool)>,
     /// Where the figure's non-series parts landed, before they are assigned to
     /// the diagram that contains them.
-    decorations: Vec<(lilook_core::scene::Decoration, Spot)>,
+    decorations: Vec<RawDecoration>,
     /// call -> where the content flow entered and left a pickable element.
     elements: HashMap<usize, [Option<Spot>; 2]>,
 }
@@ -582,8 +605,19 @@ fn read(doc: &PagedDocument) -> Raw {
                     ) else {
                         continue;
                     };
+                    // Absent only if `measure` itself failed -- content this
+                    // pathological would have failed to render at all, but a
+                    // missing size degrades to the old assumed box rather
+                    // than dropping the decoration.
+                    let extent = match (
+                        field(pos, "w").as_ref().and_then(as_pt),
+                        field(pos, "h").as_ref().and_then(as_pt),
+                    ) {
+                        (Some(w), Some(h)) => Some((w, h)),
+                        _ => None,
+                    };
                     raw.decorations
-                        .push((kind, ((page as usize).saturating_sub(1), x, y)));
+                        .push((kind, ((page as usize).saturating_sub(1), x, y), extent));
                 }
             }
         }
@@ -989,7 +1023,7 @@ pub fn scenes(doc: &PagedDocument, injection: &Injection) -> Vec<Scene> {
             decorations: vec![],
         });
     }
-    for (kind, spot) in &raw.decorations {
+    for (kind, spot, extent) in &raw.decorations {
         let Some(scene) = out
             .iter_mut()
             .filter(|s| s.page == spot.0 && !s.series.is_empty())
@@ -1011,7 +1045,7 @@ pub fn scenes(doc: &PagedDocument, injection: &Injection) -> Vec<Scene> {
             }
             other => *other,
         };
-        scene.decorations.push((kind, (spot.1, spot.2)));
+        scene.decorations.push((kind, (spot.1, spot.2), *extent));
     }
     out.sort_by_key(|s| s.figure);
     out

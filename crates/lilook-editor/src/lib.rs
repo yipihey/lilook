@@ -1065,7 +1065,7 @@ impl Editor {
                         .scenes
                         .iter()
                         .find(|sc| sc.figure == f.node)
-                        .map(|sc| sc.decorations.iter().map(|(k, _)| *k).collect())
+                        .map(|sc| sc.decorations.iter().map(|(k, _, _)| *k).collect())
                         .unwrap_or_default();
                     for kind in kinds {
                         let label = format!("      {}", kind.param());
@@ -1562,7 +1562,7 @@ impl Editor {
                 .is_some_and(|s| {
                     s.decorations
                         .iter()
-                        .any(|(k, _)| *k == lilook_core::scene::Decoration::Legend)
+                        .any(|(k, _, _)| *k == lilook_core::scene::Decoration::Legend)
                 });
             if has_legend
                 && ui

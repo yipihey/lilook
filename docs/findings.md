@@ -2469,3 +2469,89 @@ word being typed. `pick::popup` gained a `pivot` parameter (the inspector's
 already correct); the source pane's completion now anchors at the cursor's
 top-right with `LEFT_BOTTOM`, so it opens up and to the right and never
 covers what is being typed.
+
+## The screenshot pipeline was not the bug -- measured, not assumed
+
+2026-08-03. A prior entry ("A short shelf...") reported that "the screenshot
+pipeline in this session mangles gradients -- it rotates colour channels."
+That was plausible enough to plan a fix around: `main.rs`'s `--screenshot`
+builds a `tiny_skia::Pixmap` from `Color32::to_array()` (straight alpha),
+and `tiny_skia::Pixmap::from_vec` documents its input as *premultiplied*
+RGBA -- a real-looking mismatch, on paper.
+
+It does not reproduce. Two direct pixel-level checks, decoding the written
+PNG by hand (no image library, to keep the check independent of anything
+that could share the bug) rather than trusting a screenshot by eye:
+
+- A real `lq.colormesh` painted with `color.map.viridis` -- typst's own
+  rasteriser, not lilook's -- read back at `(68, 0, 83)`, `(71, 46, 122)`,
+  `(47, 108, 142)` and further stops walking through blue and teal.
+  Reference viridis at the same fractions: `(68, 1, 84)`, `(72, 40, 120)`,
+  `(47, 104, 142)`. Correct to rounding, in the right order, at every stop.
+- A translucent `rgb(0, 0, 255).transparentize(50%)` placed over an opaque
+  `rgb(255, 0, 0)` read back at `(127, 0, 128)` -- the straight-alpha blend
+  a person would compute by hand, not a premultiplication artefact.
+
+So the capture path -- the thing `--screenshot` actually exercises -- is
+colorimetrically correct, opaque or translucent. `Color32::lerp_to_gamma`,
+which `ramp_of` uses to paint a map's preview strip, was checked too: it
+calls `from_rgba_premultiplied` on its result, which sounds like the same
+mismatch, but every stop `ramp_of` interpolates between is fully opaque --
+premultiplied and straight coincide at alpha 255, so there is nothing there
+either.
+
+What likely happened: the previous entry's "twice" suggests two different
+looks at a preview mid-development, quite possibly at an earlier, since-
+rewritten version of the ramp code, or a case this investigation did not
+reconstruct (a popup specifically, which needs a scripted click
+`--screenshot` cannot drive, so it went untested here). Recorded so a
+plausible-sounding bug is not re-fixed on the strength of a description
+alone -- the same discipline this project applies everywhere else, applied
+to a bug report rather than a design.
+
+## A decoration's box was assumed because nobody had tried measuring it
+
+2026-08-03. Every earlier entry about legend placement said the same thing:
+lilaq gives up a legend's anchor point and nothing about its size, so
+`best_legend_position` and the selection highlight both worked from a
+guessed box. That was true of *querying* it -- there is no introspection
+API for "how big did this render" -- but it assumed measuring was the same
+kind of question, and it is not. `query()` hands back real content, and
+typst's own `measure()` lays out real content and reports its size. The two
+compose: `query(lq.selector(lq.legend)).map(m => measure(m))`, right beside
+the existing `m.location().position()`, inside the same `#context` this
+document already had.
+
+Checked against the `typst` CLI before touching any Rust: a lone legend
+entry measured `69.95pt` by `21.54pt` for a five-word label. Not an
+estimate to sanity-check by eye -- a number to compare against a longer
+label, which is the test that shipped: swap in "a rather much longer legend
+entry" and the measured width more than doubles, which no fixed constant
+could ever do.
+
+**What this replaced, concretely.** `Scene.decorations` gained a third
+field, `Option<(f64, f64)>` -- absent only if `measure` itself somehow
+failed, which degrades to the old assumed box rather than losing the
+decoration. `best_legend_position` now scores against the legend's own
+current size, converted to the same fractional data-area units
+`nearest_legend_position` already uses, and falls back to the series-count
+guess only when nothing has been measured. `hit_decoration` tests the real
+box before falling back to distance-from-anchor, so a wide legend is
+clickable anywhere inside it, not only near one corner. The canvas
+highlight draws the actual rectangle instead of a fixed-radius circle.
+
+**Why a legend specifically, and not a title or a label too, in
+`best_legend_position`.** All four decorations now carry a measured extent
+-- the query change was one edit for all of them -- but only the legend is
+a placement *decision* lilook makes; a title and an axis label sit where
+lilaq puts them and are only measured for their own selection highlight.
+Scoring `best_legend_position` against a title's box would be scoring
+against something that was never a candidate for moving.
+
+**What is still an assumption.** Measuring `m` outside its original
+placement trusts that a legend's box does not depend on the container it
+sits in -- true by construction, since `legend.typ`'s own `box(..)` sizes
+to its content rather than stretching to fill one, verified by reading the
+vendored source rather than assumed. If lilaq ever made a legend's fill
+depend on the diagram's own width, this would need revisiting; nothing
+found suggests it does.

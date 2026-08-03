@@ -592,21 +592,31 @@ impl Canvas {
                     accent.gamma_multiply(0.7),
                 );
             }
-            // A decoration has no bounding box to outline -- the probe gives
-            // up only its anchor point, since lilaq has nothing to query for
-            // a legend's or a label's rendered size -- so it is marked at
-            // that point instead. Better than the alternative this replaces,
-            // which was nothing: a legend could be dragged with no way to
-            // tell it had been picked up at all.
+            // The decoration's own measured box, when `measure` on it
+            // succeeded -- an outline like the figure's own, not a guess at
+            // where its edges are. Falls back to a mark at the anchor point
+            // only if a size was never recovered.
             if let Some((_, kind)) = selected_decoration.filter(|(f, _)| *f == scene.figure) {
-                if let Some((_, at)) = scene.decorations.iter().find(|(k, _)| *k == kind) {
-                    let center = viewport.to_screen(b.to_doc(*at));
-                    painter.circle_stroke(center, 9.0, Stroke::new(2.5, accent));
-                    painter.circle_stroke(
-                        center,
-                        9.0,
-                        Stroke::new(1.0, Color32::from_white_alpha(220)),
-                    );
+                if let Some((_, at, extent)) = scene.decorations.iter().find(|(k, _, _)| *k == kind)
+                {
+                    match extent {
+                        Some((w, h)) => outline_page_rect(
+                            &painter,
+                            &viewport,
+                            b,
+                            (at.0, at.1, at.0 + w, at.1 + h),
+                            accent,
+                        ),
+                        None => {
+                            let center = viewport.to_screen(b.to_doc(*at));
+                            painter.circle_stroke(center, 9.0, Stroke::new(2.5, accent));
+                            painter.circle_stroke(
+                                center,
+                                9.0,
+                                Stroke::new(1.0, Color32::from_white_alpha(220)),
+                            );
+                        }
+                    }
                 }
             }
             for series in &scene.series {

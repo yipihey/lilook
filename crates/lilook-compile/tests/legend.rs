@@ -130,7 +130,7 @@ fn title_and_axis_labels_are_selectable_decorations() {
         return;
     }
     let figure = s.scenes[0].figure;
-    let kinds: Vec<Decoration> = s.scenes[0].decorations.iter().map(|(k, _)| *k).collect();
+    let kinds: Vec<Decoration> = s.scenes[0].decorations.iter().map(|(k, _, _)| *k).collect();
     for want in [
         Decoration::Title,
         Decoration::XLabel,
@@ -145,4 +145,80 @@ fn title_and_axis_labels_are_selectable_decorations() {
         assert_eq!(s.selected, figure);
         assert_eq!(s.selected_decoration, Some((figure, kind)));
     }
+}
+
+/// The legend's box is measured, not assumed -- and a longer label makes a
+/// wider box, which no fixed-constant guess could ever reflect.
+#[test]
+fn a_legends_extent_is_measured_and_grows_with_its_label() {
+    use lilook_core::scene::Decoration;
+
+    fn legend_extent(src: &str) -> (f64, f64) {
+        let mut b = Backend::new(std::env::temp_dir(), "");
+        let mut s = session(src);
+        assert!(recompile(&mut b, &mut s), "lilaq must be available");
+        s.scenes[0]
+            .decorations
+            .iter()
+            .find(|(k, _, _)| *k == Decoration::Legend)
+            .and_then(|(_, _, extent)| *extent)
+            .expect("a measured legend extent")
+    }
+
+    let short = r#"#import "@preview/lilaq:0.6.0" as lq
+#set page(width: 12cm, height: 9cm, margin: 8pt)
+#lq.diagram(width: 8cm, height: 6cm, lq.plot((0, 1), (0, 1), label: [a]))
+"#;
+    let long = r#"#import "@preview/lilaq:0.6.0" as lq
+#set page(width: 12cm, height: 9cm, margin: 8pt)
+#lq.diagram(width: 8cm, height: 6cm, lq.plot((0, 1), (0, 1), label: [a rather much longer legend entry]))
+"#;
+
+    let (sw, _) = legend_extent(short);
+    let (lw, _) = legend_extent(long);
+    assert!(sw > 0.0 && lw > 0.0, "both must measure to something real");
+    assert!(
+        lw > sw * 2.0,
+        "a much longer label must measure a much wider box: short={sw} long={lw}"
+    );
+}
+
+/// A click lands inside the legend's measured box, not only within a few
+/// points of its anchor corner -- the fix `hit_decoration` needed once a
+/// real box existed to test against.
+#[test]
+fn a_click_anywhere_in_the_legend_box_selects_it() {
+    use lilook_core::scene::Decoration;
+
+    const SRC: &str = r#"#import "@preview/lilaq:0.6.0" as lq
+#set page(width: 12cm, height: 9cm, margin: 8pt)
+#lq.diagram(
+  width: 8cm,
+  height: 6cm,
+  legend: (position: top + left),
+  lq.plot((0, 1, 2), (0, 1, 4), label: [a wide enough legend entry]),
+)
+"#;
+    let mut b = Backend::new(std::env::temp_dir(), "");
+    let mut s = session(SRC);
+    if !recompile(&mut b, &mut s) {
+        return;
+    }
+    let scene = &s.scenes[0];
+    let (_, at, extent) = scene
+        .decorations
+        .iter()
+        .find(|(k, _, _)| *k == Decoration::Legend)
+        .expect("the legend");
+    let (w, h) = extent.expect("a measured extent");
+    assert!(w > 10.0 && h > 5.0, "a real box: {w}x{h}");
+
+    // The far corner of the box, well past the tolerance a point hit-test
+    // alone would ever reach.
+    let far_corner = (at.0 + w - 1.0, at.1 + h - 1.0);
+    assert_eq!(
+        scene.hit_decoration(far_corner, 3.0),
+        Some(Decoration::Legend),
+        "the box, not just its anchor, must be clickable"
+    );
 }
